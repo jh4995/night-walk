@@ -1,0 +1,21 @@
+# run_utils 출력물
+outputs/
+
+# 모델 아티팩트 (대용량, LFS나 별도 관리)
+*.onnx
+*.tflite
+*.engine
+
+# 파이썬
+__pycache__/
+*.pyc
+.venv/
+
+# 모바일 빌드물
+build/
+*.apk
+.gradle/
+
+# OS
+.DS_Store
+Thumbs.db
