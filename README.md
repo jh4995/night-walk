@@ -7,6 +7,10 @@
 
 **문서마다 소유 주제가 하나씩이다.** 어떤 주제를 찾을 때 갈 곳은 한 군데뿐이다.
 
+> 🧭 **처음 왔거나 이어서 일한다면 [docs/STATUS.md](docs/STATUS.md)부터.**
+> 지금 어디까지 왔고 다음이 무엇인지, 무엇에 막혀 있는지가 거기 있다.
+> 규칙은 [CLAUDE.md](CLAUDE.md)가 매 세션 자동으로 싣는다.
+
 ### 규약 (루트) — 팀과의 계약·합의. 임의 수정 금지
 
 | 문서 | 이 주제는 여기서만 본다 | 상태 |
@@ -23,11 +27,13 @@
 | [RESEARCH_20260728_PIPELINE.md](docs/research/RESEARCH_20260728_PIPELINE.md) | **현행 최신 종합.** 지연 예산 · ② A/B/C 판정 · 미결질문 5개 (위 4개에 없는 내용) |
 | [SUBMIT_20260728_PIPELINE.md](docs/research/SUBMIT_20260728_PIPELINE.md) | 위 문서의 팀 배포 축약본 — **동결 스냅샷**, 갱신은 RESEARCH 쪽만 |
 
-### 내부 규격 (`docs/`)
+### 현황·내부 규격 (`docs/`)
 
 | 문서 | 담는 것 |
 |---|---|
+| [STATUS.md](docs/STATUS.md) | **현재 상태** — 어디까지 왔나 · 다음 한 수 · 알려진 이슈 · 막혀 있는 것 |
 | [FRAME_LOG_SCHEMA.md](docs/FRAME_LOG_SCHEMA.md) | 폰(PoC)이 뱉고 PC(하네스)가 읽는 프레임 로그 형식 — 팀 계약이 아니라 내 두 트랙 사이의 규격 |
+| [baselines/](docs/baselines/) | **기준 측정값.** `outputs/`는 git 추적을 안 하므로, 승격하지 않은 숫자는 그 머신에만 남는다 |
 
 ### 보관 (`docs/archive/`) — 역할이 끝남
 
@@ -54,6 +60,9 @@ planner (읽기전용, 두 트랙 모두 + 접합부)
 
 - **공통 규칙**은 `nightwalk-conventions` 스킬 한 곳에 있다 (계약 문서가 source of truth,
   팀 합의 문서 수정 금지, 미확정 계약값 지어내지 않기, 스탬프 없는 숫자 금지).
+  요약은 `CLAUDE.md`가 매 세션 자동으로 싣는다.
+- **세션을 닫을 때는 `/wrap-session`** — 커밋 / `STATUS.md` 갱신 / 다음 한 수를 남긴다.
+  문서가 썩는 건 형식이 나빠서가 아니라 갱신 트리거가 없어서다.
 - **훅**: 편집 시 `.py`는 즉시 `py_compile`. `.kt`는 Gradle이 느려 건너뛰고
   android-verifier가 담당한다 (ktlint가 PATH에 있으면 자동으로 켜진다).
 
