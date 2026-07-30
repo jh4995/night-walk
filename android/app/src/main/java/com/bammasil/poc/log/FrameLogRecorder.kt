@@ -124,8 +124,19 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
         const val VALUES_PER_FRAME = 4
 
         /**
-         * 헤더는 `lib/frame_log.py`의 `REQUIRED_COLUMNS + OPTIONAL_COLUMNS`와 **글자까지**
-         * 같아야 한다. 오타를 내면 하네스가 미지 열 경고를 내지만 그 지표는 조용히 0이 된다.
+         * 헤더 규칙 (스키마 v2):
+         *
+         * 1. 여기 쓰는 이름은 `lib/frame_log.py`의 `REQUIRED_COLUMNS + OPTIONAL_COLUMNS`에
+         *    있는 이름과 **글자까지** 같아야 한다. 오타를 내면 하네스가 미지 열 경고를 내지만
+         *    그 지표는 조용히 0이 된다.
+         * 2. 그러나 그 목록 **전부를 쓰는 것은 아니다.** 이번 라운드에 실제로 측정하는 열만
+         *    싣는다 — 하네스는 부분 집합을 정상 처리한다.
+         *
+         * ⚠ **"열 없음"과 "전부 -1"은 하네스에서 다르게 보고된다.** 재지 않은 열을 헤더에
+         * 넣고 -1로 채우면 `_add_gpu_warnings`가 "열은 있는데 유효 표본이 0개다 = 쟀는데 못
+         * 얻었다"고 말한다. 그건 사실이 아니다(애초에 재지 않았다). 그러므로 v2의 GPU 열
+         * (`stage_b_ms`·`stage_d_ms`·`stage_i_ms`·`gpu_present_ms`)은 timer query 계측이
+         * 붙는 다음 라운드에 **그때 실제로 채우는 것만** 추가한다.
          */
         const val CSV_HEADER =
             "frame_idx,t_recv_ns,t_capture_ns,t_render_start_ns,t_render_end_ns,dropped_since_last"

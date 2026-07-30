@@ -9,7 +9,9 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.view.View
 import android.view.WindowManager
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.Spinner
@@ -19,6 +21,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.bammasil.poc.gl.PassthroughRenderer
+import com.bammasil.poc.gl.RenderArm
 import com.bammasil.poc.log.FrameLogRecorder
 import com.bammasil.poc.log.LightingCondition
 import com.bammasil.poc.log.SessionFacts
@@ -28,6 +31,9 @@ import com.bammasil.poc.source.FrameRequest
 import com.bammasil.poc.source.FrameSource
 import com.bammasil.poc.source.NegotiatedConfig
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 빈 파이프라인 PoC: 카메라 → (처리 없음) → 화면.
@@ -43,6 +49,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var statusText: TextView
     private lateinit var toggleButton: Button
     private lateinit var lightingSpinner: Spinner
+    private lateinit var armSpinner: Spinner
     private lateinit var frameSource: FrameSource
 
     private val recorder = FrameLogRecorder()
@@ -54,6 +61,19 @@ class MainActivity : ComponentActivity() {
     private var glReady = false
     private var sourceStarted = false
     private var recording = false
+
+    /**
+     * **측정 시작 시점에 잠근 arm.** 스피너의 현재 값을 쓰면, 어쩌다 런 도중 바뀌었을 때
+     * session.json이 실제로 돈 경로와 다른 arm을 적게 된다.
+     */
+    private var armAtStart: RenderArm = RenderArm.DEFAULT
+
+    /** 이 런의 출력 디렉토리 이름. 측정 **시작 시각**으로 정한다. */
+    private var runDirName: String? = null
+
+    /** 마지막으로 쓴 런 디렉토리 경로. GL 스레드가 쓰고 UI가 읽는다. */
+    @Volatile
+    private var lastRunPath: String? = null
 
     private val requestCameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -81,6 +101,7 @@ class MainActivity : ComponentActivity() {
         statusText = findViewById(R.id.status_text)
         toggleButton = findViewById(R.id.toggle_button)
         lightingSpinner = findViewById(R.id.lighting_spinner)
+        armSpinner = findViewById(R.id.arm_spinner)
         glView = findViewById(R.id.gl_view)
 
         val thread = HandlerThread("frame-signal").apply { start() }
@@ -101,6 +122,28 @@ class MainActivity : ComponentActivity() {
             android.R.layout.simple_spinner_dropdown_item,
             LightingCondition.CHOICES,
         )
+
+        // arm은 조명과 같은 급의 **측정 조건**이다 → 같은 실패 방지 패턴을 쓴다:
+        // 어휘 고정 목록 + 측정 중 잠금 + session.json에 기록.
+        armSpinner.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            RenderArm.CHOICES,
+        )
+        armSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(
+                parent: AdapterView<*>?,
+                view: View?,
+                position: Int,
+                id: Long,
+            ) {
+                // GL 자원을 만지므로 GL 스레드에서 바꾼다.
+                val arm = RenderArm.fromId(armSpinner.getItemAtPosition(position)?.toString())
+                glView.queueEvent { renderer.setArm(arm) }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
 
         toggleButton.setOnClickListener {
             if (recording) stopRecording() else startRecording()
@@ -172,13 +215,21 @@ class MainActivity : ComponentActivity() {
         }
         recording = true
         toggleButton.setText(R.string.stop)
+        // 런 도중 조건이 바뀌면 그 분포는 오염된 것이다 → 둘 다 잠근다.
         lightingSpinner.isEnabled = false
+        armSpinner.isEnabled = false
+        armAtStart = selectedArm()
+        runDirName = newRunDirName()
+        val arm = armAtStart
         val startedNs = SystemClock.elapsedRealtimeNanos()
         glView.queueEvent {
+            // 스피너 콜백을 놓쳤을 가능성을 여기서 닫는다. 이 시점 이후로 arm은 고정이다.
+            renderer.setArm(arm)
             renderer.resetClockProbe()
+            renderer.resetRenderCounters()
             recorder.start(startedNs)
         }
-        Log.i(TAG, "측정 시작")
+        Log.i(TAG, "측정 시작 (arm=${arm.id}, run=${runDirName})")
     }
 
     private fun stopRecording() {
@@ -194,11 +245,14 @@ class MainActivity : ComponentActivity() {
         val lighting = lightingSpinner.selectedItem?.toString() ?: LightingCondition.UNKNOWN
         val negotiated = frameSource.negotiated
         val sourceKind = frameSource.kind
+        val arm = armAtStart
+        val runName = runDirName ?: newRunDirName()
         glView.queueEvent {
-            val message = writeLogs(outDir, lighting, negotiated, sourceKind)
+            val message = writeLogs(outDir, runName, lighting, arm, negotiated, sourceKind)
             uiHandler.post {
                 toggleButton.isEnabled = true
                 lightingSpinner.isEnabled = true
+                armSpinner.isEnabled = true
                 showMessage(message)
                 updateStatus()
             }
@@ -208,7 +262,9 @@ class MainActivity : ComponentActivity() {
     /** GL 스레드에서 실행된다(로그 버퍼와 시계 표본을 소유한 스레드가 GL 스레드다). */
     private fun writeLogs(
         dir: File?,
+        runName: String,
         lighting: String,
+        arm: RenderArm,
         negotiated: NegotiatedConfig?,
         sourceKind: String,
     ): String {
@@ -216,9 +272,14 @@ class MainActivity : ComponentActivity() {
             return "getExternalFilesDir(null)이 null이다 — 로그를 쓰지 못했다"
         }
         return try {
-            dir.mkdirs()
-            val framesFile = File(dir, "frames.csv")
-            val sessionFile = File(dir, "session.json")
+            // ⚠ 런별 디렉토리. 예전처럼 파일명이 고정이면 FileWriter가 truncate라
+            //   **두 번째 런이 첫 번째를 지운다** — PC 없이 연속 2런을 못 찍던 원인이다.
+            val runDir = resolveRunDir(dir, runName)
+            if (!runDir.isDirectory && !runDir.mkdirs()) {
+                return "런 디렉토리를 만들지 못했다: ${runDir.absolutePath}"
+            }
+            val framesFile = File(runDir, "frames.csv")
+            val sessionFile = File(runDir, "session.json")
             val rows = recorder.writeCsv(framesFile)
             SessionWriter.write(
                 sessionFile,
@@ -227,7 +288,11 @@ class MainActivity : ComponentActivity() {
                     //   거짓말할 경로를 만들면 그 숫자는 근거로 쓸 수 없게 된다.
                     buildType = BuildConfig.BUILD_TYPE,
                     versionName = BuildConfig.VERSION_NAME,
+                    // 로그 → APK 연결고리. versionName은 커밋이 바뀌어도 안 변한다.
+                    gitCommit = BuildConfig.GIT_COMMIT,
+                    gitDirty = BuildConfig.GIT_DIRTY,
                     lightingCondition = lighting,
+                    arm = arm,
                     request = FRAME_REQUEST,
                     negotiated = negotiated,
                     sourceKind = sourceKind,
@@ -240,15 +305,47 @@ class MainActivity : ComponentActivity() {
                     glSurfaceWidth = renderer.surfaceWidth,
                     glSurfaceHeight = renderer.surfaceHeight,
                     eglContextClientVersion = EGL_CONTEXT_CLIENT_VERSION,
+                    gl = renderer.capabilities,
+                    processWidth = renderer.processWidth,
+                    processHeight = renderer.processHeight,
+                    offscreenStatus = renderer.offscreenStatus,
+                    offscreenFallbackDraws = renderer.offscreenFallbackDraws,
                 ),
             )
-            Log.i(TAG, "로그 저장: ${framesFile.absolutePath} ($rows 행)")
-            "저장 완료: $rows 행 → ${dir.absolutePath}"
+            lastRunPath = runDir.absolutePath
+            Log.i(TAG, "로그 저장: ${framesFile.absolutePath} ($rows 행, arm=${arm.id})")
+            "저장 완료: $rows 행 (arm=${arm.id})\n→ ${runDir.absolutePath}"
         } catch (t: Throwable) {
             Log.e(TAG, "로그 저장 실패", t)
             "로그 저장 실패: ${t.javaClass.simpleName}: ${t.message}"
         }
     }
+
+    /**
+     * `<외부 파일 디렉토리>/runs/<YYYYMMDD_HHMMSS>/`.
+     * 이름은 **측정 시작 시각**에서 온다(정지 시각이 아니다). 같은 초에 두 번 시작하면
+     * 뒤 런이 앞 런을 덮어쓰므로 접미사를 붙인다 — 이게 없으면 PC 없이 연속 2런을 못 찍는다.
+     */
+    private fun resolveRunDir(baseDir: File, runName: String): File {
+        val runsRoot = File(baseDir, RUNS_DIR)
+        var candidate = File(runsRoot, runName)
+        var suffix = 2
+        while (candidate.exists()) {
+            candidate = File(runsRoot, "${runName}_$suffix")
+            suffix++
+        }
+        return candidate
+    }
+
+    /**
+     * 로컬 벽시계 기준 타임스탬프. **사전순 = 시간순**이 되는 형식이라 "가장 최근"이
+     * 모호하지 않다(하네스의 `run_ts`와 같은 형식이다).
+     */
+    private fun newRunDirName(): String =
+        SimpleDateFormat(RUN_DIR_PATTERN, Locale.US).format(Date())
+
+    private fun selectedArm(): RenderArm =
+        RenderArm.fromId(armSpinner.selectedItem?.toString())
 
     // ── 화면 표시 (진행 확인용) ──────────────────────────────────────────
 
@@ -259,19 +356,23 @@ class MainActivity : ComponentActivity() {
         } else {
             "${negotiated.width}x${negotiated.height}"
         }
+        val arm = if (recording) armAtStart.id else selectedArm().id
         val head = if (recording) {
             val elapsedSec =
                 (SystemClock.elapsedRealtimeNanos() - recorder.startedElapsedNs) / 1e9
-            "측정 중 %.1fs | 프레임 %d | 실제 해상도 %s".format(
-                elapsedSec, recorder.recordedFrames, actual
+            "측정 중 %.1fs | 프레임 %d | arm %s | 실제 해상도 %s".format(
+                elapsedSec, recorder.recordedFrames, arm, actual
             )
         } else {
-            "대기 중 | 마지막 기록 %d 프레임 | 실제 해상도 %s".format(
-                recorder.recordedFrames, actual
+            "대기 중 | 마지막 기록 %d 프레임 | arm %s | 실제 해상도 %s".format(
+                recorder.recordedFrames, arm, actual
             )
         }
+        // 어느 런을 찍었는지 사용자가 알아야 한다(런별 디렉토리라 이름이 매번 다르다).
+        val saved = lastRunPath?.let { "\n마지막 저장: $it" } ?: ""
         // ⚠ 화면 숫자는 인용 근거가 아니다. 인용 가능한 숫자는 파일로 남긴 것뿐이다.
-        statusText.text = head + "\n(진행 확인용 — 인용은 frames.csv / session.json 으로만)"
+        statusText.text =
+            head + saved + "\n(진행 확인용 — 인용은 frames.csv / session.json 으로만)"
     }
 
     private fun showMessage(message: String) {
@@ -282,6 +383,10 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val TAG = "BammasilPoc"
         const val STATUS_INTERVAL_MS = 500L
+
+        /** 런별 출력 레이아웃: `.../files/runs/<YYYYMMDD_HHMMSS>/{frames.csv,session.json}` */
+        const val RUNS_DIR = "runs"
+        const val RUN_DIR_PATTERN = "yyyyMMdd_HHmmss"
 
         /** ①②는 GLES 3.x 셰이더 전제(`PIPELINE_STACK.md` §G)라 컨텍스트를 미리 맞춰 둔다. */
         const val EGL_CONTEXT_CLIENT_VERSION = 3

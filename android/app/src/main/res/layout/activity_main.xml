@@ -40,6 +40,20 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="#CCCCCC"
+            android:textSize="12sp"
+            android:text="@string/arm_label" />
+
+        <!-- 렌더 arm. 조명과 같은 급의 측정 조건이라 측정 중에는 잠긴다. -->
+        <Spinner
+            android:id="@+id/arm_spinner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
         <Button
             android:id="@+id/toggle_button"
             android:layout_width="match_parent"

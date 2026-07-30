@@ -3,6 +3,38 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// ── 빌드 시점 git 상태 → BuildConfig ──────────────────────────────────────
+// app_version_name 은 아래 상수(0.1-poc)라 커밋이 바뀌어도 안 변한다. 그래서 로그와 APK를
+// 잇는 고리가 아예 없었다 — 승격 베이스라인 2건이 android 코드 커밋보다 앞선 바이너리에서
+// 나왔고 그게 git_dirty:true 의 실체였다. 여기서 커밋과 dirty 여부를 박아 그 고리를 만든다.
+//
+// ⚠ git 이 없거나 실패해도 **빌드를 죽이지 않는다.** "unknown"으로 남기고, 그 사실 자체가
+//   session.json 에 기록되게 한다. 빌드를 막으면 측정을 못 하고, 거짓값을 넣으면 더 나쁘다.
+// (최상위 fun 이 아니라 val + 람다인 이유: .kts 의 최상위 함수에서는 rootDir 같은 Project
+//  프로퍼티가 암시적 리시버로 잡히지 않는다. 람다는 스크립트 스코프를 캡처한다.)
+val repoDir = rootDir
+val gitOutput: (List<String>) -> String? = { args ->
+    try {
+        val process = ProcessBuilder(args)
+            .directory(repoDir)
+            .redirectErrorStream(true)
+            .start()
+        val text = process.inputStream.bufferedReader().use { it.readText() }
+        if (process.waitFor() == 0) text.trim() else null
+    } catch (t: Exception) {
+        null
+    }
+}
+val gitCommit: String = gitOutput(listOf("git", "rev-parse", "--short", "HEAD")) ?: "unknown"
+val gitStatus: String? = gitOutput(listOf("git", "status", "--porcelain"))
+// 3-상태다. git 을 못 돌렸으면 "깨끗하다"가 아니라 "모른다"이며, boolean 으로 만들면
+// 모름이 false(=깨끗함)라는 거짓 주장이 된다.
+val gitDirty: String = when {
+    gitStatus == null -> "unknown"
+    gitStatus.isEmpty() -> "false"
+    else -> "true"
+}
+
 android {
     namespace = "com.bammasil.poc"
 
@@ -19,6 +51,9 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1-poc"
+
+        buildConfigField("String", "GIT_COMMIT", "\"$gitCommit\"")
+        buildConfigField("String", "GIT_DIRTY", "\"$gitDirty\"")
     }
 
     buildTypes {
