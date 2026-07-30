@@ -1,0 +1,234 @@
+{
+  "device": {
+    "adb_path": "C:\\Users\\jh521\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.EXE",
+    "available": true,
+    "props": {
+      "android_release": "16",
+      "android_sdk": "36",
+      "build_fingerprint": "samsung/a34xks/a34x:16/BP2A.250605.031.A3/A346NKSSEEZD4:user/release-keys",
+      "cpu_abi": "arm64-v8a",
+      "device": "a34x",
+      "manufacturer": "samsung",
+      "model": "SM-A346N",
+      "soc_manufacturer": "Mediatek",
+      "soc_model": "MT6877"
+    },
+    "reason": null,
+    "serial": "RFCW604KXFN"
+  },
+  "frametime": {
+    "capture_to_render_ms": {
+      "count": 19395,
+      "max": 126.766,
+      "mean": 78.232,
+      "min": 63.439,
+      "p50": 78.535,
+      "p95": 82.725,
+      "p99": 84.793
+    },
+    "output_interval_ms": {
+      "count": 19394,
+      "max": 77.377,
+      "mean": 33.421,
+      "min": 10.34,
+      "p50": 32.665,
+      "p95": 38.249,
+      "p99": 41.064
+    },
+    "primary": {
+      "count": 19394,
+      "max": 77.377,
+      "mean": 33.421,
+      "min": 10.34,
+      "p50": 32.665,
+      "p95": 38.249,
+      "p99": 41.064
+    },
+    "primary_source": "output_interval_ms (t_render_end_ns 간격)",
+    "recv_interval_ms": {
+      "count": 19394,
+      "max": 76.506,
+      "mean": 33.421,
+      "min": 10.736,
+      "p50": 32.422,
+      "p95": 38.266,
+      "p99": 41.038
+    },
+    "recv_to_render_ms": {
+      "count": 19395,
+      "max": 9.186,
+      "mean": 1.888,
+      "min": 0.526,
+      "p50": 1.895,
+      "p95": 2.597,
+      "p99": 3.015
+    },
+    "render_latency_ms": {
+      "count": 19395,
+      "max": 9.067,
+      "mean": 1.705,
+      "min": 0.481,
+      "p50": 1.708,
+      "p95": 2.372,
+      "p99": 2.742
+    }
+  },
+  "label": "본 측정 런B 10분 지속 indoor_bright A34 release 빈 파이프라인 — 런A 반복",
+  "run_ts": "20260730_235128",
+  "safety_regression": {
+    "evaluated": false,
+    "reason": "탐지 단계 미구현 — 위험물 강조 누락률을 아직 잴 수 없다"
+  },
+  "schema_version": 1,
+  "session": {
+    "app_version_name": "0.1-poc",
+    "build_type": "release",
+    "camera": {
+      "requested_fps": 30,
+      "resolution": "1280x720"
+    },
+    "camera_actual": {
+      "frame_rate_range": "30-30",
+      "resolution": "1280x720"
+    },
+    "camera_frames_offered": null,
+    "capture_clock_base": "boottime",
+    "capture_clock_base_reason": "취득~콜백 지연 중위값: monotonic 기준 -537113149562330ns / boottime 기준 71752443ns, 허용범위 [-5000000, 1000000000]ns, 두 시계 오프셋 537113221314697ns",
+    "capture_clock_probe": [
+      {
+        "boottime_ns": 1579528159187136,
+        "monotonic_ns": 1042414937872593,
+        "t_capture_ns": 1579528089463000
+      },
+      {
+        "boottime_ns": 1579528199100905,
+        "monotonic_ns": 1042414977785516,
+        "t_capture_ns": 1579528122795000
+      },
+      {
+        "boottime_ns": 1579528230179982,
+        "monotonic_ns": 1042415008864901,
+        "t_capture_ns": 1579528156127000
+      },
+      {
+        "boottime_ns": 1579528261211443,
+        "monotonic_ns": 1042415039896670,
+        "t_capture_ns": 1579528189459000
+      },
+      {
+        "boottime_ns": 1579528292468059,
+        "monotonic_ns": 1042415071153516,
+        "t_capture_ns": 1579528222791000
+      },
+      {
+        "boottime_ns": 1579528325433828,
+        "monotonic_ns": 1042415104119131,
+        "t_capture_ns": 1579528256123000
+      },
+      {
+        "boottime_ns": 1579528359441828,
+        "monotonic_ns": 1042415138127131,
+        "t_capture_ns": 1579528289455000
+      },
+      {
+        "boottime_ns": 1579528396910751,
+        "monotonic_ns": 1042415175596054,
+        "t_capture_ns": 1579528322787000
+      }
+    ],
+    "clock_offset_boottime_minus_monotonic_ns": 537113221314697,
+    "draws_without_new_frame": 0,
+    "drop_accounting_note": "표시 경로 2-C에는 ImageProxy가 없어 버려진 프레임 수를 셀 수 없다. frames.csv의 dropped_since_last는 전부 -1이며, camera_frames_offered/frames_dropped는 0이 아니라 null이다(0은 '드롭 없음'이라는 적극적 주장이다). 아래 surface_frames_available은 카메라 출력 수가 아니라 우리 SurfaceTexture 큐에 도착한 수이므로 드롭의 하한 단서일 뿐이다",
+    "frames_coalesced_lower_bound": 0,
+    "frames_dropped": null,
+    "frames_emitted": 20293,
+    "generated_by": "android/app (com.bammasil.poc)",
+    "lighting_condition": "indoor_bright",
+    "log_clock": "SystemClock.elapsedRealtimeNanos() (CLOCK_BOOTTIME)",
+    "measurement": {
+      "duration_ns": 678221955117,
+      "started_elapsed_realtime_ns": 1579528136074751,
+      "stopped_elapsed_realtime_ns": 1580206358029868
+    },
+    "pipeline_stages": [],
+    "render": {
+      "display_path": "2-C: CameraX Preview -> 우리 SurfaceTexture(OES) -> GL blit",
+      "draw_call": "glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)",
+      "egl_context_client_version": 3,
+      "gl_surface_size": "1080x2340",
+      "note": "표시 방향·화면비 보정을 하지 않는다. 센서 방향 그대로 GL 서피스 전체에 늘려 그리므로 세로 화면에서 프리뷰가 누워 보인다 — 픽셀 비용에는 영향이 없고 이번 측정 범위 밖이다",
+      "render_mode": "RENDERMODE_WHEN_DIRTY (onFrameAvailable에서 requestRender)",
+      "shader": "OES 패스스루 1개 (처리 없음)"
+    },
+    "render_latency_meaning": "render_latency_ms(t_render_end - t_render_start)는 glDrawArrays가 즉시 반환하므로 **CPU 제출 비용이고 GPU 실행 시간이 아니다.** '렌더가 사실상 무료'로 읽으면 틀린다 — 실제 GPU 비용은 timer query가 필요하고 이번 범위가 아니다. 반면 output_interval_ms는 swapBuffers가 다음 사이클 앞에서 블록하므로 실제 표시 주기(=프레임타임)가 된다",
+    "schema_version": 1,
+    "source_kind": "camera",
+    "surface_frames_available": 20293,
+    "timestamp_sites": {
+      "t_capture_ns": "SurfaceTexture.getTimestamp() 원본. 앱이 보정하지 않는다",
+      "t_recv_ns": "SurfaceTexture.OnFrameAvailableListener.onFrameAvailable 진입 직후 (전용 신호 스레드). 2-C에는 분석 콜백이 없어 이것이 프레임 도착 신호다",
+      "t_render_end_ns": "onDrawFrame 반환 직전(드로우콜 제출 완료). swapBuffers는 프레임워크가 onDrawFrame 반환 후에 하므로 우리가 잴 수 없다",
+      "t_render_start_ns": "GLSurfaceView.Renderer.onDrawFrame 진입 직후, updateTexImage 전 (도착 시각 AtomicLong을 먼저 소비한 뒤 찍는다 — 순서를 뒤집으면 t_recv > t_render_start 가 되어 하네스 교차검사 A가 거짓 위반을 낸다)"
+    }
+  },
+  "source": {
+    "capture_clock_base_contradicted": false,
+    "capture_clock_base_declared": "boottime",
+    "clock_check": {
+      "consistent": true,
+      "dwell_vs_interval": {
+        "consistent": true,
+        "ratio": 0.058,
+        "ratio_limit": 20.0,
+        "recv_to_render_p50_ms": 1.895,
+        "reference_p50_ms": 32.665,
+        "reference_series": "output_interval_ms",
+        "rule": "p50(recv_to_render_ms) <= 20x p50(output_interval_ms) — 진단용 임계이며 판정선(lib/targets.py)이 아니다"
+      },
+      "render_start_after_recv": {
+        "checked": 19395,
+        "consistent": true,
+        "rule": "render_latency_ms <= recv_to_render_ms (t_render_start_ns >= t_recv_ns)",
+        "violations": 0
+      },
+      "suspect_columns": []
+    },
+    "discarded_samples": {},
+    "discarded_total": 0,
+    "dropped_total": 0,
+    "frames_csv": "C:\\dev\\side\\night-walk\\outputs\\poc_pull\\20260730_235122\\frames.csv",
+    "lighting_condition": "indoor_bright",
+    "lighting_condition_comparable": true,
+    "rows_accounted": true,
+    "rows_read": 20293,
+    "rows_skipped": {
+      "before_t0": 0,
+      "unparsable_t_recv": 0,
+      "warmup": 898
+    },
+    "rows_skipped_anomalous": 0,
+    "rows_skipped_total": 898,
+    "rows_used": 19395,
+    "session_json": "C:\\dev\\side\\night-walk\\outputs\\poc_pull\\20260730_235122\\session.json",
+    "unknown_columns": [],
+    "warmup_sec": 30.0
+  },
+  "targets": {
+    "frame_budget_ms": 66.7,
+    "p95_budget_ms": 80.0,
+    "target_fps": 15.0
+  },
+  "verdict": {
+    "clock_consistent": true,
+    "data_complete": true,
+    "fps_mean": 29.92,
+    "meets_fps_target": true,
+    "meets_p95_target": true,
+    "primary_samples_discarded": 0,
+    "rows_skipped_anomalous": 0,
+    "samples_discarded": 0
+  },
+  "warnings": [
+    "처리 단계가 없는 파이프라인의 프레임 간격은 연산 비용이 아니라 카메라 공급 속도다. 이 로그의 카메라는 30fps 요청이므로 33ms 부근이 나오는데, 이는 '여유가 그만큼 있다'는 뜻이 아니라 '카메라가 그 주기로 준다'는 뜻이다. 이 값은 여유의 상한이 아니라 바닥값이고, 여기서부터 ①②③④ 비용이 더해진다."
+  ]
+}
