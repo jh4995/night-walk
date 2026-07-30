@@ -8,6 +8,8 @@
    폰이 계산한 값과 PC가 계산한 값이 어긋나면 어느 쪽이 맞는지 알 수 없다.
 2. **단조 시계 하나로 통일한다.** `t_*_ns`는 전부 같은 시계(`SystemClock.elapsedRealtimeNanos`)여야
    한다. 예외는 카메라가 주는 `t_capture_ns` 하나이며, 그 기준 시계는 기기마다 다르다.
+   v2에서 들어온 GPU 패스 시간(`stage_*_ms` / `gpu_present_ms`)은 애초에 **시각이 아니라
+   구간 길이**이고 GPU 시계에서 나온다 — `t_*_ns`와 섞지 않는다(GPU_TIME_COLUMNS 주석).
 3. **없는 값은 -1.** 빈칸이나 0이 아니라 -1로 명시한다. 0은 "0ms 걸렸다"와 구분되지 않는다.
 """
 
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,10 +25,37 @@ from typing import Optional
 
 from lib.stats import percentile
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # 폰이 반드시 뱉어야 하는 열
 REQUIRED_COLUMNS = ("frame_idx", "t_recv_ns")
+
+# ── GPU 패스 시간 열 (v2 추가) ────────────────────────────────────────────
+# 단위는 **ms(float)**이고, 출처는 `GL_EXT_disjoint_timer_query`다.
+#
+# ⚠ **이 값들은 t_*_ns와 다른 시계에서 온다.** t_*_ns는 CLOCK_BOOTTIME
+#   (`SystemClock.elapsedRealtimeNanos`)이고 여기 값들은 GPU 시계다. 두 시계는 서로
+#   빼거나 더할 수 없으며, 시계 혼용 교차검사(A/B)의 대상도 **아니다** — 교차검사는
+#   "같은 시계라면 반드시 성립해야 하는 관계"를 보는 장치인데 이 열들은 애초에 다른
+#   시계라서 위반이 정상이다. 섞으면 범인 열을 엉뚱한 곳에 돌리게 된다.
+#
+# ⚠ **프레임타임은 이 값들의 미터가 아니다.** 카메라가 30fps로 공급하면 프레임타임은
+#   공급 주기에 묶이므로, GPU 비용이 그 아래인 한 패스를 얹어도 프레임타임은 변하지
+#   않는다. 프레임타임은 "GPU 비용이 공급 주기를 넘었는가"를 알려주는 **임계 검출기**다.
+#   단계 비용 자체는 아래 열로만 말한다.
+GPU_TIME_COLUMNS = (
+    "stage_b_ms",      # 패스1 OES→오프스크린 720p (버짓 B칸: 색공간 변환/텍스처 업로드)
+    "stage_d_ms",      # ② 저조도 개선 패스(들) 합 (버짓 D칸)
+    "stage_i_ms",      # ④ 강조 렌더 패스 (버짓 I칸)
+    "gpu_present_ms",  # 기본 프레임버퍼에 그린 최종 표시 패스. **버짓 칸이 아니다**
+)
+
+# `gpu_sum_ms`(파생 시계열)에 들어가는 열.
+# gpu_present_ms를 **포함한다**: 최종 표시 패스도 실제로 GPU를 점유하는 시간이고,
+# "이 프레임이 GPU를 몇 ms 잡았나"에서 그것만 빼면 총량이 과소평가된다. 버짓 칸이
+# 아니라는 것은 A~J 매핑이 없다는 뜻이지 비용이 아니라는 뜻이 아니다.
+# (칸별 비용을 보고 싶으면 stage_* 시계열을 각각 보면 된다.)
+GPU_SUM_COLUMNS = GPU_TIME_COLUMNS
 
 # 있으면 쓰고 없으면 건너뛰는 열
 OPTIONAL_COLUMNS = (
@@ -33,7 +63,7 @@ OPTIONAL_COLUMNS = (
     "t_render_start_ns",
     "t_render_end_ns",
     "dropped_since_last",  # 백프레셔로 버려진 프레임 수
-)
+) + GPU_TIME_COLUMNS
 
 # 위 두 목록에 없는 열 = 하네스가 읽지 않는 열. 하드 에러로 만들지 않는다(앱이 스키마보다
 # 앞서 나갈 수 있다) 대신 **반드시 경고한다.** 행 단위 회계(accounting_ok)에 해당하는
@@ -78,12 +108,26 @@ MIN_POSITIVE_MS = 0.0
 #     느린 쪽 샘플을 버리는 것은 존재 이유와 정면으로 어긋나므로 **상한을 두지 않는다.**
 #     render_latency_ms도 t_render_end - t_render_start로 같은 시계 안에서 닫히므로
 #     같은 논리가 그대로 적용된다(예전 5초 상한은 12초 스톨 프레임을 삼켰다).
+#   - GPU 패스 시간(GPU_TIME_COLUMNS)도 **하한 > 0, 상한 없음**으로 같다. 한 패스의
+#     시작/끝을 같은 GPU 시계 안에서 닫으므로 큰 값은 시계 오류가 아니라 **진짜 느린
+#     프레임**이다. 발열 스로틀링으로 GPU 클럭이 떨어지는 구간이 정확히 우리가 잡아야 할
+#     대상이므로 여기에 상한을 두면 잡아야 할 것을 버린다.
 SANE_CAPTURE_TO_RENDER_MS = (0.0, 5_000.0)
 
 # 폐기 사유 → 사람이 읽는 문장
 DISCARD_REASON_TEXT = {
     "below_min": "0 이하 — 시계 역행 또는 기준 시계 불일치",
     "above_max": f"{SANE_CAPTURE_TO_RENDER_MS[1]:.0f}ms 이상 — 기준 시계 불일치",
+}
+
+# GPU 패스 시간 열에서 "0 이하"의 뜻은 시계 역행이 아니다. 사유별 계수는 위 경로를
+# 그대로 쓰되(새 폐기 경로를 만들지 않는다), 사람이 읽는 문장만 열 성격에 맞게 바꾼다.
+# 엉뚱하게 "시계 역행"이라고 쓰면 폰 쪽이 시계 코드를 뒤지게 된다.
+GPU_DISCARD_REASON_TEXT = {
+    "below_min": (
+        "-1 또는 0 이하 — disjoint로 버려졌거나 query가 해소되지 않았다"
+        " (시계 역행이 아니다)"
+    ),
 }
 
 # ── 행 단위 소실 사유 ─────────────────────────────────────────────────────
@@ -139,6 +183,20 @@ class FrameSeries:
     # 들어가서, 소비자가 어느 쪽을 받았는지 구분할 수 없었다).
     recv_to_render_ms: list[float] = field(default_factory=list)
     capture_to_render_ms: list[float] = field(default_factory=list)
+    # ── GPU 패스 시간 (GPU 시계 — 위 시계열들과 **다른 시계**다. 섞지 않는다) ──
+    stage_b_ms: list[float] = field(default_factory=list)
+    stage_d_ms: list[float] = field(default_factory=list)
+    stage_i_ms: list[float] = field(default_factory=list)
+    gpu_present_ms: list[float] = field(default_factory=list)
+    # **행 단위** 합. p50(B)+p50(D) != p50(B+D)이므로 백분위를 더하지 않고 행에서 먼저
+    # 더한 뒤 분포를 낸다. 그 행에 유효한 GPU 열이 하나도 없으면 기여하지 않는다.
+    gpu_sum_ms: list[float] = field(default_factory=list)
+    # CSV 헤더에 실제로 있던 GPU 열. 헤더에 없는 열은 폐기로 세지 않는다
+    # ("열이 아예 없다"와 "열은 있는데 값이 -1이다"는 다른 사실이다).
+    gpu_columns_present: list[str] = field(default_factory=list)
+    # gpu_sum_ms에 들어갔지만 헤더에 있는 GPU 열을 **전부** 채우지는 못한 행 수.
+    # 이 값이 0이 아니면 gpu_sum_ms 분포는 아래쪽으로 치우친다(빠진 패스만큼 작다).
+    gpu_sum_partial_rows: int = 0
     dropped_total: int = 0
     rows_read: int = 0
     rows_used: int = 0
@@ -158,6 +216,15 @@ class FrameSeries:
     @property
     def has_output_timeline(self) -> bool:
         return bool(self.output_interval_ms)
+
+    @property
+    def gpu_series(self) -> dict[str, list[float]]:
+        """열 이름 -> 시계열. 파생인 gpu_sum_ms는 여기 넣지 않는다(원본 열만)."""
+        return {name: getattr(self, name) for name in GPU_TIME_COLUMNS}
+
+    @property
+    def has_gpu_timings(self) -> bool:
+        return any(self.gpu_series.values())
 
     @property
     def discarded_total(self) -> int:
@@ -200,6 +267,30 @@ def _to_int(raw: Optional[str]) -> int:
         return int(float(str(raw).strip()))
     except ValueError:
         return MISSING
+
+
+def _to_float(raw: Optional[str]) -> float:
+    """GPU 패스 시간용. 없는 값·파싱 불가는 MISSING(-1)으로 통일한다.
+
+    -1은 실기기에서 실제로 오는 값이다(disjoint 구간이거나 query가 그 프레임 안에
+    해소되지 않은 경우). 0.0과 구분해야 하므로 0으로 대체하지 않는다.
+
+    ⚠ **유한하지 않은 값도 MISSING이다.** `float("NaN")`·`float("Infinity")`는
+    ValueError를 내지 않고 그대로 통과한다(`_to_int`는 int()가 막아 줘서 이 구멍이 없다).
+    NaN이 시계열에 들어가면 (a) 정렬 순서가 깨져 백분위가 무의미해지고,
+    (b) json.dump가 표준 JSON이 아닌 `NaN`/`Infinity` 맨 토큰을 뱉어 파이썬 아닌
+    소비자가 요약을 못 읽는다. 여기서 -1로 만들면 아래 하한 가드에 걸려 **폐기로 계수**되므로
+    조용히 사라지지도 않는다.
+    """
+    if raw is None or str(raw).strip() == "":
+        return float(MISSING)
+    try:
+        val = float(str(raw).strip())
+    except ValueError:
+        return float(MISSING)
+    if not math.isfinite(val):
+        return float(MISSING)
+    return val
 
 
 def read_session(path: Path) -> dict:
@@ -256,10 +347,15 @@ def read_frames(
         # 대신 이름을 지목해 경고한다 (KNOWN_COLUMNS 주석 참고).
         # 중복된 미지 열은 아는 값을 파괴하지 않으므로 여기서 이름 1개로 합쳐 경고만 한다.
         unknown_columns = sorted({c for c in reader.fieldnames if c not in KNOWN_COLUMNS})
+        # 헤더에 실제로 있는 GPU 열만 집계 대상이다. 헤더에 없는 열까지 읽으면 v1 로그의
+        # 모든 행이 "값 -1"로 보여 폐기 카운트가 행 수만큼 튄다 — "열이 없다"와
+        # "열은 있는데 -1이다"는 다른 사실이므로 여기서 갈라 둔다.
+        gpu_columns_present = [c for c in GPU_TIME_COLUMNS if c in reader.fieldnames]
         rows = list(reader)
 
     series = FrameSeries()
     series.unknown_columns = unknown_columns
+    series.gpu_columns_present = gpu_columns_present
     _add_unknown_column_warnings(series)
     series.rows_read = len(rows)
     if not rows:
@@ -347,10 +443,31 @@ def read_frames(
                 (t_re - t_cap) / 1e6, SANE_CAPTURE_TO_RENDER_MS,
             )
 
+        # ── GPU 패스 시간. 위 시계열과 **다른 시계**라 교차검사에 넣지 않는다.
+        #    헤더에 있는 열만 본다. 값이 -1이면 _collect의 하한(> 0)에 걸려
+        #    below_min으로 세어진다 — 기존 폐기 계수를 그대로 쓴다(새 경로를 만들지 않는다).
+        #    그래야 disjoint로 몇 프레임이 빠졌는지가 조용히 사라지지 않는다.
+        row_gpu_sum = 0.0
+        row_gpu_valid = 0
+        for col in gpu_columns_present:
+            val = _to_float(row.get(col))
+            before = len(getattr(series, col))
+            _collect(series, col, getattr(series, col), val)
+            if len(getattr(series, col)) > before:
+                row_gpu_sum += val
+                row_gpu_valid += 1
+        if row_gpu_valid:
+            if row_gpu_valid < len(gpu_columns_present):
+                # 일부 패스만 해소된 행. 합이 그만큼 작으므로 사실을 세어 둔다.
+                series.gpu_sum_partial_rows += 1
+            # 백분위를 더하지 않는다: 행에서 먼저 더하고 분포는 그 뒤에 낸다.
+            _collect(series, "gpu_sum_ms", series.gpu_sum_ms, row_gpu_sum)
+
     check_clock_consistency(series, render_start_checked, render_start_violations)
     _add_row_skip_warnings(series)
     _add_discard_warnings(series)
     _add_clock_warnings(series)
+    _add_gpu_warnings(series)
 
     if series.rows_used == 0:
         raise FrameLogError(
@@ -543,8 +660,10 @@ def _add_discard_warnings(series: FrameSeries) -> None:
     """
     for name in sorted(series.discarded):
         reasons = series.discarded[name]
+        # 사유별 계수는 한 경로에서 나오지만, 열 성격에 따라 그 사유가 뜻하는 바가 다르다.
+        text = GPU_DISCARD_REASON_TEXT if name in GPU_TIME_COLUMNS else DISCARD_REASON_TEXT
         detail = ", ".join(
-            f"{DISCARD_REASON_TEXT.get(reason, reason)} {count}개"
+            f"{text.get(reason, DISCARD_REASON_TEXT.get(reason, reason))} {count}개"
             for reason, count in sorted(reasons.items())
         )
         total = sum(reasons.values())
@@ -565,6 +684,31 @@ def _add_discard_warnings(series: FrameSeries) -> None:
         )
 
 
+def _add_gpu_warnings(series: FrameSeries) -> None:
+    """GPU 패스 시간 열이 **있는데 유효 표본이 없는** 경우를 말한다.
+
+    이 경고가 없으면 `stage_d_ms.count == 0`이 "②가 공짜였다"로 읽힐 수 있다.
+    0ms와 "재지 못했다"는 완전히 다른 사실이고, 후자는 측정 실패다.
+    """
+    for col in series.gpu_columns_present:
+        if getattr(series, col):
+            continue
+        discarded = sum(series.discarded.get(col, {}).values())
+        series.warnings.append(
+            f"{col}: 열은 있는데 유효 표본이 0개다(폐기 {discarded}개). "
+            f"이건 '그 패스가 0ms였다'가 아니라 **재지 못했다**는 뜻이다 — "
+            f"GL_EXT_disjoint_timer_query 미지원, disjoint 연속 발생, query 미해소 중 "
+            f"하나다. 이 열로 단계 비용을 말하지 말 것"
+        )
+    if series.gpu_sum_partial_rows:
+        series.warnings.append(
+            f"gpu_sum_ms: {series.gpu_sum_partial_rows}개 행이 헤더에 있는 GPU 열 "
+            f"{len(series.gpu_columns_present)}개를 다 채우지 못한 채 합산됐다 "
+            f"(있는 열: {', '.join(series.gpu_columns_present)}). "
+            f"빠진 패스만큼 합이 작으므로 이 분포는 아래쪽으로 치우친다"
+        )
+
+
 def _collect(
     series: FrameSeries,
     name: str,
@@ -572,20 +716,43 @@ def _collect(
     value: float,
     bounds: tuple[float, Optional[float]] = (MIN_POSITIVE_MS, None),
 ) -> None:
-    """범위 안이면 채택, 아니면 **사유별로 세고** 버린다. 조용히 버리지 않는다."""
+    """범위 안이면 채택, 아니면 **사유별로 세고** 버린다. 조용히 버리지 않는다.
+
+    ⚠ 판정을 `value <= lo`가 아니라 **`not (value > lo)`**로 쓴다. NaN은 어떤 비교에도
+    False를 돌려주므로 `value <= lo`는 NaN을 통과시키고, 그러면 정렬·백분위가 무의미해지고
+    요약 JSON이 표준이 아니게 된다. 부정형으로 쓰면 "확실히 하한 위"인 값만 채택되므로
+    NaN은 하한 위반으로 잡혀 **폐기 계수에 정직하게 드러난다**(사유는 below_min —
+    "값이 있었는데 못 썼다"가 보이는 것이 요점이다).
+    상한도 같은 이유로 `not (value < hi)`로 쓴다. 파싱 경계(_to_float)에서도 막지만,
+    여기서 한 번 더 닫아야 값의 **출처와 무관하게** 이 부류가 통째로 막힌다.
+    """
     lo, hi = bounds
-    if value <= lo:
+    if not (value > lo):
         series.note_discard(name, "below_min")
         return
-    if hi is not None and value >= hi:
+    if hi is not None and not (value < hi):
         series.note_discard(name, "above_max")
         return
     target.append(value)
 
 
-def write_frames(path: Path, rows: list[dict]) -> None:
-    """합성 로그 생성용. 실기기 로그는 폰이 쓰므로 여기를 거치지 않는다."""
-    cols = list(REQUIRED_COLUMNS) + list(OPTIONAL_COLUMNS)
+def write_frames(
+    path: Path, rows: list[dict], columns: Optional[list[str]] = None
+) -> None:
+    """합성 로그 생성용. 실기기 로그는 폰이 쓰므로 여기를 거치지 않는다.
+
+    `columns`를 주지 않으면 **행에 실제로 있는 키만** 헤더로 쓴다.
+    전체 OPTIONAL_COLUMNS를 항상 쓰면, 스키마에 열이 하나 늘 때마다 모든 합성 로그가
+    그 열을 -1로 갖게 되어 "그 열이 없는 로그"를 만들 수 없다 — 하위호환 검증 입력을
+    생성기로 만들지 못하게 된다.
+    """
+    known = list(REQUIRED_COLUMNS) + list(OPTIONAL_COLUMNS)
+    if columns is not None:
+        cols = list(columns)
+    elif rows:
+        cols = [c for c in known if any(c in r for r in rows)]
+    else:
+        cols = known
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=cols)

@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import device_meta, targets  # noqa: E402
 from lib.frame_log import (  # noqa: E402
     ANOMALOUS_SKIP_REASONS,
+    GPU_SUM_COLUMNS,
+    GPU_TIME_COLUMNS,
     ROW_SKIP_REASON_TEXT,
     SCHEMA_VERSION,
     FrameLogError,
@@ -29,6 +31,32 @@ from lib.run_utils import common_argparser, init_run  # noqa: E402
 from lib.stats import summarize  # noqa: E402
 
 LOG = logging.getLogger(__name__)
+
+# ── 진단용 임계 (판정선이 아니다) ────────────────────────────────────────────
+# `lib/frame_log.py`의 CLOCK_DWELL_RATIO_LIMIT과 같은 부류다. **판정선(lib/targets.py)과
+# 절대 섞지 않는다** — 이 값은 PASS/FAIL도 exit code도 흔들지 않고, 오직 "이 런의
+# 프레임타임을 단계 비용의 미터로 읽어도 되는가"를 사람에게 알려주는 데만 쓴다.
+#
+# 무엇을 판정하나: p50(output_interval_ms)가 p50(recv_interval_ms)와 **사실상 같은가**.
+# 같다면 파이프라인은 카메라가 주는 대로 그대로 뱉고 있다는 뜻이고, 그때 프레임타임은
+# 단계 비용을 전혀 반영하지 않는다(공급 주기에 묶여 있다).
+#
+# 5%인 근거: 두 시계열은 같은 시계에서 나오고, 프레임이 하나도 밀리지 않으면 출력 주기는
+# 입력 주기와 통계적으로 같아진다(차이는 지터뿐). 반대로 단계 비용이 공급 주기를 넘기
+# 시작하면 프레임이 드롭되면서 출력 주기가 공급 주기의 **정수배 쪽으로** 벌어지므로
+# 차이가 최소 수십 %가 된다. 5%는 그 사이의 넓은 빈 구간에 있어 어느 쪽으로도 아슬아슬하지
+# 않다. (실측 근거: 빈 파이프라인 런 run_ts=20260731_003819에서 두 p50의 차이는 0.75%였다
+#  — p50(output)=32.665ms, p50(recv)=32.422ms. 지터만 있는 상태의 실제 폭이 이 정도다.)
+FRAMETIME_PINNED_REL_DIFF = 0.05
+
+# 단계 열 → FRAME_BUDGET.md §3의 칸 이름. **배정치가 아니라 칸 이름만** 쓴다
+# (단계별 배정치는 폐기됐다 — 단계 비용은 실측으로만 말한다).
+BUDGET_CELL_OF = {
+    "stage_b_ms": "B",
+    "stage_d_ms": "D",
+    "stage_i_ms": "I",
+    "gpu_present_ms": None,  # 최종 표시 패스. 실제 GPU 비용이지만 A~J 어느 칸도 아니다
+}
 
 # 처리 단계가 하나도 없는 로그를 해석할 때 반드시 따라붙어야 하는 단서.
 # android-runtime 스킬 §5 — 이 숫자가 팀에 가장 오해받기 쉬운 지점이다.
@@ -52,6 +80,105 @@ def empty_pipeline_caveat(camera_fps: float | None) -> str:
         "이 값은 여유의 상한이 아니라 바닥값이고, 여기서부터 ①②③④ 비용이 더해진다."
     )
     return msg
+
+
+def frametime_pinned_caveat(
+    pinned: dict, stages: list, camera_fps: float | None = None
+) -> str:
+    """처리 단계가 **붙어 있는데도** 프레임타임이 카메라 공급에 묶여 있을 때의 단서.
+
+    `empty_pipeline_caveat`는 `pipeline_stages`가 비었을 때만 붙는데, 단계를 얹으면
+    배열이 안 비므로 꺼진다. 그런데 그 단서의 핵심 주장("이 숫자는 연산 비용이 아니라
+    카메라 공급 속도다")은 **여전히 참**이다. 이 함수가 그 자리를 메운다.
+
+    ⚠ p50만 보고 "단계 비용이 공급 주기보다 작다"고 쓰면 **틀린 경우가 있다.** 단계가
+    간헐적이면(예: N프레임마다 탐지) 중앙 프레임은 공급에 묶이지만 무거운 프레임은 이미
+    주기를 넘는다. 그래서 tail(p95)이 같이 묶였는지에 따라 문장을 다르게 낸다.
+    """
+    supply = ""
+    if camera_fps and camera_fps > 0:
+        # 임계가 아니라 참고 수치다. 판정에 쓰지 않는다.
+        supply = f" [참고: 카메라 요청 주기 {1000.0 / camera_fps:.1f}ms]"
+    head = (
+        f"프레임타임이 카메라 공급에 묶여 있다 — "
+        f"p50(output_interval_ms)={pinned['out_p50']:g}ms가 "
+        f"p50(recv_interval_ms)={pinned['recv_p50']:g}ms와 사실상 같다"
+        f"(차이 {pinned['rel_diff_p50'] * 100:.2f}%, "
+        f"진단 임계 {FRAMETIME_PINNED_REL_DIFF * 100:g}%){supply}. "
+        f"처리 단계 {stages}가 붙어 있는데도 그렇다. "
+    )
+    if pinned["tail_pinned"]:
+        body = (
+            f"tail도 마찬가지다(p95: {pinned['out_p95']:g} vs {pinned['recv_p95']:g}ms, "
+            f"차이 {pinned['rel_diff_p95'] * 100:.2f}%). 이는 단계 비용의 합이 공급 주기보다 "
+            f"**작다**는 뜻일 뿐, 그 비용이 0이라는 뜻이 아니다. "
+        )
+    else:
+        body = (
+            f"다만 tail은 이미 벌어졌다(p95: {pinned['out_p95']:g} vs {pinned['recv_p95']:g}ms, "
+            f"차이 {pinned['rel_diff_p95'] * 100:.2f}%) — 중앙 프레임만 공급에 묶여 있고 "
+            f"무거운 프레임은 주기를 넘고 있다는 뜻이다(간헐 단계에서 나타나는 모양). "
+            f"p50만 보고 '비용이 작다'고 읽지 말 것. "
+        )
+    return head + body + (
+        "이 런에서 프레임타임은 단계 비용의 **미터가 아니라 임계 검출기**다 — "
+        "'단계를 얹었는데 프레임타임 회귀가 없다'는 관측은 'D=0'이 아니라 "
+        "'D < 공급 주기'로만 읽어야 한다. 단계 비용은 stages 블록(GPU timer)으로만 말할 것. "
+        "⚠ 이 임계는 진단용이며 판정선(lib/targets.py)이 아니다"
+    )
+
+
+def submit_time_caveat() -> str:
+    """`capture_to_render_ms`(와 render_latency_ms)가 GPU 실행 시간을 담지 않는다는 단서."""
+    return (
+        "capture_to_render_ms는 t_render_end_ns 기준인데, 이 시각은 드로우콜 **제출** 시점이지 "
+        "GPU가 그 프레임을 다 그린 시점이 아니다(glDrawArrays는 즉시 반환한다). 즉 이 지연에는 "
+        "GPU 실행 시간이 **들어 있지 않다** — ② 저조도 패스를 얹은 뒤 '지연이 그대로다'라고 "
+        "읽으면 틀린다. 셰이더를 얹어 늘어난 GPU 비용은 여기가 아니라 stages 블록"
+        "(GL_EXT_disjoint_timer_query)에 나타난다. render_latency_ms에도 같은 한계가 있다"
+    )
+
+
+def gpu_timer_contradiction_warning(declared: dict, columns_present: list[str]) -> str:
+    return (
+        f"session.json은 gpu_timer.supported=true라고 선언했지만(선언 내용: {declared}) "
+        f"단계 시계열의 유효 표본이 0개다(헤더에 있는 GPU 열: "
+        f"{', '.join(columns_present) if columns_present else '없음'}). "
+        f"선언 쪽이 틀렸거나(확장 문자열은 있는데 query가 해소되지 않는다), CSV에 열을 싣지 "
+        f"못했거나, 런 내내 disjoint였다. 어느 쪽이든 이 런으로 단계 비용을 말할 수 없다"
+    )
+
+
+def _stages_block(series, stats: dict) -> dict:
+    """단계 비용 블록. **frametime과 분리한다.**
+
+    간격/체류시간(frametime)과 단계 비용(stages)은 다른 물리량이고 **다른 시계**에서
+    온다. 같은 키에 섞으면 소비자가 자기가 받은 숫자가 어느 시계의 무엇인지 구분할 수
+    없다 — render_latency_ms와 recv_to_render_ms를 같은 키에 넣지 않는 것과 같은 이유다.
+    """
+    block = {
+        "clock": (
+            "GPU 시계 (GL_EXT_disjoint_timer_query). t_*_ns(CLOCK_BOOTTIME)와 다른 시계이므로 "
+            "frametime 값과 더하거나 빼지 않으며, 시계 교차검사(A/B) 대상도 아니다"
+        ),
+        "columns_present": list(series.gpu_columns_present),
+        "budget_cell": dict(BUDGET_CELL_OF),
+        # **이 런에서 실제로 합산 대상이 된 열.** 상수 전체 목록을 그대로 실으면
+        # 헤더에 2개뿐인 로그에서도 4개가 실려 "4개를 다 더한 값"으로 오독된다.
+        # columns_present와 대조해야만 알 수 있는 상태로 두지 않는다.
+        "gpu_sum_columns": [c for c in GPU_SUM_COLUMNS if c in series.gpu_columns_present],
+        # 스키마가 합산 대상으로 정의한 전체 목록(이 런에 있었는지와 무관). 둘을 나눠 둔다.
+        "gpu_sum_columns_defined": list(GPU_SUM_COLUMNS),
+        "gpu_sum_note": (
+            "gpu_sum_columns는 이 런에서 실제로 더해진 열이다(헤더에 있는 것만). "
+            "행별로 유효한 값을 먼저 더한 뒤 백분위를 냈다(p50(B)+p50(D) != p50(B+D)). "
+            "유효한 열이 하나도 없는 행은 기여하지 않는다"
+        ),
+        "gpu_sum_partial_rows": series.gpu_sum_partial_rows,
+        "has_gpu_timings": series.has_gpu_timings,
+    }
+    block.update(stats)
+    return block
 
 
 def main() -> int:
@@ -122,6 +249,19 @@ def main() -> int:
     # 아무것과도 정직하게 비교할 수 없으므로 경고로 낸다.
     lighting, lighting_comparable, lighting_warning = check_lighting_condition(session)
 
+    # ── 단계 비용 (GPU 시계). 판정선이 없으므로 verdict를 흔들지 않는다.
+    stage_stats = {name: summarize(getattr(series, name)) for name in GPU_TIME_COLUMNS}
+    stage_stats["gpu_sum_ms"] = summarize(series.gpu_sum_ms)
+    gpu_valid_total = sum(len(v) for v in series.gpu_series.values())
+
+    # session.json이 선언한 GPU timer 지원 여부. 선언과 실제가 모순되면 선언 쪽이
+    # 틀렸을 수 있다 (capture_clock_base_contradicted와 같은 패턴).
+    gpu_timer_decl = session.get("gpu_timer") or {}
+    if not isinstance(gpu_timer_decl, dict):
+        gpu_timer_decl = {}
+    gpu_timer_declared = bool(gpu_timer_decl.get("supported"))
+    gpu_timer_contradicted = gpu_timer_declared and gpu_valid_total == 0
+
     summary = {
         "schema_version": SCHEMA_VERSION,
         "run_ts": paths.run_ts,
@@ -145,6 +285,9 @@ def main() -> int:
             "discarded_total": discarded_total,
             "capture_clock_base_declared": declared_clock_base,
             "capture_clock_base_contradicted": capture_clock_mismatch,
+            # GPU timer 선언 ↔ 실제 표본. 선언만 믿고 "단계 비용을 쟀다"고 하면 안 된다.
+            "gpu_timer_supported_declared": gpu_timer_declared,
+            "gpu_timer_contradicted": gpu_timer_contradicted,
             # 조명 조건. baseline_diff는 session 블록 쪽(session.lighting_condition)을 보고
             # 비교 가능성을 판정한다. 여기 둘은 사람이 읽는 사본이 아니라 **검사 결과**다.
             "lighting_condition": lighting,
@@ -165,6 +308,9 @@ def main() -> int:
             "recv_to_render_ms": summarize(series.recv_to_render_ms),
             "capture_to_render_ms": summarize(series.capture_to_render_ms),
         },
+        # 단계 비용은 frametime과 **다른 물리량이자 다른 시계**라 블록을 나눈다.
+        # 판정선이 없다 — verdict.meets_*는 여기 값을 보지 않는다.
+        "stages": _stages_block(series, stage_stats),
         "targets": {
             "target_fps": targets.TARGET_FPS,
             "frame_budget_ms": round(targets.FRAME_BUDGET_MS, 1),
@@ -193,9 +339,29 @@ def main() -> int:
         },
     }
 
-    if not session.get("pipeline_stages"):
+    pipeline_stages = session.get("pipeline_stages")
+    if not pipeline_stages:
         summary["warnings"].append(
             empty_pipeline_caveat(_camera_fps(session))
+        )
+    else:
+        # 단계가 붙었다고 empty_pipeline_caveat만 끄면 안 된다. 프레임타임이 공급에
+        # 묶여 있는 한 그 단서의 주장은 그대로 참이므로, 조건을 관측으로 바꿔 다시 낸다.
+        pinned = _frametime_pinned(summary["frametime"])
+        if pinned is not None:
+            # 관측치를 요약에도 남긴다 — 경고 문장만 있으면 나중에 기계가 되물을 수 없다.
+            summary["frametime"]["pinned_to_camera_supply"] = pinned
+            summary["warnings"].append(
+                frametime_pinned_caveat(
+                    pinned, list(pipeline_stages), _camera_fps(session)
+                )
+            )
+    # 제출 시각 기반 지연은 GPU 실행 시간을 담지 않는다. 값이 있을 때만 말한다.
+    if summary["frametime"]["capture_to_render_ms"]["count"]:
+        summary["warnings"].append(submit_time_caveat())
+    if gpu_timer_contradicted:
+        summary["warnings"].append(
+            gpu_timer_contradiction_warning(gpu_timer_decl, series.gpu_columns_present)
         )
     if lighting_warning:
         # 판정은 바꾸지 않는다. 조명은 판정선이 아니라 **비교 조건**이다.
@@ -220,12 +386,69 @@ def main() -> int:
     return 0
 
 
+def _frametime_pinned(ft: dict) -> dict | None:
+    """출력 주기 p50이 수신 주기 p50과 사실상 같으면 그 관측치를 돌려준다.
+
+    같다 = 파이프라인이 카메라가 주는 대로 뱉고 있다 = 프레임타임이 단계 비용을 반영하지
+    않는다. 두 시계열 중 하나라도 표본이 없으면 판단하지 않는다(None).
+
+    p95도 같은 임계로 함께 본다. p50만 묶이고 p95가 벌어지는 모양(간헐적 무거운 단계)을
+    "전부 묶였다"로 뭉뚱그리면 단서 자체가 거짓이 된다.
+    """
+    out = ft.get("output_interval_ms") or {}
+    recv = ft.get("recv_interval_ms") or {}
+    out_p50, recv_p50 = out.get("p50"), recv.get("p50")
+    if not out_p50 or not recv_p50:
+        return None
+    rel_diff = abs(out_p50 - recv_p50) / recv_p50
+    if rel_diff > FRAMETIME_PINNED_REL_DIFF:
+        return None
+    out_p95, recv_p95 = out.get("p95"), recv.get("p95")
+    rel_diff_p95 = (
+        abs(out_p95 - recv_p95) / recv_p95 if out_p95 and recv_p95 else None
+    )
+    return {
+        "out_p50": out_p50,
+        "recv_p50": recv_p50,
+        "rel_diff_p50": rel_diff,
+        "out_p95": out_p95,
+        "recv_p95": recv_p95,
+        "rel_diff_p95": rel_diff_p95,
+        "tail_pinned": (
+            rel_diff_p95 is not None and rel_diff_p95 <= FRAMETIME_PINNED_REL_DIFF
+        ),
+    }
+
+
 def _camera_fps(session: dict) -> float | None:
     raw = (session.get("camera") or {}).get("requested_fps")
     try:
         return float(raw) if raw is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _print_stages(summary: dict) -> None:
+    """단계 비용(GPU 시계) 출력. **판정선이 없으므로 PASS/FAIL을 찍지 않는다.**"""
+    st = summary.get("stages") or {}
+    cols = st.get("columns_present") or []
+    if not cols:
+        LOG.info("단계 비용(GPU timer): 열 없음 — 이 로그로는 단계 비용을 말할 수 없다")
+        return
+    LOG.info("단계 비용 — GPU 시계 (프레임타임과 다른 시계, 판정선 없음)")
+    for name in list(GPU_TIME_COLUMNS) + ["gpu_sum_ms"]:
+        s = st.get(name) or {}
+        if not s:
+            continue
+        cell = BUDGET_CELL_OF.get(name)
+        label = f"{name}[{cell}칸]" if cell else name
+        if s.get("count"):
+            LOG.info(
+                "  %-20s p50=%-8s p95=%-8s p99=%-8s min=%-8s max=%-8s (n=%s)",
+                label, s["p50"], s["p95"], s["p99"], s["min"], s["max"], s["count"],
+            )
+        elif name in cols or (name == "gpu_sum_ms" and cols):
+            LOG.warning("  %-20s 유효 표본 0개 — '0ms'가 아니라 재지 못한 것이다", label)
 
 
 def _print_report(summary: dict) -> None:
@@ -249,6 +472,7 @@ def _print_report(summary: dict) -> None:
         s = ft[name]
         if s["count"]:
             LOG.info("  %-22s p50=%-8s p95=%-8s (n=%s)", name, s["p50"], s["p95"], s["count"])
+    _print_stages(summary)
     LOG.info("-" * 62)
     LOG.info(
         "평균 %.2f FPS | %s: %s | %s: %s",

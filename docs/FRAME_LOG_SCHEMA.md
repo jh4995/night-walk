@@ -1,4 +1,4 @@
-# 프레임 로그 스키마 v1
+# 프레임 로그 스키마 v2
 
 > **작성:** 팀원2 · **상태:** 확정 (Android 트랙 ↔ 하네스 트랙 내부 규격)
 > **소유 주제:** 폰이 뱉고 PC가 읽는 측정 로그의 형식.
@@ -41,7 +41,27 @@ session.json    이 측정이 어떤 조건이었는지
 | `t_render_end_ns` | int ns | 렌더 제출 완료 |
 | `dropped_since_last` | int | 직전 행 이후 백프레셔로 버려진 프레임 수 |
 
-**위 두 표에 없는 열은 집계에 쓰이지 않고, 하네스가 이름을 지목해 경고한다 → §4 "열 단위 방어선".**
+### GPU 패스 시간 (v2 추가) — **다른 시계에서 온다**
+
+| 열 | 타입 | 의미 | 버짓 칸 |
+|---|---|---|---|
+| `stage_b_ms` | float ms | 패스1 OES→오프스크린 720p의 GPU 시간 (색공간 변환/텍스처 업로드) | **B** |
+| `stage_d_ms` | float ms | ② 저조도 개선 패스(들)의 GPU 시간 **합** | **D** |
+| `stage_i_ms` | float ms | ④ 강조 렌더 패스의 GPU 시간 | **I** |
+| `gpu_present_ms` | float ms | 기본 프레임버퍼에 그린 최종 표시 패스의 GPU 시간 | **없음** (§6) |
+
+- 출처는 `GL_EXT_disjoint_timer_query`다. 측정 기기(Galaxy A34 / Mali-G68, ES 3.2)에
+  확장이 있음을 확인했다.
+- **없는 값은 다른 열과 같이 `-1`.** disjoint로 버린 프레임, 그 프레임 안에 해소되지 않은
+  query도 전부 `-1`로 온다. `0`으로 대체하지 않는다 — `0`은 "그 패스가 0ms였다"는
+  **적극적 주장**이라 "재지 못했다"와 구분되지 않는다.
+- ⚠️ **이 값들은 `t_*_ns`와 다른 시계다.** `t_*_ns`는 `CLOCK_BOOTTIME`이고 여기는 GPU
+  시계다. 두 시계의 값을 더하거나 빼지 않으며, **시계 교차검사 A/B의 대상도 아니다**
+  (교차검사는 "같은 시계라면 반드시 성립해야 할 관계"를 보는 장치인데, 다른 시계끼리는
+  위반이 정상이라 범인 열을 엉뚱하게 지목하게 된다).
+- ⚠️ **프레임타임은 이 값들의 미터가 아니다 → §3의 "임계 검출기" 항.**
+
+**위 세 표에 없는 열은 집계에 쓰이지 않고, 하네스가 이름을 지목해 경고한다 → §4 "열 단위 방어선".**
 
 ### 유도값은 저장하지 않는다
 
@@ -69,6 +89,40 @@ session.json    이 측정이 어떤 조건이었는지
 > "33ms 나왔으니 여유 33ms"는 잘못된 독해다 — 여유의 상한이 아니라 **바닥값**이고
 > 여기서부터 ①②③④가 더해진다. 집계 스크립트가 이 단서를 자동으로 붙인다.
 
+### 단계 비용 (v2) — `summary.json`의 `stages` 블록
+
+| 지표 | 계산 | 무엇을 말하나 |
+|---|---|---|
+| `stage_b_ms` · `stage_d_ms` · `stage_i_ms` · `gpu_present_ms` | CSV 열 그대로 | 패스별 GPU 점유 시간 |
+| `gpu_sum_ms` | **행별로** 유효한 위 열들의 합 | 그 프레임이 GPU를 잡은 총 시간 |
+
+- **`frametime` 블록과 키를 섞지 않는다.** 간격/체류시간과 단계 비용은 다른 물리량이고
+  **다른 시계**에서 온다. `render_latency_ms`와 `recv_to_render_ms`를 같은 키에 넣지 않는
+  것과 같은 이유다 — 소비자가 자기가 받은 숫자가 무엇인지 키로 알 수 있어야 한다.
+- **`gpu_sum_ms`는 백분위를 더한 값이 아니다.** `p50(B) + p50(D) != p50(B+D)`이므로
+  **행에서 먼저 더하고** 그 뒤에 분포를 낸다. 한 행에 유효한 GPU 열이 하나도 없으면
+  그 행은 기여하지 않는다. 일부만 유효한 행은 합에 들어가되 `stages.gpu_sum_partial_rows`로
+  개수를 노출한다(빠진 패스만큼 합이 작으므로 분포가 아래로 치우친다).
+- `stages.gpu_sum_columns`에는 **그 런에서 실제로 더해진 열**만 들어간다(헤더에 있던 것만).
+  스키마가 정의한 전체 목록은 `stages.gpu_sum_columns_defined`에 따로 있다 — 한 키만 보고도
+  "무엇을 더한 값인지"가 맞아야 하고, 두 키를 대조해야 알 수 있는 상태로 두지 않는다.
+- `gpu_present_ms`도 `gpu_sum_ms`에 **포함한다.** 버짓 칸이 없다는 것은 A~J 매핑이 없다는
+  뜻이지 GPU를 안 쓴다는 뜻이 아니다. 칸별로 보고 싶으면 개별 시계열을 본다.
+- **판정선이 없다.** `stages`의 어떤 값도 `verdict.meets_*`나 종료 코드를 흔들지 않는다.
+
+> ⚠️ **프레임타임은 단계 비용의 미터가 아니라 임계 검출기다.**
+> 카메라가 30fps로 공급하면 프레임타임은 공급 주기(~33ms)에 묶이므로, 단계 비용이 그 아래인
+> 한 패스를 얹어도 프레임타임은 **전혀 변하지 않는다.** 즉 "② 셰이더를 얹었는데 회귀가
+> 없다"는 관측은 **"D가 0"이 아니라 "D < 공급 주기"**라는 뜻이다.
+> `analyze_frames.py`는 `pipeline_stages`가 비어 있지 않은데
+> `p50(output_interval_ms) ≈ p50(recv_interval_ms)`이면 이 단서를 자동으로 붙인다
+> (진단용 임계 `FRAMETIME_PINNED_REL_DIFF`, 판정선과 무관). tail(p95)까지 묶였는지에 따라
+> 문장이 갈린다 — 간헐적으로 무거운 단계는 **중앙값만 묶이고 p95는 이미 벌어진다.**
+>
+> ⚠️ **`capture_to_render_ms`·`render_latency_ms`에는 GPU 실행 시간이 들어 있지 않다.**
+> `t_render_end_ns`는 드로우콜 **제출** 시각이다(`glDrawArrays`는 즉시 반환한다).
+> ②를 얹은 뒤 "지연이 그대로다"라고 읽으면 틀린다. 늘어난 GPU 비용은 `stages`에 나타난다.
+
 ## 4. 시계 규약 — 가장 틀리기 쉬운 곳
 
 **`t_recv_ns` · `t_render_*_ns`는 전부 같은 단조 시계여야 한다.**
@@ -87,6 +141,19 @@ Android에서는 `SystemClock.elapsedRealtimeNanos()`.
 | `render_latency_ms` | `> 0` | **없음** |
 | `recv_to_render_ms` | `> 0` | **없음** |
 | `capture_to_render_ms` | `> 0` | `< 5000ms` |
+| `stage_b_ms` · `stage_d_ms` · `stage_i_ms` · `gpu_present_ms` | `> 0` | **없음** |
+| `gpu_sum_ms` | `> 0` | **없음** |
+
+GPU 패스 시간에 상한을 두지 않는 이유도 같다. 한 패스의 시작/끝을 **같은 GPU 시계 안에서**
+닫으므로 큰 값은 시계 오류가 아니라 진짜 느린 프레임이다 — 발열로 GPU 클럭이 떨어지는
+구간이 정확히 우리가 잡아야 할 대상이므로, 상한을 두면 잡아야 할 것을 버린다.
+
+**`-1`은 하한에 걸려 `below_min`으로 계수된다.** 이 열에서 `below_min`의 뜻은 시계 역행이
+아니라 **"disjoint로 버려졌거나 query가 해소되지 않았다"**이며, 폐기 경로는 같아도 사람이
+읽는 문장은 그렇게 나간다(엉뚱하게 "시계 역행"이라고 쓰면 폰 쪽이 시계 코드를 뒤진다).
+열이 **헤더에 아예 없으면** 폐기로 세지 않는다 — "열이 없다"와 "열은 있는데 `-1`이다"는
+다른 사실이고, 후자만 측정 실패다. 유효 표본이 0이면 별도 경고가 붙는다
+(`count == 0`을 "그 패스가 0ms였다"로 읽는 것을 막는다).
 
 **상한은 `capture_to_render_ms`에만 있다.** 여기만 기준 시계가 다른 값(`t_capture_ns`)이
 섞여서, 기준이 어긋나면 수천 초가 나온다. 나머지는 전부 같은 단조 시계 하나에서 나오므로
@@ -94,6 +161,16 @@ Android에서는 `SystemClock.elapsedRealtimeNanos()`.
 p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 이유와 정면으로 어긋난다.
 
 **하한은 전부 유지한다.** 0 이하 간격·지연은 물리적으로 불가능하다(시계 역행).
+
+**유한하지 않은 값(`NaN` / `Infinity` / `-Infinity`)은 어떤 시계열에도 들어가지 않는다.**
+`float("NaN")`은 예외를 내지 않고 통과하는 데다 **어떤 비교에도 False**를 돌려주므로
+`value <= lo` 형태의 가드를 그냥 지나간다. 그러면 (a) 정렬 순서가 깨져 백분위가
+무의미해지고 (b) `json.dump`가 표준 JSON이 아닌 `NaN`/`Infinity` 맨 토큰을 뱉어
+**파이썬 아닌 소비자가 요약을 못 읽는다.** 그래서 두 겹으로 막는다 —
+파싱 경계(`_to_float`)에서 `-1`로 바꾸고, 가드 판정(`_collect`)을 부정형(`not (value > lo)`)으로
+써서 값의 출처와 무관하게 걸리게 한다. **걸린 값은 `below_min`으로 계수되고 경고에 드러난다**
+(조용히 사라지지 않는다). 📌 이 구멍은 독립 검증에서 나왔다 — v2가 float 열을 들이면서
+생겼고, 기존 int 열은 `int(float(x))`가 `ValueError`를 내서 원래 막혀 있었다.
 
 ### 시계 혼용 교차검사 — 값으로 거르지 않고 관계로 잡는다
 
@@ -105,7 +182,12 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 | 교차검사 | 규칙 | 잡아내는 방향 |
 |---|---|---|
 | A | `render_latency_ms <= recv_to_render_ms` (= `t_render_start >= t_recv`) | `t_render_*`가 `t_recv`보다 **뒤처진** 경우. 렌더는 수신 후에 시작하므로 위반은 물리적으로 불가능 |
-| B | `p50(recv_to_render_ms) <= 20 × p50(output_interval_ms)` | `t_render_*`가 `t_recv`보다 **앞선** 경우. 이때 A는 통과하므로 B가 없으면 1시간짜리 체류시간이 경고 없이 채택된다 |
+| B | `p50(recv_to_render_ms) <= 20 × p50(<기준 주기>)` | `t_render_*`가 `t_recv`보다 **앞선** 경우. 이때 A는 통과하므로 B가 없으면 1시간짜리 체류시간이 경고 없이 채택된다 |
+
+> **B의 기준 주기는 `output_interval_ms`이고, 그게 비어 있으면 `recv_interval_ms`로 폴백한다.**
+> `t_render_end_ns`가 없는 로그에서는 출력 주기 자체가 없는데, 그때 검사를 통째로 건너뛰면
+> 시계 혼용이 경고 없이 지나간다. 어느 쪽을 썼는지는 `clock_check.dwell_vs_interval.reference_series`에
+> 이름으로 남으므로, 비율만 보고 어느 기준인지 되물을 일이 없다.
 
 > **B의 20배 근거:** 백프레셔가 `STRATEGY_KEEP_ONLY_LATEST`면 한 번에 한 장만 처리하므로
 > 체류시간(recv→render_end)은 출력 주기와 같은 자릿수다. 큐를 두더라도 그 깊이(3~4장)를
@@ -215,7 +297,7 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "build_type": "release",
   "pipeline_stages": [],
   "capture_clock_base": "unknown",
@@ -226,6 +308,29 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
   "frames_dropped": 0
 }
 ```
+
+### v2에서 늘어난 블록 (전부 선택 — 없어도 집계는 죽지 않는다)
+
+| 키 | 담는 것 |
+|---|---|
+| `gl` | GL 구현 정보(vendor·renderer·version·확인한 확장 목록). 같은 숫자를 다른 GPU에서 낸 것인지 나중에 되물을 근거 |
+| `gpu_timer` | `supported` 등 timer query 선언. **하네스가 유일하게 해석하는 키가 `supported`다** (아래 모순 검사) |
+| `stage2_params` | ② 저조도의 파라미터(알고리즘·clip limit·타일·감마 등). 파라미터가 다르면 D 실측끼리 비교가 성립하지 않는다 |
+| `render` | 표시 경로·셰이더·패스 수. v1에도 있었고 v2에서 항목이 는다 |
+
+**하네스는 이 블록들을 해석하지 않고 `summary.json`의 `session`에 그대로 싣는다.**
+값을 만들어내지 않는다 — 앱이 적은 것이 곧 그 런의 조건 기록이다.
+(내용 구조는 앱이 정한다. 하네스가 스키마를 강제하면 앱이 더 적고 싶을 때 막힌다.)
+
+#### `gpu_timer.supported` 모순 검사
+
+`gpu_timer.supported == true`라고 **선언**했는데 단계 시계열의 유효 표본이 0이면
+`source.gpu_timer_contradicted = true`가 되고 경고가 붙는다.
+`capture_clock_base_contradicted`와 같은 패턴이다 — **선언과 실제가 어긋나면 선언 쪽이
+틀렸을 수 있다.** 확장 문자열이 있어도 query가 해소되지 않을 수 있고, CSV에 열을 싣지
+못했을 수도 있다. 어느 쪽이든 그 런으로 단계 비용을 말할 수 없다.
+선언은 `source.gpu_timer_supported_declared`에 그대로 남는다.
+**판정(`meets_*_target`)·종료 코드는 바꾸지 않는다.**
 
 ### `lighting_condition` — 어휘를 고정한다
 
@@ -269,11 +374,33 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 **열을 추가한다. 기존 열의 의미를 바꾸지 않는다.**
 
 ```
-stage_c_ms, stage_d_ms, stage_e_ms, stage_f_ms, stage_g_ms, ...
+stage_b_ms, stage_c_ms, stage_d_ms, stage_e_ms, ...   ← 버짓 칸이 있는 비용
+gpu_present_ms                                        ← 버짓 칸이 없는 비용
 ```
 
-`FRAME_BUDGET.md` §3의 칸 이름(A~J)을 그대로 쓴다 — 그래야 실측이 어느 칸을 채우는지가
-매핑 없이 드러난다. 열을 추가하면 `SCHEMA_VERSION`을 올리고 `session.json`에 반영한다.
+버짓 칸이 있는 비용은 `FRAME_BUDGET.md` §3의 칸 이름(A~J)을 그대로 쓴다 — 그래야 실측이
+어느 칸을 채우는지가 매핑 없이 드러난다.
+(칸 **이름**만 쓴다. 칸별 배정치는 `FRAME_BUDGET.md` v0.2에서 폐기됐고 인용하지 않는다.
+단계 비용은 실측으로만 말한다.)
+
+### 버짓 칸이 없는 비용도 열로 받는다
+
+**A~J 어느 칸에도 속하지 않지만 실제로 GPU/CPU를 잡아먹는 구간이 있다.**
+`gpu_present_ms`(기본 프레임버퍼에 그리는 최종 표시 패스)가 그렇다. 화면에 내보내려면
+반드시 도는 패스이고 픽셀 수만큼 비용이 드는데, 버짓표의 어떤 칸도 이걸 가리키지 않는다.
+
+이런 열을 "칸이 없으니 빼자"고 하면 **총 GPU 비용이 조용히 과소평가된다** — 칸의 합이
+프레임 비용과 안 맞는데 그 차이가 어디서 왔는지 되물을 수 없게 된다. 그래서:
+
+- 칸 이름이 없는 열은 **`stage_*` 접두사를 쓰지 않는다.** 이름만 보고 "어느 칸이지?"를
+  찾게 만들지 않기 위해서다 (`gpu_present_ms`처럼 성격을 이름에 적는다)
+- `summary.json`의 `stages.budget_cell`에 열→칸 매핑이 실려 나가고, 칸이 없으면 `null`이다
+- 그래도 `gpu_sum_ms`에는 **포함한다.** 총량은 총량이다
+
+열을 추가하면 `SCHEMA_VERSION`을 올리고, `lib/frame_log.py`의 `OPTIONAL_COLUMNS`(GPU 시간이면
+`GPU_TIME_COLUMNS`)와 이 문서 §2에 **함께** 등록한다. 등록하지 않으면 하네스는 그 열을
+미지 열로 보고 경고만 한 뒤 **집계에서 통째로 버린다** — 10분 측정이 숫자 없이 끝난다.
+그래서 **하네스 쪽이 앱보다 먼저 들어간다.**
 
 ## 7. 폰 쪽 구현 시 지켜야 할 것
 
@@ -313,6 +440,12 @@ python scripts/analyze_frames.py \
 python scripts/gen_synthetic_frames.py --broken_capture_clock          # t_capture_ns만 다른 시계
 python scripts/gen_synthetic_frames.py --render_clock_skew_sec 3600    # t_render_*만 다른 시계 (교차검사 B)
 python scripts/gen_synthetic_frames.py --render_clock_skew_sec -3600   # 반대 방향 (교차검사 A)
+
+# GPU 패스 시간(v2) 합성. 0이면 그 열을 아예 쓰지 않는다(= v1 모양 로그가 나온다)
+python scripts/gen_synthetic_frames.py --stage_b_ms 2 --stage_d_ms 5 --gpu_present_ms 1.2
+python scripts/gen_synthetic_frames.py --stage_d_ms 5 --gpu_disjoint_frac 0.1   # 10% 행을 -1로
+python scripts/gen_synthetic_frames.py --stage_d_ms 5 --gpu_disjoint_frac 1.0   # 전부 -1 (gpu_timer 모순 경로)
+python scripts/gen_synthetic_frames.py --stage_d_ms 60                          # GPU가 공급 주기를 넘는 경우
 ```
 
 > ⚠️ **`--warmup_sec`의 기본값은 `targets.DEFAULT_WARMUP_SEC`(30초)다.** AE/AWB 수렴 전
@@ -358,3 +491,17 @@ python scripts/gen_synthetic_frames.py --render_clock_skew_sec -3600   # 반대 
   **③ `scripts/pull_frames.py`** 추가 — 손 `adb pull`을 하네스 안으로(§8).
   `SCHEMA_VERSION`은 1을 유지한다: CSV 열 이름·타입은 그대로이고 `session.json`에 키가
   하나 늘었을 뿐이며, 이 키가 없는 로그도 그대로 읽힌다(경고만 붙는다). v1.1·v1.2와 같은 선례다.
+- **v2 (2026-07-31, 팀원2) — `SCHEMA_VERSION` 1 → 2.** ② 저조도 셰이더의 D칸 실측을 받을
+  접합부. **CSV에 열이 4개 늘었으므로** 이번에는 버전을 올린다(앞의 v1.x와 달리 열 자체가
+  바뀌었다): `stage_b_ms`(B칸) · `stage_d_ms`(D칸) · `stage_i_ms`(I칸) · `gpu_present_ms`
+  (칸 없음). 출처는 `GL_EXT_disjoint_timer_query`이고 **`t_*_ns`와 다른 시계**라 시계
+  교차검사에 넣지 않는다(§2·§4). 파생 시계열 `gpu_sum_ms`는 **행별 합**이다
+  (`p50(B)+p50(D) != p50(B+D)`). `summary.json`에 `stages` 블록이 생겼고 `frametime`과
+  분리했다 — 다른 물리량·다른 시계를 같은 키에 섞지 않는다.
+  해석 단서 2종 추가: **① 프레임타임이 카메라 공급에 묶였는지**(단계가 붙어도 프레임타임은
+  단계 비용의 미터가 아니라 임계 검출기다 — §3), **② 제출 시각 기반 지연에는 GPU 실행
+  시간이 없다**. `gpu_timer.supported` 선언 ↔ 실제 표본 모순 검사도 추가(§5).
+  하네스가 앱보다 먼저 들어간 이유는 §6 마지막 문단.
+  ⚠️ 앱 쪽 `SessionWriter.kt`의 `SCHEMA_VERSION`과 `FrameLogRecorder.kt`의 헤더는
+  **android 트랙에서 따로 맞춘다**(이 커밋에는 없다). 열이 없는 v1 로그는 그대로 읽히고
+  `stages`의 count가 0이 될 뿐이다 — 실측 로그 `run_ts=20260731_003819`로 확인했다.
