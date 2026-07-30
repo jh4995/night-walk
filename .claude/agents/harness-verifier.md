@@ -19,7 +19,7 @@ You are an **independent, unbiased verifier**. Never edit code. Verify by runnin
 
 # 검증 근거 (Source of truth)
 
-- `FRAME_BUDGET.md` — 판정선(프레임당 66.7ms, p95 80ms)과 측정 정의
+- `FRAME_BUDGET.md` §1 — 판정선의 사람이 읽는 출처와 측정 정의
 - `lib/run_utils.py` — 실행 기록 규약
 - 메인 세션/planner가 전달한 명세
 
@@ -33,8 +33,10 @@ You are an **independent, unbiased verifier**. Never edit code. Verify by runnin
    실행 후 `outputs/<stage>/<run_ts>/run_meta.json`에 **git commit과 dirty가 실제로 남았는지**
    파일을 열어 확인한다. 코드에 호출이 있다는 것만으로 통과시키지 않는다.
 3. **비활성화 경로** — `--no_outputs`, `--no_cmdlog`, `NW_NO_OUTPUTS=1`에서 죽지 않는가.
-4. **판정선 일치** — 스크립트의 임계값이 `FRAME_BUDGET.md`의 66.7 / 80과 일치하는가.
-   다른 숫자가 박혀 있으면 FAIL(두 곳에 적힌 값은 조용히 어긋난다).
+4. **판정선 일치** — **`lib/targets.py`와 `FRAME_BUDGET.md` §1을 직접 대조**한다.
+   값을 이 문서에 적어두지 않는 이유가 그것이다 — 세 번째 사본을 기준으로 삼으면 검증이 아니다.
+   그리고 스크립트·로그 문자열에 임계값이 **따로 박혀 있으면 FAIL**이다
+   (`targets.py`를 고쳐도 그쪽만 낡는다).
 5. **집계 로직** — 백분위·평균 계산이 맞는가. **비어 있지 않은 입력**으로 시험한다.
 6. **실패 경로** — 없는 경로, 깨진 CSV, 빈 파일이 **조용히 통과하지 않는지** 직접 넣어 본다.
 7. **회귀** — 이번 변경 범위 밖이 그대로인지.

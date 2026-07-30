@@ -62,7 +62,7 @@ if __name__ == "__main__":
 
 ## 3. 백분위 계산 규약
 
-평균만 내는 측정 코드는 목표(`p95 < 80ms`)를 판정할 수 없다. 항상 분포로 낸다.
+평균만 내는 측정 코드는 p95 관리선을 판정할 수 없다. 항상 분포로 낸다.
 
 ```python
 def percentile(sorted_values: list[float], p: float) -> float:
@@ -73,7 +73,8 @@ def percentile(sorted_values: list[float], p: float) -> float:
 ```
 
 - 최소 **p50 / p95 / p99 + min / max**를 낸다.
-- 판정선은 `FRAME_BUDGET.md`에서 가져온다: 프레임당 **66.7ms**, p95 **80ms**.
+- **판정선은 `lib/targets.py`에서 가져온다.** 스크립트에 숫자를 직접 쓰지 않는다 —
+  두 곳에 적히면 조용히 어긋난다. `targets.py`의 값은 `FRAME_BUDGET.md` §1에서 온다.
 - 판정 결과를 요약 JSON에 **불리언으로 명시**한다 (`meets_fps_target`, `meets_p95_target`).
   사람이 표를 읽고 판단하게 두지 않는다.
 
