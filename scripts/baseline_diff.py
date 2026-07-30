@@ -29,6 +29,10 @@ CONDITION_KEYS = (
     ("device", "props", "build_fingerprint"),
     ("session", "build_type"),
     ("session", "pipeline_stages"),
+    # 야간 앱에서 조명은 **공급 fps를 직접 바꾸는 조건**이다. 저조도에서 카메라 AE가 노출을
+    # 늘리면 프레임 간격 자체가 벌어져, 밝은 방 런과 야간 런을 비교하면 코드가 그대로여도
+    # "회귀"로 보인다. 어휘는 lib/frame_log.py의 LIGHTING_CONDITIONS.
+    ("session", "lighting_condition"),
     ("source", "warmup_sec"),
 )
 

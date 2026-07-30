@@ -21,6 +21,7 @@ from lib.frame_log import (  # noqa: E402
     ROW_SKIP_REASON_TEXT,
     SCHEMA_VERSION,
     FrameLogError,
+    check_lighting_condition,
     read_frames,
     read_session,
 )
@@ -117,6 +118,9 @@ def main() -> int:
     capture_clock_mismatch = bool(
         sum(series.discarded.get("capture_to_render_ms", {}).values())
     )
+    # 조명 조건. 판정(exit code)은 흔들지 않지만, 없거나 unknown이면 그 런은 나중에
+    # 아무것과도 정직하게 비교할 수 없으므로 경고로 낸다.
+    lighting, lighting_comparable, lighting_warning = check_lighting_condition(session)
 
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -141,6 +145,12 @@ def main() -> int:
             "discarded_total": discarded_total,
             "capture_clock_base_declared": declared_clock_base,
             "capture_clock_base_contradicted": capture_clock_mismatch,
+            # 조명 조건. baseline_diff는 session 블록 쪽(session.lighting_condition)을 보고
+            # 비교 가능성을 판정한다. 여기 둘은 사람이 읽는 사본이 아니라 **검사 결과**다.
+            "lighting_condition": lighting,
+            "lighting_condition_comparable": lighting_comparable,
+            # CSV 헤더에 있었지만 집계에 쓰이지 않은 열. 비어 있지 않으면 오타를 의심한다.
+            "unknown_columns": series.unknown_columns,
             # 열 사이 물리 관계로 본 시계 혼용 교차검사 (t_capture_ns 문제와 별개)
             "clock_check": series.clock_check,
         },
@@ -187,6 +197,9 @@ def main() -> int:
         summary["warnings"].append(
             empty_pipeline_caveat(_camera_fps(session))
         )
+    if lighting_warning:
+        # 판정은 바꾸지 않는다. 조명은 판정선이 아니라 **비교 조건**이다.
+        summary["warnings"].append(lighting_warning)
     if capture_clock_mismatch and declared_clock_base not in ("", "unknown", None):
         summary["warnings"].append(
             f"session.json은 capture_clock_base='{declared_clock_base}'라고 선언했지만 "
@@ -286,6 +299,12 @@ def _print_report(summary: dict) -> None:
         LOG.warning(
             "⚠ 시계 일관성 위반 — 어긋난 열: %s",
             ", ".join(cc.get("suspect_columns") or []),
+        )
+    # 조명 조건이 성하면 한 줄로 확인해 준다(어긋난 경우는 아래 경고 루프가 말한다).
+    if src.get("lighting_condition_comparable"):
+        LOG.info(
+            "조명 조건: %s — baseline_diff에서 같은 조명끼리만 비교된다",
+            src.get("lighting_condition"),
         )
     for w in summary["warnings"]:
         LOG.warning("⚠ %s", w)

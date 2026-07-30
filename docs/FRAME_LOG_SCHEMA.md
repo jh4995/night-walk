@@ -41,6 +41,8 @@ session.json    이 측정이 어떤 조건이었는지
 | `t_render_end_ns` | int ns | 렌더 제출 완료 |
 | `dropped_since_last` | int | 직전 행 이후 백프레셔로 버려진 프레임 수 |
 
+**위 두 표에 없는 열은 집계에 쓰이지 않고, 하네스가 이름을 지목해 경고한다 → §4 "열 단위 방어선".**
+
 ### 유도값은 저장하지 않는다
 
 **프레임타임·FPS를 폰이 계산해 넣지 않는다.** 타임스탬프만 넣고 계산은 PC가 한다.
@@ -142,6 +144,48 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 - 리포트의 "입력 완전성" 줄은 `rows_read → rows_used`와 사유별 개수를 함께 낸다.
   **행이 사라졌는데 "폐기 샘플 없음"이라고 쓰지 않는다** — 그게 조용한 소실보다 나쁘다
 
+### 열 단위 방어선 — 스키마에 없는 열은 경고한다 (죽이지는 않는다)
+
+행 단위 회계(`accounting_ok`)에 해당하는 방어선이 **열 단위에도** 있다.
+`REQUIRED_COLUMNS + OPTIONAL_COLUMNS`(= `KNOWN_COLUMNS`)에 없는 헤더가 있으면
+`series.warnings`에 문장이 들어가고 `summary.json`의 `source.unknown_columns`에 이름이 남는다.
+
+**왜 필요한가 — 오타는 "그 열이 없는 것"과 다르다.**
+앱이 `t_render_end_ns`를 `t_render_ns`로 오타 내면 optional 열이 그냥 없는 것으로 처리되어
+`output_interval_ms.count == 0`이 되고, 리포트는 `recv_interval_ms`로 폴백하며
+**"출력 타임라인 없음"이라고 잘못 결론 낸다.** 경고가 없으면 이 오진단을 되물을 단서가 없다.
+
+**하드 에러로 만들지 않는 이유:** 앱이 스키마보다 앞서 나갈 수 있다(단계 추가 시 §6처럼
+열이 먼저 붙는다). 그때 집계가 죽으면 측정 자체를 못 한다. 경고는 사라지지 않고 남으므로
+"모르는 열이 있었다"는 사실은 보존된다.
+
+- 필수 열 누락은 그대로 **`FrameLogError`로 죽는다** (그건 측정이 성립하지 않는 경우다)
+- 미지 열은 **경고만.** 판정(`meets_*_target`)·종료 코드에 영향을 주지 않는다
+- 새 열을 정식으로 쓰려면 `lib/frame_log.py`의 `OPTIONAL_COLUMNS`와 이 문서 §2에 등록한다
+
+### 중복 열은 죽인다 — 미지 열과 성격이 다르다
+
+**아는 열(`KNOWN_COLUMNS`)이 헤더에 두 번 나오면 `FrameLogError`다.**
+
+`csv.DictReader`는 헤더가 중복되면 **마지막 값만** 남긴다. 그래서
+`...,t_render_end_ns,t_render_end_ns`(뒤쪽이 `-1`)이면 성한 값이 `-1`에 덮여
+`output_interval_ms.count == 0`이 되고, 리포트는 **"출력 타임라인 없음"이라고 잘못 결론 낸다.**
+바로 위 미지 열 방어선이 막으려던 오진단 그 자체인데, 이름이 전부 `KNOWN_COLUMNS` 안에 있어서
+**미지 열 검사로는 안 걸린다.**
+
+**왜 여기만 하드 에러인가:** 미지 열은 **덧붙는** 것이라 무해하지만, 중복은 아는 열의 값을
+**파괴한다.** 그리고 정상적인 생산자가 헤더를 두 번 쓸 이유가 없다 — 항상 버그다.
+행 회계 불변식이 깨질 때 죽는 것과 같은 부류다(값이 세 경로 밖으로 샜다).
+경고로 두면 그 로그의 분포가 **틀린 채로 채택**되므로, 10분 측정을 버리는 편이 낫다.
+
+- **미지 열이 중복된 경우**(`bogus,bogus`)는 아는 값을 파괴하지 않으므로 **경고만**이고,
+  `unknown_columns`에는 이름이 **1개로** 들어간다
+- 이 검사는 `--warmup_sec`·판정선과 무관하다. 헤더만 보고 즉시 죽는다
+
+> 📌 이 규칙은 독립 검증에서 나왔다. 미지 열 경고를 넣은 직후 harness-verifier가
+> **중복 열이 경고 없이 통과한다**는 거짓 음성을 찾아냈고(2026-07-30), 그 재현 입력이
+> 위 시나리오다. 자기가 만든 것을 자기가 검증하면 이런 경로가 남는다.
+
 ### 폐기 처리 — 버리되 반드시 센다
 
 가드에 걸린 값은 **그 행의 그 지표 하나만** 버린다(지표를 통째로 버리지 않는다. 같은 행의
@@ -175,12 +219,32 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
   "build_type": "release",
   "pipeline_stages": [],
   "capture_clock_base": "unknown",
+  "lighting_condition": "outdoor_night_dark",
   "camera": { "requested_fps": 30, "resolution": "1280x720" },
   "camera_frames_offered": 1800,
   "frames_emitted": 1800,
   "frames_dropped": 0
 }
 ```
+
+### `lighting_condition` — 어휘를 고정한다
+
+**허용 어휘는 이 표와 `lib/frame_log.py`의 `LIGHTING_CONDITIONS` 두 곳이 같아야 한다.**
+자유 문자열을 허용하면 같은 조명이 `"밝은방"`과 `"indoor_bright"`로 갈려 **모든 비교가
+"조건 다름"이 된다.** 어휘 밖의 값은 `analyze_frames.py`가 경고한다(판정은 바꾸지 않는다).
+
+| 값 | 의미 |
+|---|---|
+| `indoor_bright` | 실내 조명 켜짐. 하네스 배선 점검용이며 **야간 성능 근거로는 못 쓴다** |
+| `indoor_dim` | 실내 소등/커튼. AE가 노출을 늘리기 시작하는 구간 |
+| `outdoor_night_lit` | 야간, 가로등 있는 보도 |
+| `outdoor_night_dark` | 야간, 조명 없는 구간 — **이 앱의 실제 사용 조건** |
+| `synthetic` | 합성 로그(`gen_synthetic_frames.py`). 실기기 런과 같은 조건이 아니다 |
+| `unknown` | 기록되지 않음. 값은 있지만 **비교 대상이 못 된다** — 경고가 붙는다 |
+
+키가 없거나 `unknown`이면 `analyze_frames.py`가 경고하고
+`summary.json`의 `source.lighting_condition_comparable = false`로 남긴다.
+**판정(exit code·`meets_*_target`)은 바꾸지 않는다** — 조명은 판정선이 아니라 비교 조건이다.
 
 ### 비교 조건 (`baseline_diff.py`가 다르면 "비교가 아니라 착시"라고 경고)
 
@@ -191,6 +255,7 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 | `device.props.model` · `device.props.build_fingerprint` | 다른 기기 숫자를 비교하면 착시다 |
 | `session.build_type` | **`release`가 아니면 그 숫자는 근거로 못 쓴다** (debug는 프레임타임이 부풀려짐) |
 | `session.pipeline_stages` | 빈 배열 = 빈 파이프라인. 이게 다르면 성능 비교가 성립하지 않는다 |
+| `session.lighting_condition` | 저조도에서 카메라 AE가 노출을 늘리면 **공급 fps 자체가 떨어진다.** 밝은 방 런과 야간 런을 비교하면 코드가 그대로여도 "회귀"로 오판정된다 |
 | `source.warmup_sec` | 워밍업 구간이 다르면 같은 로그도 다른 분포가 된다 |
 
 ### 조건이 아니라 **결과**인 것 (비교하지 않고 기록·보고만 한다)
@@ -216,14 +281,23 @@ stage_c_ms, stage_d_ms, stage_e_ms, stage_f_ms, stage_g_ms, ...
 - 백프레셔는 **`STRATEGY_KEEP_ONLY_LATEST`**. 큐에 쌓으면 프레임타임이 좋아 보이고 지연만 는다
 - 로그는 **메모리에 모았다가 끝날 때 한 번에 쓴다.** 매 프레임 파일 I/O를 하면 측정 대상이 오염된다
 - 측정은 **release 빌드, 실기기**로만. 에뮬레이터 프레임은 실기기 숫자가 아니다
+- 출력 위치는 `getExternalFilesDir(null)` = `/sdcard/Android/data/<pkg>/files/`.
+  `pull_frames.py`가 이 경로를 기본값으로 본다(§8). 다른 곳에 쓰면 `--remote_dir`로 알려줘야 한다
+- `session.json`의 **`lighting_condition`은 측정할 때 실제 조건으로 채운다**(§5 어휘).
+  비워 두면 그 런은 나중에 아무것과도 정직하게 비교할 수 없다
 
 ## 8. 사용법
 
 ```bash
-# 실기기 로그를 가져와 집계 (기기 메타는 adb로 자동 수집)
-adb pull /sdcard/Android/data/<pkg>/files/frames.csv
-adb pull /sdcard/Android/data/<pkg>/files/session.json
-python scripts/analyze_frames.py --frames frames.csv --session session.json
+# ① 폰에서 로그를 가져온다 (outputs/poc_pull/<run_ts>/ 로 들어간다)
+python scripts/pull_frames.py                       # 기본 패키지 com.bammasil.poc
+python scripts/pull_frames.py --serial <serial>      # 기기 여러 대면 필수
+python scripts/pull_frames.py --package <pkg> --remote_dir /sdcard/...  # 경로가 다르면
+
+# ② 가져온 로그를 집계 (기기 메타는 adb로 자동 수집)
+python scripts/analyze_frames.py \
+  --frames outputs/poc_pull/<run_ts>/frames.csv \
+  --session outputs/poc_pull/<run_ts>/session.json
 
 # 이전 측정과 비교해 회귀 판정 (CI: 회귀=1, 판정 불가=3)
 python scripts/baseline_diff.py --baseline <이전>/summary.json --current <이번>/summary.json
@@ -247,6 +321,21 @@ python scripts/gen_synthetic_frames.py --render_clock_skew_sec -3600   # 반대 
 > `--warmup_sec 0`을 명시한다(그 숫자는 워밍업 구간을 포함하므로 실기기 판정 근거로 쓰지 않는다).
 > `--no_device`는 adb 기기가 없을 때 메타 수집을 건너뛴다.
 
+> ⚠️ **손 `adb pull`을 쓰지 않는 이유.** (a) pull 대상을 `outputs/` 아래로 잡으면
+> "`outputs/` 산출물을 손으로 만들지 않는다"와 충돌하고, (b) **원본 로그에 git 스탬프가
+> 안 붙는다** — 어느 커밋의 앱이 뱉은 로그인지 나중에 알 수 없다.
+> `pull_frames.py`는 `init_run(stage="poc_pull")`을 거치므로 같은 디렉토리에
+> `run_meta.json`(git commit·dirty·argv)과 `pull_result.json`(adb 명령·returncode·출력 원문,
+> 기기 메타, 원격 `ls` 결과)이 함께 남는다.
+>
+> | 종료 코드 | 뜻 |
+> |---|---|
+> | 0 | 두 파일 모두 0바이트 초과로 가져옴 |
+> | 2 | adb를 찾지 못함 (`--adb`로 경로 지정 가능) |
+> | 3 | 기기 문제 — 0대 / 여러 대인데 `--serial` 없음 / 지정 serial이 `device` 상태 아님. **기기를 추측해 고르지 않는다** |
+> | 4 | `adb pull` 실패, 또는 **0바이트 파일**(0바이트는 "가져왔다"가 아니다) |
+> | 5 | `--no_outputs` — 스탬프 있는 목적지가 없어 pull하지 않았다 |
+
 ---
 
 **변경 이력**
@@ -261,3 +350,11 @@ python scripts/gen_synthetic_frames.py --render_clock_skew_sec -3600   # 반대 
   **시계 혼용 교차검사 2종**(A: `render_latency <= recv_to_render`, B: 체류시간/출력주기 비율)
   추가 — 값 상한이 아니라 열 관계로 잡고, 범인 열을 `t_capture_ns`와 구분해 지목한다.
   스키마 자체(열 이름·타입)는 그대로이므로 `SCHEMA_VERSION`은 1을 유지한다.
+- v1.3 (2026-07-30, 팀원2) — PoC 착수 전 접합부 확정. **① 열 단위 방어선**: `KNOWN_COLUMNS`에
+  없는 헤더를 이름으로 지목해 경고(§4). `t_render_end_ns` 오타가 "출력 타임라인 없음"으로
+  오진단되던 경로를 막는다. **② `session.json`에 `lighting_condition` 추가**(§5, 어휘 6종 고정)
+  하고 `baseline_diff.py`의 `CONDITION_KEYS`에 넣었다 — 저조도에서 AE가 공급 fps를 떨어뜨리므로
+  조명은 비교 조건이다. 실측 0건인 시점이라 기존 baseline을 무효화하지 않는다.
+  **③ `scripts/pull_frames.py`** 추가 — 손 `adb pull`을 하네스 안으로(§8).
+  `SCHEMA_VERSION`은 1을 유지한다: CSV 열 이름·타입은 그대로이고 `session.json`에 키가
+  하나 늘었을 뿐이며, 이 키가 없는 로그도 그대로 읽힌다(경고만 붙는다). v1.1·v1.2와 같은 선례다.

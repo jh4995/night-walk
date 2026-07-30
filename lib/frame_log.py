@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -34,7 +35,34 @@ OPTIONAL_COLUMNS = (
     "dropped_since_last",  # 백프레셔로 버려진 프레임 수
 )
 
+# 위 두 목록에 없는 열 = 하네스가 읽지 않는 열. 하드 에러로 만들지 않는다(앱이 스키마보다
+# 앞서 나갈 수 있다) 대신 **반드시 경고한다.** 행 단위 회계(accounting_ok)에 해당하는
+# 방어선이 열 단위에도 있어야 하는 이유:
+#   앱이 t_render_end_ns를 t_render_ns로 오타 내면 optional 열이 "그냥 없는 것"으로
+#   처리되어 output_interval_ms.count == 0이 되고, 우리는 "출력 타임라인이 없다"고
+#   **잘못** 결론 낸다. 오타는 없는 것과 다르다.
+KNOWN_COLUMNS = tuple(REQUIRED_COLUMNS) + tuple(OPTIONAL_COLUMNS)
+
 MISSING = -1
+
+# ── 조명 조건 (session.json: lighting_condition) ──────────────────────────
+# 야간 앱에서 조명은 취향이 아니라 **공급 fps를 직접 바꾸는 측정 조건**이다. 저조도에서
+# 카메라 AE가 노출 시간을 늘리면 t_recv_ns 간격 자체가 벌어지므로, 밝은 방 런과 야간 런을
+# 비교하면 코드가 그대로여도 "회귀"로 오판정된다. 그래서 baseline_diff의 CONDITION_KEYS에 든다.
+#
+# **어휘를 고정하는 이유:** 자유 문자열이면 "밝은방" vs "indoor_bright"로 갈려 모든 비교가
+# "조건 다름"이 된다. 이 목록은 `docs/FRAME_LOG_SCHEMA.md` §5와 **같아야 한다.**
+# ⚠ 이건 판정선이 아니다 — PASS/FAIL을 흔들지 않는다(lib/targets.py와 섞지 않는다).
+LIGHTING_UNKNOWN = "unknown"
+LIGHTING_SYNTHETIC = "synthetic"  # 합성 로그 생성기가 박는 값
+LIGHTING_CONDITIONS = (
+    "indoor_bright",       # 실내 조명 켜짐 — 하네스 배선 점검용. 야간 근거로는 못 쓴다
+    "indoor_dim",          # 실내 소등/커튼 — AE가 노출을 늘리기 시작하는 구간
+    "outdoor_night_lit",   # 야간 가로등 있는 보도
+    "outdoor_night_dark",  # 야간 조명 없는 구간 — 이 앱의 실제 사용 조건
+    LIGHTING_SYNTHETIC,    # 합성 로그. 실기기 런과 절대 같은 조건이 아니다
+    LIGHTING_UNKNOWN,      # 기록되지 않음. 비교 대상으로 쓸 수 없다
+)
 
 # ── 폐기 가드 ─────────────────────────────────────────────────────────────
 # 하한(0)은 모든 시계열에 적용한다. 0 이하 간격/지연은 물리적으로 불가능하며
@@ -122,6 +150,9 @@ class FrameSeries:
     )
     # 시계 혼용 교차검사 결과 (check_clock_consistency가 채운다)
     clock_check: dict = field(default_factory=dict)
+    # CSV 헤더에 있었지만 KNOWN_COLUMNS에 없어 **집계에 쓰이지 않은** 열 이름.
+    # 비어 있지 않으면 오타이거나 스키마 확장이 필요한 것이다.
+    unknown_columns: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -200,9 +231,36 @@ def read_frames(
             raise FrameLogError(
                 f"필수 열 누락: {missing} (있는 열: {reader.fieldnames})"
             )
+        # ── 중복 열은 **죽인다.** 미지 열과 성격이 다르다.
+        #    csv.DictReader는 헤더가 중복되면 **마지막 값만** 남긴다. 그래서 예를 들어
+        #    `...,t_render_end_ns,t_render_end_ns`(뒤쪽이 -1)이면 성한 값이 -1에 덮여
+        #    output_interval_ms.count == 0이 되고, 리포트는 "출력 타임라인 없음"이라고
+        #    **잘못** 결론 낸다 — 아래 미지 열 방어선이 막으려던 오진단 그 자체인데
+        #    이름은 전부 KNOWN_COLUMNS 안에 있으므로 미지 열 검사로는 안 걸린다.
+        #
+        #    왜 경고가 아니라 하드 에러인가: 미지 열은 **덧붙는** 것이라 무해하지만(앱이
+        #    스키마보다 앞서 나갈 수 있다), 중복은 아는 열의 값을 **파괴한다.** 그리고
+        #    정상적인 생산자가 헤더를 두 번 쓸 이유가 없다 — 항상 버그다. 행 회계
+        #    불변식이 깨질 때 FrameLogError로 죽는 것과 같은 부류다(값이 조용히 샜다).
+        dup_known = sorted(
+            {c for c, n in Counter(reader.fieldnames).items() if n > 1 and c in KNOWN_COLUMNS}
+        )
+        if dup_known:
+            raise FrameLogError(
+                f"헤더에 중복된 열이 있다: {dup_known} (전체 헤더: {reader.fieldnames}) — "
+                "csv.DictReader는 중복 헤더에서 마지막 값만 남기므로 앞쪽 값이 조용히 파괴된다. "
+                "그 결과 해당 지표가 count=0이 되어 '그 열이 없는 로그'와 구분되지 않는다. "
+                "폰 쪽 CSV 헤더 생성부를 확인할 것"
+            )
+        # 미지 열은 죽이지 않는다. 앱이 스키마보다 앞서 나갈 수 있으므로 하드 에러는 과하다.
+        # 대신 이름을 지목해 경고한다 (KNOWN_COLUMNS 주석 참고).
+        # 중복된 미지 열은 아는 값을 파괴하지 않으므로 여기서 이름 1개로 합쳐 경고만 한다.
+        unknown_columns = sorted({c for c in reader.fieldnames if c not in KNOWN_COLUMNS})
         rows = list(reader)
 
     series = FrameSeries()
+    series.unknown_columns = unknown_columns
+    _add_unknown_column_warnings(series)
     series.rows_read = len(rows)
     if not rows:
         raise FrameLogError(f"행이 하나도 없다: {path}")
@@ -382,6 +440,58 @@ def _p50(values: list[float]) -> Optional[float]:
     if not values:
         return None
     return round(percentile(sorted(values), 0.50), 3)
+
+
+def _add_unknown_column_warnings(series: FrameSeries) -> None:
+    """스키마에 없는 열을 이름으로 지목한다. **죽이지 않고 경고만.**
+
+    조용히 무시하면 열 이름 오타가 "그 열이 원래 없었다"와 구분되지 않는다.
+    (예: t_render_end_ns → t_render_ns 오타 시 output_interval_ms.count == 0이 되고
+     리포트는 "출력 타임라인 없음"이라고 잘못 말한다.)
+    """
+    if not series.unknown_columns:
+        return
+    names = ", ".join(repr(c) for c in series.unknown_columns)
+    series.warnings.append(
+        f"스키마에 없는 열 {len(series.unknown_columns)}개를 발견했다: {names} — "
+        f"이 열은 집계에 전혀 쓰이지 않았다. 열 이름 오타라면(예: 't_render_end_ns'를 "
+        f"'t_render_ns'로) 해당 지표가 count=0이 되어 '그 열이 없는 로그'와 구분되지 않으므로, "
+        f"위 이름을 폰 쪽 헤더와 대조할 것. 의도한 새 열이라면 lib/frame_log.py의 "
+        f"OPTIONAL_COLUMNS와 docs/FRAME_LOG_SCHEMA.md에 등록해야 집계에 들어온다 "
+        f"(하네스가 아는 열: {', '.join(KNOWN_COLUMNS)})"
+    )
+
+
+def check_lighting_condition(session: dict) -> tuple[Optional[str], bool, Optional[str]]:
+    """session.json의 lighting_condition을 검사한다.
+
+    반환: (값, 비교에 쓸 수 있는가, 경고 문장 or None).
+    ⚠ **판정선이 아니다.** PASS/FAIL·exit code를 흔들지 않는다. 다만 조용히 넘어가면
+    그 런은 나중에 아무것과도 정직하게 비교할 수 없으므로 경고는 반드시 낸다.
+    """
+    raw = session.get("lighting_condition")
+    vocab = ", ".join(LIGHTING_CONDITIONS)
+    if raw is None or str(raw).strip() == "":
+        return None, False, (
+            "session.json에 lighting_condition이 없다 — 야간 앱에서 조명은 공급 fps를 직접 "
+            "바꾸는 측정 조건이다(저조도에서 AE가 노출을 늘리면 프레임 간격 자체가 벌어진다). "
+            "이 런은 baseline_diff에서 다른 런과 조건이 같은지 확인할 수 없으므로 "
+            f"비교 근거로 쓰지 말 것. 허용 어휘: {vocab}"
+        )
+    val = str(raw).strip()
+    if val == LIGHTING_UNKNOWN:
+        return val, False, (
+            f"lighting_condition='{LIGHTING_UNKNOWN}' — 조명 조건이 기록되지 않았다. "
+            "값이 있긴 하지만 이 런은 어느 조명에서 잰 것인지 알 수 없어 비교 대상이 못 된다. "
+            f"측정 시 실제 조건을 적을 것. 허용 어휘: {vocab}"
+        )
+    if val not in LIGHTING_CONDITIONS:
+        return val, False, (
+            f"lighting_condition='{val}'은 허용 어휘 밖이다 — 자유 문자열을 쓰면 같은 조명이 "
+            "서로 다른 이름으로 갈려 모든 비교가 '조건 다름'이 된다. "
+            f"허용 어휘: {vocab} (목록은 lib/frame_log.py와 docs/FRAME_LOG_SCHEMA.md §5)"
+        )
+    return val, True, None
 
 
 def _add_row_skip_warnings(series: FrameSeries) -> None:

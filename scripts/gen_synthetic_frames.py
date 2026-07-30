@@ -19,7 +19,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib.frame_log import SCHEMA_VERSION, write_frames  # noqa: E402
+from lib.frame_log import (  # noqa: E402
+    LIGHTING_SYNTHETIC,
+    SCHEMA_VERSION,
+    write_frames,
+)
 from lib.run_utils import common_argparser, init_run  # noqa: E402
 
 LOG = logging.getLogger(__name__)
@@ -124,6 +128,9 @@ def main() -> int:
         "generator_run_ts": paths.run_ts,
         "seed": args.seed,
         "build_type": "synthetic",
+        # 조명 조건도 "synthetic"으로 박는다 — 합성 로그가 실기기 런과 조건이 같은 척하면
+        # baseline_diff가 조용히 비교 가능하다고 판정한다. 어휘는 lib/frame_log.py.
+        "lighting_condition": LIGHTING_SYNTHETIC,
         "label": args.label,
         # 이 로그의 t_capture_ns가 어느 시계 기준인지. 생성기는 알고 있으므로 그대로 적는다
         # (실기기에서는 폰 쪽이 채운다). analyze_frames가 관측과 대조한다.
