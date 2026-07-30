@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">밤마실 PoC</string>
+    <string name="start">측정 시작</string>
+    <string name="stop">측정 정지 (로그 저장)</string>
+    <string name="idle">대기 중 — 카메라 프리뷰만 흐르고 있다</string>
+    <string name="lighting_label">조명 조건 (session.json 에 그대로 들어간다)</string>
+</resources>

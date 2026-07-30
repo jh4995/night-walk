@@ -15,6 +15,8 @@ __pycache__/
 build/
 *.apk
 .gradle/
+# SDK 경로는 머신마다 다르다 — 커밋하면 다른 사람 빌드가 깨진다
+local.properties
 
 # OS
 .DS_Store
