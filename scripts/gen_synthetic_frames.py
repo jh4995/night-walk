@@ -23,6 +23,9 @@ from lib.frame_log import (  # noqa: E402
     GPU_TIME_COLUMNS,
     LIGHTING_SYNTHETIC,
     MISSING,
+    PIPELINE_STAGES,
+    RENDER_ARM_SYNTHETIC,
+    RENDER_ARMS,
     REQUIRED_COLUMNS,
     SCHEMA_VERSION,
     STAGE2_GAMMA,
@@ -76,6 +79,30 @@ def main() -> int:
         "--stage_d_ms", type=float, default=0.0,
         help="② 저조도 패스 GPU 시간 (버짓 D칸). 0=열 없음",
     )
+    # ② 하위 패스 슬롯 (스키마 v3). GL_TIME_ELAPSED는 중첩되지 않으므로 패스별로 따로 잰다.
+    # 넷 다 D 계열이라 stage_d_total_ms(행별 합)에 들어간다.
+    # ⚠ 이름은 **알고리즘이 아니라 슬롯의 역할**이다(lib/frame_log.py의 STAGE_D_FAMILY_COLUMNS).
+    # ⚠ --stage_d_ms와 **함께** 주면 D 계열이 모호해진다(하네스가 경고하고 해석을 밝힌다).
+    #   그 경로를 일부러 태우는 것도 이 조합으로 한다.
+    parser.add_argument(
+        "--stage_d_analyze_ms", type=float, default=0.0,
+        help=(
+            "② 통계 산출 패스 GPU 시간 (버짓 D칸). 0=열 없음. "
+            "예: CLAHE 히스토그램 / Drago·Reinhard 리덕션 / LIME 조도맵 추정"
+        ),
+    )
+    parser.add_argument(
+        "--stage_d_build_ms", type=float, default=0.0,
+        help="② LUT·계수 생성 패스 GPU 시간 (버짓 D칸). 0=열 없음. 예: CLAHE 클립+CDF",
+    )
+    parser.add_argument(
+        "--stage_d_apply_ms", type=float, default=0.0,
+        help="② 적용 패스 GPU 시간 (버짓 D칸). 0=열 없음. 예: LUT 보간+감마 / 톤맵 / 나눗셈",
+    )
+    parser.add_argument(
+        "--stage_d_denoise_ms", type=float, default=0.0,
+        help="② 노이즈 억제 패스 GPU 시간 (버짓 D칸). 0=열 없음. 예: bilateral(+bf arm)",
+    )
     parser.add_argument(
         "--stage_i_ms", type=float, default=0.0,
         help="④ 강조 패스 GPU 시간 (버짓 I칸). 0=열 없음",
@@ -89,6 +116,40 @@ def main() -> int:
         help=(
             "이 비율만큼의 행에서 GPU 열을 전부 -1로 뱉는다 (0~1). 실기기에서 disjoint "
             "구간이거나 query가 그 프레임 안에 해소되지 않으면 실제로 -1이 온다"
+        ),
+    )
+    # ── render_arm (session.json). **어휘에서 유추하지 않고 명시 인자로 받는다.**
+    #    지금까지 합성 로그에는 이 키가 없어서 GPU 열이 있는 런마다 "arm 미상" 경고가 떴다.
+    #    매번 뜨는 경고는 곧 안 보게 되고, 정작 중요한 경고가 그 밑에 묻힌다.
+    #
+    #    기본값이 'synthetic'인 이유: 무엇을 넣었는지가 로그에 **정직하게** 남아야 한다.
+    #    생성기는 어떤 셰이더도 돌리지 않았으므로 gamma_only/blit_2pass라고 적으면 거짓말이고,
+    #    passthrough는 "GPU 열 자체가 없다"는 뜻이라 GPU 열을 쓴 런에 붙이면 모순이다.
+    #    lighting_condition의 LIGHTING_SYNTHETIC과 같은 취급이다(어휘 안에 있으므로 경고 없음).
+    #    빈 문자열을 주면 **키를 아예 쓰지 않는다** — "arm 없는 로그"(경고 경로 시험용)를
+    #    생성기로 만들 수 있어야 하기 때문이다.
+    parser.add_argument(
+        "--render_arm", default=RENDER_ARM_SYNTHETIC,
+        help=(
+            f"session.json의 render_arm (기본 {RENDER_ARM_SYNTHETIC}). "
+            f"''(빈 문자열)이면 키를 쓰지 않는다 = 'arm 미상' 경고 경로. "
+            f"어휘: {', '.join(RENDER_ARMS)} (밖의 값도 그대로 쓴다 — 어휘 밖 경고 시험용)"
+        ),
+    )
+    # ── pipeline_stages (session.json). **render_arm과 같은 이유로 명시 인자다.**
+    #    유추(어느 --stage_*_ms를 줬는가)만으로 만들면 새 열이 생길 때마다 조용히 어긋난다.
+    #    실제로 ② 하위 패스 열(--stage_d_hist/cdf/apply_ms)에는 대응 토큰이 없어서,
+    #    "② 단독 비용을 재는 가장 자연스러운 호출"이 pipeline_stages=[] 인 **자기모순 로그**를
+    #    낳았다(선언은 '처리 없음'인데 D 실측이 있다).
+    #    기본값 None = 지금까지의 유추를 유지(옛 호출의 동작이 바뀌지 않는다).
+    #    빈 문자열 = 명시적 빈 배열(빈 파이프라인 런). 콤마로 여러 토큰.
+    parser.add_argument(
+        "--pipeline_stages", default=None,
+        help=(
+            "session.json의 pipeline_stages를 콤마로 명시 (예: 'blit_2pass,stage2_gamma'). "
+            "생략하면 --stage_*_ms/--detect_every_n에서 유추한다(옛 동작). "
+            "''(빈 문자열)이면 빈 배열. "
+            f"어휘: {', '.join(PIPELINE_STAGES)} (밖의 값도 그대로 쓴다 — 어휘 경고 시험용)"
         ),
     )
     parser.add_argument("--seed", type=int, default=42)
@@ -112,6 +173,10 @@ def main() -> int:
     gpu_base = {
         "stage_b_ms": args.stage_b_ms,
         "stage_d_ms": args.stage_d_ms,
+        "stage_d_analyze_ms": args.stage_d_analyze_ms,
+        "stage_d_build_ms": args.stage_d_build_ms,
+        "stage_d_apply_ms": args.stage_d_apply_ms,
+        "stage_d_denoise_ms": args.stage_d_denoise_ms,
         "stage_i_ms": args.stage_i_ms,
         "gpu_present_ms": args.gpu_present_ms,
     }
@@ -198,15 +263,36 @@ def main() -> int:
     # ⚠ 토큰은 **앱 어휘**(lib/frame_log.py의 PIPELINE_STAGES = android RenderArm.pipelineStages)를
     #   그대로 쓴다. 생성기가 자기 이름을 따로 쓰면(예전의 'pass1_oes_to_offscreen' /
     #   'stage2_lowlight') 같은 구조인데도 합성 런과 실측 런이 영원히 "조건 다름"이 된다.
+    # ⚠ ② 하위 패스(--stage_d_hist/cdf/apply)에 대응하는 PIPELINE_STAGES 토큰은 **아직 없다.**
+    #   그 토큰의 생산자는 앱(RenderArm.pipelineStages)이고, 하네스가 먼저 이름을 지어 두면
+    #   앱이 다른 이름을 쓰는 날 같은 구조가 두 이름으로 갈려 모든 비교가 "조건 다름"이 된다.
+    #   (열 이름과 render_arm은 미리 등록해야 집계가 되지만, pipeline_stages는 그렇지 않다.)
     pipeline_stages: list[str] = []
-    if args.stage_b_ms > 0:
-        pipeline_stages.append(STAGE_BLIT_2PASS)
-    if args.stage_d_ms > 0:
-        pipeline_stages.append(STAGE2_GAMMA)
-    if args.detect_every_n > 0:
-        pipeline_stages.append(STAGE_DETECT)
-    if args.stage_i_ms > 0:
-        pipeline_stages.append(STAGE4_HIGHLIGHT)
+    if args.pipeline_stages is not None:
+        # 명시 지정. 하네스는 여기서 어휘를 강제하지 않는다(어휘 밖 경고 경로를 만들 수
+        # 있어야 한다) — 준 것을 그대로 적는 것이 "정직하게 남는다"의 뜻이다.
+        pipeline_stages = [
+            s.strip() for s in args.pipeline_stages.split(",") if s.strip()
+        ]
+    else:
+        if args.stage_b_ms > 0:
+            pipeline_stages.append(STAGE_BLIT_2PASS)
+        if args.stage_d_ms > 0:
+            pipeline_stages.append(STAGE2_GAMMA)
+        if args.detect_every_n > 0:
+            pipeline_stages.append(STAGE_DETECT)
+        if args.stage_i_ms > 0:
+            pipeline_stages.append(STAGE4_HIGHLIGHT)
+        # 유추로는 담기지 않는 열이 있다. 그 상태로 두면 집계가 "단계 선언과 실측이
+        # 어긋난다"고 경고하는 자기모순 로그가 나오므로, 생성 시점에 미리 알린다.
+        if not pipeline_stages and gpu_cols:
+            LOG.warning(
+                "pipeline_stages를 유추했더니 빈 배열인데 GPU 단계 열은 있다(%s) — "
+                "집계가 '단계 선언과 실측이 어긋난다'고 경고하는 로그가 된다. "
+                "그 모순 경로를 일부러 만드는 게 아니라면 --pipeline_stages로 명시할 것 "
+                "(② 하위 패스 열에는 아직 대응 토큰이 없다 — 생산자는 앱이다)",
+                ", ".join(gpu_cols),
+            )
 
     session = {
         "schema_version": SCHEMA_VERSION,
@@ -238,6 +324,8 @@ def main() -> int:
             "synthetic": True,
         },
         "params": {
+            "render_arm_arg": args.render_arm,
+            "pipeline_stages_arg": args.pipeline_stages,
             "duration_sec": args.duration_sec,
             "base_render_ms": args.base_render_ms,
             "detect_every_n": args.detect_every_n,
@@ -246,6 +334,10 @@ def main() -> int:
             "render_clock_skew_sec": args.render_clock_skew_sec,
             "stage_b_ms": args.stage_b_ms,
             "stage_d_ms": args.stage_d_ms,
+            "stage_d_analyze_ms": args.stage_d_analyze_ms,
+            "stage_d_build_ms": args.stage_d_build_ms,
+            "stage_d_apply_ms": args.stage_d_apply_ms,
+            "stage_d_denoise_ms": args.stage_d_denoise_ms,
             "stage_i_ms": args.stage_i_ms,
             "gpu_present_ms": args.gpu_present_ms,
             "gpu_disjoint_frac": args.gpu_disjoint_frac,
@@ -256,12 +348,21 @@ def main() -> int:
         "frames_emitted": len(rows),
         "frames_dropped": n_frames - len(rows),
     }
+    # render_arm은 **값을 준 경우에만** 싣는다. 빈 문자열은 "키가 없는 로그"를 만들려는
+    # 명시적 선택이고(하네스의 'arm 미상' 경고 경로 시험용), 여기서 기본값을 몰래 채우면
+    # 그 입력을 생성기로 만들 수 없게 된다 — GPU 열 0=열 없음 규칙과 같은 이유다.
+    if args.render_arm != "":
+        session["render_arm"] = args.render_arm
     session_path = paths.out_dir / "session.json"
     with session_path.open("w", encoding="utf-8") as f:
         json.dump(session, f, indent=2, ensure_ascii=False, sort_keys=True)
         f.write("\n")
 
     LOG.info("합성 프레임 %d개 생성 (합성 데이터 — 측정치가 아님)", len(rows))
+    LOG.info(
+        "  render_arm: %s",
+        session.get("render_arm", "(키 없음 — 하네스가 'arm 미상'으로 경고한다)"),
+    )
     if gpu_cols:
         LOG.info(
             "  GPU 열: %s (disjoint로 -1 처리된 행 %d개)",

@@ -1,4 +1,4 @@
-# 프레임 로그 스키마 v2
+# 프레임 로그 스키마 v3
 
 > **작성:** 팀원2 · **상태:** 확정 (Android 트랙 ↔ 하네스 트랙 내부 규격)
 > **소유 주제:** 폰이 뱉고 PC가 읽는 측정 로그의 형식.
@@ -41,14 +41,77 @@ session.json    이 측정이 어떤 조건이었는지
 | `t_render_end_ns` | int ns | 렌더 제출 완료 |
 | `dropped_since_last` | int | 직전 행 이후 백프레셔로 버려진 프레임 수 |
 
-### GPU 패스 시간 (v2 추가) — **다른 시계에서 온다**
+### GPU 패스 시간 (v2 추가, v3에서 D 계열 확장) — **다른 시계에서 온다**
 
-| 열 | 타입 | 의미 | 버짓 칸 |
-|---|---|---|---|
-| `stage_b_ms` | float ms | 패스1 OES→오프스크린 720p의 GPU 시간 (색공간 변환/텍스처 업로드) | **B** |
-| `stage_d_ms` | float ms | ② 저조도 개선 패스(들)의 GPU 시간 **합** | **D** |
-| `stage_i_ms` | float ms | ④ 강조 렌더 패스의 GPU 시간 | **I** |
-| `gpu_present_ms` | float ms | 기본 프레임버퍼에 그린 최종 표시 패스의 GPU 시간 | **없음** (§6) |
+| 열 | 타입 | 의미 | 버짓 칸 | 추가 |
+|---|---|---|---|---|
+| `stage_b_ms` | float ms | 패스1 OES→오프스크린 720p의 GPU 시간 (색공간 변환/텍스처 업로드) | **B** | v2 |
+| `stage_d_ms` | float ms | ② 저조도 개선 패스의 GPU 시간 (감마처럼 **패스가 하나인 arm**) | **D** (D 계열) | v2 |
+| `stage_d_analyze_ms` | float ms | ② **통계 산출** 슬롯의 GPU 시간 | **D** (D 계열) | v3 |
+| `stage_d_build_ms` | float ms | ② **LUT·계수 생성** 슬롯의 GPU 시간 | **D** (D 계열) | v3 |
+| `stage_d_apply_ms` | float ms | ② **적용** 슬롯의 GPU 시간 | **D** (D 계열) | v3 |
+| `stage_d_denoise_ms` | float ms | ② **노이즈 억제** 슬롯의 GPU 시간 | **D** (D 계열) | v3 |
+| `stage_i_ms` | float ms | ④ 강조 렌더 패스의 GPU 시간 | **I** | v2 |
+| `gpu_present_ms` | float ms | 기본 프레임버퍼에 그린 최종 표시 패스의 GPU 시간 | **없음** (§6) | v2 |
+
+#### D 계열(D-family) — D칸을 채우는 열들
+
+**② 저조도를 여러 패스로 쪼개도 채우는 칸은 하나다.** CLAHE는 세 패스(히스토그램 →
+클립/CDF → 적용)인데 `GL_TIME_ELAPSED`는 **중첩되지 않으므로 어차피 패스별로 따로 잰다.**
+합쳐서 내보내는 것은 정보를 버리는 것이고 위 "유도값은 저장하지 않는다"와도 어긋난다.
+그리고 게이트가 "② 단독이 예산 안에 드는가"일 때, **넘었을 때 다음 질문은 "어디가 비싼가"**다
+— 히스토그램이 지배하는지 적용 패스가 지배하는지에 따라 경량화 레버가 완전히 달라진다.
+같은 런에서 공짜로 얻을 수 있는 정보를 미리 뭉개지 않는다.
+
+- 목록은 `lib/frame_log.py`의 `STAGE_D_FAMILY_COLUMNS`이고 이 표와 **같아야 한다.**
+- 그 런의 D는 **`stage_d_total_ms`**(D 계열의 행별 합 → §3)다. 감마만 쓰는 arm은
+  `stage_d_ms` 하나, 다패스 arm은 하위 슬롯들 — **arm이 달라도 D칸은 한 키로 읽힌다.**
+- 가드·폐기 계수는 다른 GPU 열과 **완전히 동일**하다(하한 `> 0`, 상한 없음 → §4).
+
+##### 하위 열 이름은 알고리즘이 아니라 **슬롯의 역할**이다
+
+| 슬롯 | 담는 것 | arm별 예 |
+|---|---|---|
+| `stage_d_analyze_ms` | 입력을 **훑어 통계를 만드는** 패스 | CLAHE 히스토그램 / Drago·Reinhard 리덕션 / LIME 조도맵 추정 |
+| `stage_d_build_ms` | 그 통계로 **LUT·계수를 만드는** 패스 | CLAHE 클립+CDF / AGCWD 가중 LUT (**없는 arm도 있다**) |
+| `stage_d_apply_ms` | 픽셀에 **적용하는** 패스 | LUT 보간+감마 / 톤맵 / 나눗셈 |
+| `stage_d_denoise_ms` | **노이즈 억제** 패스 | bilateral (`+bf` arm) |
+
+**왜 알고리즘 이름을 쓰지 않는가.** 처음에는 CLAHE 구성을 그대로 따서
+`hist`/`cdf`/`apply`로 지었는데, 그러면 Drago의 **최대휘도 리덕션**이 `stage_d_hist_ms`에
+들어가 D칸 분해를 읽는 사람이 **"히스토그램이 비싸다"고 오독한다.** `[D칸]` 라벨에 arm을
+묶어 둔 이유(§2 "이 숫자를 읽을 때의 조건" 1항)와 정확히 같은 계열의 문제다.
+
+> **그 arm에서 이 슬롯이 구체적으로 무엇이었는지는 `session.json`의 `render.passes[]`가
+> 말한다** — 각 항목의 `gpu_column`이 열 이름을 가리키고, `name`/`shader`가 그 패스의
+> 실제 내용이다(앱이 이미 그렇게 쓰고 있다). 열 이름은 **슬롯의 역할**이고 구체적 의미는
+> 세션이 선언한다. 하네스는 여기서도 arm을 해석하지 않는다.
+
+> ⚠️ **하위 패스가 슬롯보다 많은 arm이 나오면 앱이 임의로 합쳐 한 슬롯에 넣지 말고 올린다.**
+> (예: LIME의 다단 조도맵 추정.) 폰이 합치면 그건 **유도값**이고(위 "유도값은 저장하지
+> 않는다" 위반), 어느 패스가 비싼지가 사라져 경량화 레버를 고를 수 없게 된다.
+> 슬롯을 늘리는 것은 열 추가(§6)이므로 **하네스가 먼저** 들어간다.
+
+> ⚠️ **`stage_d_ms`와 하위 열이 같은 로그에 동시에 있으면 그 로그는 모호하다.**
+> `stage_d_ms`가 "② 전체 합"인지 "또 다른 하위 패스"인지 로그만으로는 알 수 없고, 그대로
+> 더하면 이중 계상이다. **하네스는 죽지 않는다**(앱이 스키마보다 앞서 나갈 수 있다) —
+> 대신 `stages.stage_d_ambiguous=true`로 남기고 경고하며, **택한 해석을 문장에 명시한다.**
+>
+> **하네스가 택한 해석: "또 다른 하위 패스"** — `stage_d_ms`를 하위 열과 동등하게 취급해
+> `stage_d_total_ms`·`gpu_sum_ms`의 행별 합에 그대로 더한다.
+>
+> **근거는 틀렸을 때의 방향 하나다.** 이 해석이 틀리면 D가 **크게** 나오고(이중 계상),
+> 반대 해석이 틀리면 D가 **작게** 나온다(실재하는 패스를 뺀다). 낙관 쪽으로 틀리는 것은
+> 이 하네스가 tail 샘플에 상한을 두지 않는 이유(§4)와 같은 부류의 실패다 — 예산 안에
+> 든다고 잘못 믿는 쪽이 더 비싸다.
+>
+> ⚠️ **"스키마가 합계 열을 금지하므로"는 근거가 아니다.** v2 표는 `stage_d_ms`를
+> *"② 저조도 개선 패스**(들)**의 GPU 시간 **합**"* 으로 정의했다 — **v2를 지킨 생산자가
+> 거기에 합계를 넣는 것은 위반이 아니었다.** v3부터 그 열의 정의를 "패스가 하나인 arm의
+> ② 패스"로 좁혔지만, 그것을 과거 로그에 소급 적용해 "정상 생산자라면 그럴 리 없다"고
+> 말할 수는 없다. **`stage_d_ms`가 합계일 가능성은 실재한다** — 그래서 이 판단은 확신이
+> 아니라 **편향 방향의 선택**이며, 경고 문장도 그렇게 나간다.
+> 📌 이 서술 정정은 독립 검증에서 나왔다(2026-07-31). 결론은 그대로다.
 
 - 출처는 `GL_EXT_disjoint_timer_query`다. 측정 기기(Galaxy A34 / Mali-G68, ES 3.2)에
   확장이 있음을 확인했다.
@@ -128,13 +191,51 @@ DVFS/발열 차**인지 아직 갈라내지 못했다 → **열별 차분을 근
 > `output_interval ≈ recv_interval`이고, 이건 **연산 비용이 아니라 카메라가 주는 속도**다.
 > "33ms 나왔으니 여유 33ms"는 잘못된 독해다 — 여유의 상한이 아니라 **바닥값**이고
 > 여기서부터 ①②③④가 더해진다. 집계 스크립트가 이 단서를 자동으로 붙인다.
+>
+> ⚠️ **단, 그 단서는 `pipeline_stages`가 비었다는 것만으로 붙이지 않는다.** 선언이 비었는데
+> **GPU 단계 시계열에 유효 표본이 있으면** 그 문장("여기서부터 ①②③④가 더해진다")은 그 런에서
+> **거짓**이다 — 비용이 이미 더해져 있고 이미 측정돼 있다. 그때는 대신
+> **`source.pipeline_stages_contradicted = true`** 로 남기고 *"단계 선언과 실측이 어긋난다"* 는
+> 사실을 낸다(값이 나온 열은 `source.pipeline_stages_measured_columns`).
+> `gpu_timer_contradicted` · `capture_clock_base_contradicted`와 **같은 패턴**이며
+> **판정·종료 코드를 바꾸지 않는다.** 이 상황에서는 아래 "프레임타임 묶임" 단서 쪽이 오히려
+> 맞는 단서이므로 그것을 낸다(근거는 빈 선언이 아니라 **값이 나온 GPU 열**이라 문장의
+> 라벨이 그렇게 나간다).
+> 발생 원인은 보통 (a) 그 패스에 대응하는 `pipeline_stages` 토큰이 아직 없는 경우다 —
+> ② 하위 패스 열이 지금 그렇다(토큰 생산자는 앱이므로 하네스가 먼저 지어내지 않는다 → §5).
+> 📌 이 경로는 독립 검증에서 나왔다(2026-07-31): `--stage_d_analyze_ms` 등만 준 합성 로그가
+> `stage_d_total_ms p50=8.998`을 내면서 동시에 "처리 단계가 없는 파이프라인"이라고 단언했다.
 
 ### 단계 비용 (v2) — `summary.json`의 `stages` 블록
 
 | 지표 | 계산 | 무엇을 말하나 |
 |---|---|---|
-| `stage_b_ms` · `stage_d_ms` · `stage_i_ms` · `gpu_present_ms` | CSV 열 그대로 | 패스별 GPU 점유 시간 |
-| `gpu_sum_ms` | **행별로** 유효한 위 열들의 합 | 그 프레임이 GPU를 잡은 총 시간 |
+| `stage_b_ms` · D 계열 4개 · `stage_i_ms` · `gpu_present_ms` | CSV 열 그대로 | 패스별 GPU 점유 시간 |
+| `stage_d_total_ms` | **행별로** 유효한 **D 계열** 열들의 합 | **그 런의 D칸** (v3) |
+| `gpu_sum_ms` | **행별로** 유효한 **모든 GPU** 열의 합 | 그 프레임이 GPU를 잡은 총 시간 |
+
+#### `stage_d_total_ms` — D칸을 한 키로 (v3)
+
+**`gpu_sum_ms`와 헷갈리지 않게 읽는다.** 이름이 비슷해 보이지만 더하는 대상이 다르다:
+
+| 파생 시계열 | 더하는 대상 | 쓰는 곳 |
+|---|---|---|
+| `stage_d_total_ms` | **D 계열만** (`stage_d_ms` + `stage_d_analyze_ms` + `stage_d_build_ms` + `stage_d_apply_ms` + `stage_d_denoise_ms` 중 그 로그에 있는 것) | **D칸** |
+| `gpu_sum_ms` | **모든 GPU 열** (B + D 계열 + I + present) | 그 프레임의 GPU 총 점유 |
+
+- **행별 합이지 백분위의 합이 아니다.** `p50(hist) + p50(cdf) != p50(hist+cdf)`.
+  행에서 먼저 더한 뒤 분포를 낸다(`gpu_sum_ms`와 같은 규칙). 실측 예: 하위 두 열의 p50이
+  각각 1.0인데 `stage_d_total_ms`의 p50이 11.0인 입력을 만들 수 있다(값이 행마다 반대로
+  치우친 경우) — 두 값을 더해 D를 말하면 틀린다.
+- 그 행에 유효한 D 계열 값이 하나도 없으면 기여하지 않는다. 일부만 유효한 행은 합에 들어가되
+  `stages.stage_d_total_partial_rows`로 개수를 노출한다(빠진 패스만큼 D가 작다).
+- `stages.stage_d_columns`에는 **그 런에서 실제로 더해진 D 계열 열**만 들어가고, 스키마가
+  정의한 전체 목록은 `stages.stage_d_columns_defined`에 따로 있다(`gpu_sum_columns`와 같은 규칙).
+- 리포트는 `D칸 구성: <열> + <열> = stage_d_total_ms` 줄로 **무엇을 더했는지**를 먼저 내고,
+  하위 패스 줄에는 `·` 들여쓰기를 붙인다 — `stage_d_total_ms`만 보고 D를 인용할 사람과
+  내부 분해를 보고 레버를 고를 사람이 둘 다 있기 때문이다.
+- **D 계열이 모호한 로그**(§2)에서는 `stages.stage_d_ambiguous=true`이며, 이 값은 D를 두 번
+  셌을 수 있다. 경고 문장이 어느 해석을 썼는지 밝힌다.
 
 - **`frametime` 블록과 키를 섞지 않는다.** 간격/체류시간과 단계 비용은 다른 물리량이고
   **다른 시계**에서 온다. `render_latency_ms`와 `recv_to_render_ms`를 같은 키에 넣지 않는
@@ -185,8 +286,10 @@ Android에서는 `SystemClock.elapsedRealtimeNanos()`.
 | `render_latency_ms` | `> 0` | **없음** |
 | `recv_to_render_ms` | `> 0` | **없음** |
 | `capture_to_render_ms` | `> 0` | `< 5000ms` |
-| `stage_b_ms` · `stage_d_ms` · `stage_i_ms` · `gpu_present_ms` | `> 0` | **없음** |
-| `gpu_sum_ms` | `> 0` | **없음** |
+| `stage_b_ms` · `stage_i_ms` · `gpu_present_ms` | `> 0` | **없음** |
+| D 계열: `stage_d_ms` · `stage_d_analyze_ms` · `stage_d_build_ms` · `stage_d_apply_ms` · `stage_d_denoise_ms` | `> 0` | **없음** |
+| `stage_d_total_ms` (파생) | `> 0` | **없음** |
+| `gpu_sum_ms` (파생) | `> 0` | **없음** |
 
 GPU 패스 시간에 상한을 두지 않는 이유도 같다. 한 패스의 시작/끝을 **같은 GPU 시계 안에서**
 닫으므로 큰 값은 시계 오류가 아니라 진짜 느린 프레임이다 — 발열로 GPU 클럭이 떨어지는
@@ -341,7 +444,7 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "build_type": "release",
   "pipeline_stages": [],
   "capture_clock_base": "unknown",
@@ -405,6 +508,24 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 | `passthrough` | 처리 0. OES→화면 1패스. **계측하지 않는다**(GPU 열 자체가 없다) | `[]` |
 | `blit_2pass` | 3패스 골격. **② 자리(패스2)는 단순 복사**이며 저조도 개선이 아니다 | `["blit_2pass"]` |
 | `gamma_only` | ② 자리에 감마 패스. **② 비용의 하한**이며 알고리즘이 아니다 | `["blit_2pass", "stage2_gamma"]` |
+| `synthetic` | **합성 로그**(`gen_synthetic_frames.py`)의 기본값. 어떤 셰이더도 돌지 않았다 | 생성 인자에 따름 |
+
+#### ② arm 예약어 (v3에서 미리 등록) — ⚠️ **계약값이 아니다**
+
+② 알고리즘 arm이 곧 늘어난다. 어휘에 없으면 앱이 붙는 날 매 런 "어휘 밖" 경고가 뜨므로
+아래를 미리 등록해 뒀다. **다만 이 이름들은 팀원2(하네스) 쪽 명명이지 팀과 합의한 계약값이
+아니다** — `INTERFACES.md`의 미확정 항목과 달리 이건 하네스 내부 어휘일 뿐이고,
+**생산자는 앱**이므로 앱이 다른 `id`를 쓰기로 하면 앱 쪽이 정답이며 여기를 고친다.
+
+| 값 | 예정 |
+|---|---|
+| `clahe_gamma` | CLAHE + 감마 |
+| `clahe_gamma_bf` | 위 + 바이래터럴 필터 |
+| `agcwd` / `agcwd_bf` | AGCWD (+ 바이래터럴) |
+| `drago` · `reinhard` · `lime` | 톤매핑·조도추정 계열 |
+
+**어휘에 있다는 것은 "그 문자열을 안다"는 뜻일 뿐이다.** 하네스는 여전히 arm의 의미를
+해석하지 않으며, 어느 arm이 어느 패스에 무엇을 그렸는지는 판단하지 않는다.
 
 - **이 표는 사람이 읽는 것이고, 하네스는 이 의미를 해석하지 않는다.** 하네스가 하는 일은
   "그 문자열이 아는 어휘인가"를 보고 **숫자 옆에 arm을 붙이는 것**까지다. 해석을 시작하면
@@ -464,7 +585,7 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 
 | 상황 | 문장 방향 |
 |---|---|
-| 선언 < 하네스 | **S1 이전(앱이 뒤처진) 로그.** v2에서 늘어난 GPU 열·`gl`/`gpu_timer` 블록이 없을 수 있다. `stages`의 count 0은 "0ms"가 아니라 "그 빌드가 재지 않았다" |
+| 선언 < 하네스 | **앱이 뒤처진 로그.** 선언 버전 **이후에 늘어난 열**(경고가 이름으로 나열한다 — `lib/frame_log.py: COLUMN_ADDED_IN`)이 없을 수 있다. `stages`의 count 0은 "0ms"가 아니라 "그 빌드가 재지 않았다". ⚠️ **스키마 확장 시 하네스가 앱보다 먼저 들어가므로**(§6), 앱 라운드가 붙기 전까지 이 경고가 뜨는 것은 **정상이고 의도된 순서**다 |
 | 선언 > 하네스 | **앱이 하네스보다 앞서 나갔다.** 앱이 새로 넣은 열은 미지 열로 버려지므로 새 지표가 요약에 없다. 하네스를 먼저 올리고 다시 집계할 것 |
 | 키 없음 | 로그가 자기 스키마를 말하지 않는다. `--session`을 생략했거나 스키마 키 이전 빌드 |
 | 정수가 아님 (`2.7` · `"two"` · `true`) | 대조 불가. 앱 쪽 `SessionWriter` 확인 |
@@ -485,8 +606,16 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 | `device.props.model` · `device.props.build_fingerprint` | 다른 기기 숫자를 비교하면 착시다 |
 | `session.build_type` | **`release`가 아니면 그 숫자는 근거로 못 쓴다** (debug는 프레임타임이 부풀려짐) |
 | `session.pipeline_stages` | 빈 배열 = 빈 파이프라인. 이게 다르면 성능 비교가 성립하지 않는다 |
+| `session.render_arm` | **그 런이 실제로 무엇을 그렸는지**를 정한다. `pipeline_stages`가 이것을 담지 못한다는 것이 실증됐다 — ② 하위 패스 열에는 대응 토큰이 없어서 `blit_2pass` 런과 `clahe_gamma` 런이 **둘 다 `["blit_2pass"]`** 였고, 처리량이 완전히 다른데도 무경고로 "회귀 없음"이 나왔다. 조명과 정확히 같은 성격의 조건이다 |
 | `session.lighting_condition` | 저조도에서 카메라 AE가 노출을 늘리면 **공급 fps 자체가 떨어진다.** 밝은 방 런과 야간 런을 비교하면 코드가 그대로여도 "회귀"로 오판정된다 |
 | `source.warmup_sec` | 워밍업 구간이 다르면 같은 로그도 다른 분포가 된다 |
+
+> ⚠️ **`render_arm`을 조건에 넣은 대가를 알고 받는다.** v1 승격 베이스라인에는 이 키가 없어서
+> (`None`) 새 `passthrough` 런과 비교하면 **"조건 다름"으로 뜬다**:
+> `session.render_arm: baseline=None vs current='passthrough'`.
+> 이건 버그가 아니라 **정직한 표시**다 — 그 옛 로그는 자기가 어떤 arm이었는지 실제로
+> 기록하지 않았고, "passthrough 상당"은 우리의 추론이다. `comparable`은 **exit code를
+> 바꾸지 않으므로** 비교 자체가 막히지는 않는다(숫자는 그대로 나오고 경고가 붙는다).
 
 ### 조건이 아니라 **결과**인 것 (비교하지 않고 기록·보고만 한다)
 
@@ -579,7 +708,25 @@ python scripts/gen_synthetic_frames.py --stage_b_ms 2 --stage_d_ms 5 --gpu_prese
 python scripts/gen_synthetic_frames.py --stage_d_ms 5 --gpu_disjoint_frac 0.1   # 10% 행을 -1로
 python scripts/gen_synthetic_frames.py --stage_d_ms 5 --gpu_disjoint_frac 1.0   # 전부 -1 (gpu_timer 모순 경로)
 python scripts/gen_synthetic_frames.py --stage_d_ms 60                          # GPU가 공급 주기를 넘는 경우
+
+# ② 하위 패스(v3). 셋 다 D 계열이라 stage_d_total_ms(행별 합)로 묶여 나온다
+python scripts/gen_synthetic_frames.py --stage_b_ms 2 \
+  --stage_d_analyze_ms 1.5 --stage_d_build_ms 0.4 --stage_d_apply_ms 2.2 \n  --stage_d_denoise_ms 1.1 --render_arm clahe_gamma_bf
+# stage_d_ms와 하위 열을 **동시에** 주면 D 계열 모호 경로(경고 + 해석 명시)
+python scripts/gen_synthetic_frames.py --stage_d_ms 6 --stage_d_analyze_ms 1 --stage_d_build_ms 2
+
+# render_arm / pipeline_stages는 **명시 인자**다 (유추하지 않는다)
+python scripts/gen_synthetic_frames.py --stage_d_ms 5 --render_arm gamma_only
+python scripts/gen_synthetic_frames.py --stage_d_ms 5 --render_arm ""   # 키 없음 = 'arm 미상' 경고 경로
+python scripts/gen_synthetic_frames.py --stage_d_analyze_ms 3 --stage_d_build_ms 1 --stage_d_apply_ms 5 \
+  --pipeline_stages "blit_2pass" --render_arm clahe_gamma   # 자기모순 없는 ② 단독 런
+python scripts/gen_synthetic_frames.py --pipeline_stages ""             # 명시적 빈 배열
 ```
+
+> ⚠️ **`--pipeline_stages`를 생략하면 `--stage_*_ms`/`--detect_every_n`에서 유추한다(옛 동작).**
+> ② 하위 패스 열에는 대응 토큰이 없으므로, 하위 열만 주면 `pipeline_stages=[]`인
+> **자기모순 로그**(선언은 "처리 없음"인데 D 실측이 있다)가 나온다. 생성기가 그 상황을
+> 생성 시점에 경고하지만, 모순 경로를 일부러 만드는 게 아니라면 명시할 것.
 
 > ⚠️ **`--warmup_sec`의 기본값은 `targets.DEFAULT_WARMUP_SEC`(30초)다.** AE/AWB 수렴 전
 > 프레임을 버리기 위한 값이라 실기기 측정에는 기본값 그대로 쓰지만, **30초보다 짧은 로그는
@@ -713,3 +860,67 @@ S1 이전 빌드의 낡은 로그가 남아 있었다. `pipeline_stages`가 빈 
   `render_arm` 없는 v1 로그(`20260731_125545`)에서 각각 arm이 드러나고 죽지 않는다.
   하위호환: v1 로그의 `frametime` 블록이 승격 베이스라인 `20260730_poc_empty_a34.json`과
   **비트 단위로 같다**(`p50=32.703`, `p95=38.071`).
+- **v3 (2026-07-31, 팀원2) — `SCHEMA_VERSION` 2 → 3. ② 저조도의 하위 패스별 GPU 시간.**
+  S3(② 셰이더 포팅)의 1단계이며 **android보다 먼저** 들어간다 — 앱이 새 열을 먼저 내면
+  `KNOWN_COLUMNS`에 없다며 경고만 하고 집계에서 버려져 그날 측정이 숫자 없이 끝난다(§6).
+  **CSV에 열이 4개 늘었으므로** 버전을 올린다: `stage_d_analyze_ms` · `stage_d_build_ms` ·
+  `stage_d_apply_ms` · `stage_d_denoise_ms`(전부 D칸). 근거: CLAHE는 세 패스이고 `GL_TIME_ELAPSED`는 중첩되지
+  않아 **어차피 패스별로 따로 잰다** — 합쳐 내보내면 정보를 버리는 것이고 §2의 "유도값은
+  저장하지 않는다"와도 어긋난다. 그리고 "② 단독이 예산 안에 드는가"를 넘겼을 때 다음 질문은
+  **"어디가 비싼가"**이고, 그 답에 따라 경량화 레버가 달라진다(결정권은 팀장).
+  **D 계열(D-family) 개념 도입**(§2·§3): 파생 시계열 `stage_d_total_ms` = 그 행에 존재하는
+  D 계열 열들의 **행별 합**이며, 감마 arm(`stage_d_ms` 하나)이든 다패스 arm(하위 슬롯들)이든
+  **D칸이 한 키로 나온다.** `gpu_sum_ms`(모든 GPU 열의 합)와 더하는 대상이 다르므로 표로
+  갈라 적었다. `stage_d_ms`와 하위 열이 **동시에** 있는 로그는 모호하므로(이중 계상 위험)
+  죽이지 않고 경고하며 **택한 해석("또 다른 하위 패스")과 그 근거를 문장에 명시**한다.
+  가드·폐기 계수는 기존 GPU 열과 동일(하한 `> 0`, 상한 없음, 같은 `_collect` 경로).
+  판정(`meets_*_target`)·종료 코드는 그대로다 — 단계 비용에는 판정선이 없다.
+  **`render_arm` 어휘 확장**: ② arm 7종(`clahe_gamma` 등)을 미리 등록했다(⚠️ 팀원2 명명이지
+  계약값이 아니다 — 생산자는 앱이다) + 합성 로그용 `synthetic`. 생성기에 `--render_arm`을
+  **명시 인자**로 넣어(기본 `synthetic`) 합성 런마다 뜨던 "arm 미상" 경고를 없앴다 —
+  매번 뜨는 경고는 곧 안 보게 되고 정작 중요한 경고가 그 밑에 묻힌다.
+  옛 세션 경고 문장은 버전 번호를 손으로 박는 대신 `COLUMN_ADDED_IN`으로 **빠진 열을
+  계산해** 낸다(v3 하네스가 "v2에서 늘어난"이라고 말하는 상태를 막는다).
+  ⚠️ **앱은 아직 v2다.** android 라운드가 붙기 전까지 실기기 로그에 "앱이 하네스보다
+  뒤처졌다" 경고가 뜨는 것은 **정상이고 의도된 순서**이며, 경고 문장이 그 사실을 말한다.
+  검증(합성 + 실기기 로그 재집계): 하위 3열 로그에서 `stage_d_total_ms`가 나오고,
+  **행별 합을 손 검산**했다(하위 두 열 p50이 각각 1.0인데 합의 p50은 11.0 — 백분위 합 2.0과
+  다르다). `stage_d_ms` 단일 열 로그에서 `stage_d_total_ms`는 그 열과 전 통계값이 같다
+  (실기기 `gamma_only` 런 재집계: 둘 다 `p50=1.419` / `p95=2.1`). 하위호환은 **하드 요구**라
+  v1 로그(`outputs/poc_pull/20260730_224955`)와 v2 로그를 다시 태웠고, v1의 `frametime`
+  블록이 승격 베이스라인 2종과 **비트 단위로 같다**(`p50=32.703` / `p95=38.071`,
+  repeat는 `p50=32.665` / `p95=38.249`).
+  📌 **독립 검증 FAIL 4건 반영**(harness-verifier, 2026-07-31). 넷 다 "숫자는 옳은데 그 숫자에
+  붙어 나가는 **문장·비교 판정**이 틀린" 경로였다:
+  **① `baseline_diff`의 `CONDITION_KEYS`에 `session.render_arm` 추가.** arm 대리 지표가
+  `pipeline_stages` 하나였는데 ② 하위 패스 열에는 토큰이 없어서, `blit_2pass` 런과
+  `clahe_gamma` 런이 둘 다 `["blit_2pass"]`로 선언되어 **무경고로 "회귀 없음"**이 나왔다.
+  (가드 **강화**이므로 `CONDITION_KEYS` 동결의 예외다. 대가는 위 §5 인용 참고 —
+  v1 승격본은 `render_arm=None`이라 `passthrough` 런과 "조건 다름"으로 뜬다. 정직한 표시다.)
+  **② `pipeline_stages`가 비었는데 GPU 단계 값이 있으면 모순으로 처리**(§3). 예전에는
+  "여기서부터 ①②③④가 더해진다"고 **단언**했는데 ②는 이미 더해져 있고 이미 측정돼 있었다.
+  `source.pipeline_stages_contradicted` / `_measured_columns` 추가. 같은 상황에서 꺼져 있던
+  "프레임타임 묶임" 단서를 되살렸고(라벨을 "측정된 GPU 단계 열"로 바꿔 낸다),
+  **`frametime.pinned_to_camera_supply` 관측치는 이제 분기와 무관하게 항상 기록**한다 —
+  문장을 내지 않는 분기에서 관측치 키까지 빠져 기계 소비자가 되물을 근거가 없었다.
+  생성기에도 **`--pipeline_stages` 명시 인자**를 넣었다(`--render_arm`과 같은 이유).
+  **③ 모호성 근거 서술 정정**(§2). 결론은 그대로고 근거만 정확해졌다 — v2 표가
+  `stage_d_ms`를 "패스(들)의 합"으로 정의했으므로 "스키마가 합계 열을 금지한다"는 소급 적용이다.
+  **④ 방어 2건**: `_stage_series_order()`가 D 계열 부재 시 `ValueError`로 집계를 죽이던 것,
+  `COLUMN_ADDED_IN` ↔ `GPU_TIME_COLUMNS` 자기검사 부재(등록을 빠뜨리면 "뒤처진 앱" 경고가
+  그 열을 조용히 빼먹는다) → 상수 불일치는 import에서 죽는다.
+  회귀 재확인: v1 로그 2건의 `frametime` 시계열이 승격본과 **여전히 비트 단위로 같다**
+  (새 키 `pinned_to_camera_supply`가 **추가**됐을 뿐 기존 값·`verdict`·폐기 0·행 회계 불변).
+  📌 **커밋 직전 하위 열 이름 교체 (같은 v3 안에서).** `stage_d_hist_ms`/`stage_d_cdf_ms`는
+  **CLAHE 전용 이름**이었다 — Drago(S3-2 1순위)의 **최대휘도 리덕션**이 `stage_d_hist_ms`에
+  들어가면 D칸 분해를 읽는 사람이 "히스토그램이 비싸다"고 **오독**하고, LIME의 조도맵 추정은
+  아예 담을 이름이 없으며 bilateral(`+bf`)은 슬롯 자체가 없었다. **arm 중립 슬롯 이름 4개**로
+  바꿨다: `stage_d_analyze_ms`(통계 산출) · `stage_d_build_ms`(LUT·계수 생성) ·
+  `stage_d_apply_ms`(적용, 이름 유지) · **`stage_d_denoise_ms`(노이즈 억제, 신규)**.
+  arm별 구체적 의미는 **`render.passes[].gpu_column`이 선언**하고(앱이 이미 그렇게 쓴다),
+  슬롯보다 패스가 많으면 **앱이 합치지 말고 올린다**(합치면 유도값이다) → §2.
+  **`SCHEMA_VERSION`은 3을 유지한다** — v3 열을 쓴 로그가 실측에 **하나도 없어서**(생산자인
+  앱은 아직 v2이고, 그 열이 있는 로그는 이 라운드에서 만든 합성뿐이다) 깨질 하위호환이
+  존재하지 않는다. 버전은 "옛 로그를 어떻게 읽을지"를 가르는 장치이므로, 읽을 옛 로그가
+  없는 이름 변경은 버전을 올릴 호환성 사건이 아니다. 옛 이름이 든 CSV를 태우면 **미지 열
+  경고가 그 이름을 지목**한다(실행 확인). 이름을 바꿀 수 있는 가장 싼 순간이 지금이었다.

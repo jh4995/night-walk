@@ -25,7 +25,7 @@ from typing import Optional
 
 from lib.stats import percentile
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # 폰이 반드시 뱉어야 하는 열
 REQUIRED_COLUMNS = ("frame_idx", "t_recv_ns")
@@ -44,11 +44,95 @@ REQUIRED_COLUMNS = ("frame_idx", "t_recv_ns")
 #   않는다. 프레임타임은 "GPU 비용이 공급 주기를 넘었는가"를 알려주는 **임계 검출기**다.
 #   단계 비용 자체는 아래 열로만 말한다.
 GPU_TIME_COLUMNS = (
-    "stage_b_ms",      # 패스1 OES→오프스크린 720p (버짓 B칸: 색공간 변환/텍스처 업로드)
-    "stage_d_ms",      # ② 저조도 개선 패스(들) 합 (버짓 D칸)
-    "stage_i_ms",      # ④ 강조 렌더 패스 (버짓 I칸)
-    "gpu_present_ms",  # 기본 프레임버퍼에 그린 최종 표시 패스. **버짓 칸이 아니다**
+    "stage_b_ms",         # 패스1 OES→오프스크린 720p (버짓 B칸: 색공간 변환/텍스처 업로드)
+    # ── D 계열(D-family): D칸을 채우는 열들. 아래 STAGE_D_FAMILY_COLUMNS 참고 ──
+    "stage_d_ms",           # ② 저조도 개선 패스 (감마처럼 패스가 하나인 arm)
+    "stage_d_analyze_ms",   # ② 입력을 훑어 통계를 만드는 패스 (v3)
+    "stage_d_build_ms",     # ② 그 통계로 LUT·계수를 만드는 패스 (v3)
+    "stage_d_apply_ms",     # ② 픽셀에 적용하는 패스 (v3)
+    "stage_d_denoise_ms",   # ② 노이즈 억제 패스 (v3)
+    "stage_i_ms",         # ④ 강조 렌더 패스 (버짓 I칸)
+    "gpu_present_ms",     # 기본 프레임버퍼에 그린 최종 표시 패스. **버짓 칸이 아니다**
 )
+
+# ── D 계열 ────────────────────────────────────────────────────────────────
+# **D칸을 채우는 열들.** ②를 여러 패스로 쪼개면 GL_TIME_ELAPSED가 중첩되지 않으므로
+# **어차피 패스별로 따로 잰다.** 합쳐서 내보내면 정보를 버리는 것이고 §2 "유도값은
+# 저장하지 않는다"와도 어긋난다.
+#
+# ⚠ **arm이 달라도 D칸이 한 지표로 나오게 하는 것**이 이 개념의 목적이다.
+#   감마만 쓰는 arm은 `stage_d_ms` 하나, 다패스 arm은 하위 슬롯들 — 양쪽 다
+#   `stage_d_total_ms`(아래)가 그 런의 D다. 소비자가 arm별로 어느 열을 더할지
+#   판단할 필요가 없어야 한다.
+#
+# ⚠ **하위 열 이름은 알고리즘이 아니라 '슬롯의 역할'이다.** 처음에는 CLAHE 구성을 그대로
+#   따서 hist/cdf/apply로 지었는데, 그러면 Drago의 **최대휘도 리덕션**이 `stage_d_hist_ms`에
+#   들어가 D칸 분해를 읽는 사람이 "히스토그램이 비싸다"고 **오독**한다. `[D칸]` 라벨에 arm을
+#   묶어 둔 이유와 정확히 같은 계열의 문제라서, 실측이 0건인 지금 arm 중립 이름으로 바꿨다.
+#
+#     analyze : 입력을 훑어 통계를 만든다 (CLAHE 히스토그램 / Drago·Reinhard 리덕션 /
+#               LIME 조도맵 추정)
+#     build   : 그 통계로 LUT·계수를 만든다 (CLAHE 클립+CDF / AGCWD 가중 LUT). 없는 arm도 있다
+#     apply   : 픽셀에 적용한다 (LUT 보간+감마 / 톤맵 / 나눗셈)
+#     denoise : 노이즈 억제 (bilateral 계열, `+bf` arm)
+#
+#   **그 arm에서 이 슬롯이 구체적으로 무엇이었는지는 앱이 `session.json`의
+#   `render.passes[]`(각 항목의 `gpu_column`)에 선언한다.** 열 이름은 역할이고, 의미는
+#   세션이 말한다 — 하네스는 여기서도 arm을 해석하지 않는다.
+STAGE_D_FAMILY_COLUMNS = (
+    "stage_d_ms",
+    "stage_d_analyze_ms",
+    "stage_d_build_ms",
+    "stage_d_apply_ms",
+    "stage_d_denoise_ms",
+)
+
+# D 계열의 **행별 합** (파생 시계열. CSV 열이 아니다).
+# ⚠ `gpu_sum_ms`와 다르다 — `gpu_sum_ms`는 **모든** GPU 열의 합(B + D계열 + I + present)이고
+#   이쪽은 **D 계열만**의 합이다. 이름이 비슷해 보이면 둘 중 하나를 D칸에 잘못 옮기게 되므로
+#   요약·리포트 양쪽에서 항상 "무엇을 더한 값인지"를 함께 낸다.
+# ⚠ **백분위의 합이 아니라 행별 합이다.** p50(hist)+p50(cdf) != p50(hist+cdf).
+STAGE_D_TOTAL_COLUMN = "stage_d_total_ms"
+
+# CSV 열이 아니라 하네스가 만드는 파생 시계열. 폐기 사유 문장을 고를 때 GPU 열과 같이 본다.
+GPU_DERIVED_SERIES = ("gpu_sum_ms", STAGE_D_TOTAL_COLUMN)
+
+# 각 열이 **어느 스키마 버전에서 들어왔는가.** 옛 세션(선언 버전 < 하네스 버전)에 경고를 낼 때
+# "그 로그에 없을 수 있는 열"을 정확히 짚기 위해 쓴다 — 버전마다 문장을 손으로 고치면
+# v4에서 v2 문구가 그대로 남는다.
+COLUMN_ADDED_IN = {
+    "stage_b_ms": 2,
+    "stage_d_ms": 2,
+    "stage_i_ms": 2,
+    "gpu_present_ms": 2,
+    "stage_d_analyze_ms": 3,
+    "stage_d_build_ms": 3,
+    "stage_d_apply_ms": 3,
+    "stage_d_denoise_ms": 3,
+}
+
+# ── 상수 자기검사 ─────────────────────────────────────────────────────────
+# **등록을 빠뜨리면 조용히 틀린다.** 다음 버전에서 GPU 열만 추가하고 COLUMN_ADDED_IN에
+# 안 넣으면, "앱이 뒤처졌다" 경고가 그 열을 **말없이 빼먹은 채** 성공을 보고한다
+# (그 경고를 보고 "내 로그에 다 있다"고 판단하게 된다). 상수끼리의 불변식이므로 데이터와
+# 무관하며, 깨지는 순간은 개발자가 상수를 고친 그 편집 시점이다 — 그래서 import에서 죽인다
+# (중복 헤더를 하드 에러로 만든 것과 같은 부류: 틀린 결과가 채택되는 것보다 낫다).
+_missing_version = [c for c in GPU_TIME_COLUMNS if c not in COLUMN_ADDED_IN]
+_stray_version = [c for c in COLUMN_ADDED_IN if c not in GPU_TIME_COLUMNS]
+if _missing_version or _stray_version:
+    raise RuntimeError(
+        "lib/frame_log.py 상수 불일치 — COLUMN_ADDED_IN과 GPU_TIME_COLUMNS가 어긋난다: "
+        f"버전 미등록 열={_missing_version}, GPU 열이 아닌 항목={_stray_version}. "
+        "열을 추가할 때 두 목록에 **함께** 등록해야 '앱이 뒤처졌다' 경고가 빠진 열을 "
+        "정확히 나열한다 (docs/FRAME_LOG_SCHEMA.md §6)"
+    )
+_missing_family = [c for c in STAGE_D_FAMILY_COLUMNS if c not in GPU_TIME_COLUMNS]
+if _missing_family:
+    raise RuntimeError(
+        f"lib/frame_log.py 상수 불일치 — STAGE_D_FAMILY_COLUMNS가 GPU_TIME_COLUMNS의 "
+        f"부분집합이 아니다: {_missing_family}. D 계열은 CSV에서 읽히는 GPU 열이어야 "
+        f"{STAGE_D_TOTAL_COLUMN} 합산에 들어간다"
+    )
 
 # `gpu_sum_ms`(파생 시계열)에 들어가는 열.
 # gpu_present_ms를 **포함한다**: 최종 표시 패스도 실제로 GPU를 점유하는 시간이고,
@@ -134,11 +218,34 @@ PIPELINE_STAGES = (
 RENDER_ARM_PASSTHROUGH = "passthrough"   # 처리 0. 승격 베이스라인 재현용
 RENDER_ARM_BLIT_2PASS = "blit_2pass"     # 3패스 골격
 RENDER_ARM_GAMMA_ONLY = "gamma_only"     # ② 자리에 감마 패스
+# 합성 로그 생성기가 박는 값. LIGHTING_SYNTHETIC과 같은 취급 — 실기기 arm이 아니라는 사실이
+# 값 자체에 드러나야 한다. 앱은 이 값을 절대 쓰지 않는다.
+RENDER_ARM_SYNTHETIC = "synthetic"
+
+# ⚠ 아래 ② arm 이름들은 **팀원2(하네스) 쪽 명명이지 팀 계약값이 아니다.** 앱이 붙을 때
+#   경고가 뜨지 않도록 미리 등록해 둔 것이고, 앱이 다른 id를 쓰기로 하면 앱 쪽이 정답이며
+#   여기를 고친다(생산자는 앱이다). 어휘 등록은 "이 문자열을 안다"는 뜻일 뿐,
+#   하네스가 그 arm의 의미를 해석한다는 뜻이 아니다.
+RENDER_ARM_CLAHE_GAMMA = "clahe_gamma"
+RENDER_ARM_CLAHE_GAMMA_BF = "clahe_gamma_bf"
+RENDER_ARM_AGCWD = "agcwd"
+RENDER_ARM_AGCWD_BF = "agcwd_bf"
+RENDER_ARM_DRAGO = "drago"
+RENDER_ARM_REINHARD = "reinhard"
+RENDER_ARM_LIME = "lime"
 
 RENDER_ARMS = (
     RENDER_ARM_PASSTHROUGH,
     RENDER_ARM_BLIT_2PASS,
     RENDER_ARM_GAMMA_ONLY,
+    RENDER_ARM_CLAHE_GAMMA,
+    RENDER_ARM_CLAHE_GAMMA_BF,
+    RENDER_ARM_AGCWD,
+    RENDER_ARM_AGCWD_BF,
+    RENDER_ARM_DRAGO,
+    RENDER_ARM_REINHARD,
+    RENDER_ARM_LIME,
+    RENDER_ARM_SYNTHETIC,
 )
 
 # ── 폐기 가드 ─────────────────────────────────────────────────────────────
@@ -233,17 +340,27 @@ class FrameSeries:
     # ── GPU 패스 시간 (GPU 시계 — 위 시계열들과 **다른 시계**다. 섞지 않는다) ──
     stage_b_ms: list[float] = field(default_factory=list)
     stage_d_ms: list[float] = field(default_factory=list)
+    stage_d_analyze_ms: list[float] = field(default_factory=list)
+    stage_d_build_ms: list[float] = field(default_factory=list)
+    stage_d_apply_ms: list[float] = field(default_factory=list)
+    stage_d_denoise_ms: list[float] = field(default_factory=list)
     stage_i_ms: list[float] = field(default_factory=list)
     gpu_present_ms: list[float] = field(default_factory=list)
     # **행 단위** 합. p50(B)+p50(D) != p50(B+D)이므로 백분위를 더하지 않고 행에서 먼저
     # 더한 뒤 분포를 낸다. 그 행에 유효한 GPU 열이 하나도 없으면 기여하지 않는다.
     gpu_sum_ms: list[float] = field(default_factory=list)
+    # D 계열만의 **행 단위** 합 = 그 런의 D칸. gpu_sum_ms와 더하는 대상이 다르다.
+    stage_d_total_ms: list[float] = field(default_factory=list)
     # CSV 헤더에 실제로 있던 GPU 열. 헤더에 없는 열은 폐기로 세지 않는다
     # ("열이 아예 없다"와 "열은 있는데 값이 -1이다"는 다른 사실이다).
     gpu_columns_present: list[str] = field(default_factory=list)
+    # 그중 D 계열만 (헤더에 있던 것). stage_d_total_ms가 무엇을 더한 값인지가 여기 있다.
+    stage_d_columns_present: list[str] = field(default_factory=list)
     # gpu_sum_ms에 들어갔지만 헤더에 있는 GPU 열을 **전부** 채우지는 못한 행 수.
     # 이 값이 0이 아니면 gpu_sum_ms 분포는 아래쪽으로 치우친다(빠진 패스만큼 작다).
     gpu_sum_partial_rows: int = 0
+    # 같은 이유의 D 계열 판. 하위 패스 하나가 disjoint로 빠지면 그 행의 D는 그만큼 작다.
+    stage_d_total_partial_rows: int = 0
     dropped_total: int = 0
     rows_read: int = 0
     rows_used: int = 0
@@ -272,6 +389,16 @@ class FrameSeries:
     @property
     def has_gpu_timings(self) -> bool:
         return any(self.gpu_series.values())
+
+    @property
+    def stage_d_ambiguous(self) -> bool:
+        """`stage_d_ms`와 ② 하위 패스 열이 **같은 로그에 동시에** 있는가.
+
+        그렇다면 `stage_d_ms`가 "② 전체 합"인지 "또 다른 하위 패스"인지 이 로그만으로는
+        알 수 없다. 하네스가 택한 해석은 `_add_stage_d_warnings`가 문장으로 밝힌다.
+        """
+        cols = set(self.stage_d_columns_present)
+        return "stage_d_ms" in cols and bool(cols - {"stage_d_ms"})
 
     @property
     def discarded_total(self) -> int:
@@ -398,11 +525,17 @@ def read_frames(
         # 모든 행이 "값 -1"로 보여 폐기 카운트가 행 수만큼 튄다 — "열이 없다"와
         # "열은 있는데 -1이다"는 다른 사실이므로 여기서 갈라 둔다.
         gpu_columns_present = [c for c in GPU_TIME_COLUMNS if c in reader.fieldnames]
+        # D 계열은 위 목록의 부분집합이다. 따로 뽑아 두는 이유는 stage_d_total_ms가
+        # **무엇을 더한 값인지**가 요약에 남아야 하기 때문이다(arm마다 열 구성이 다르다).
+        stage_d_columns_present = [
+            c for c in STAGE_D_FAMILY_COLUMNS if c in gpu_columns_present
+        ]
         rows = list(reader)
 
     series = FrameSeries()
     series.unknown_columns = unknown_columns
     series.gpu_columns_present = gpu_columns_present
+    series.stage_d_columns_present = stage_d_columns_present
     _add_unknown_column_warnings(series)
     series.rows_read = len(rows)
     if not rows:
@@ -496,6 +629,8 @@ def read_frames(
         #    그래야 disjoint로 몇 프레임이 빠졌는지가 조용히 사라지지 않는다.
         row_gpu_sum = 0.0
         row_gpu_valid = 0
+        row_d_sum = 0.0
+        row_d_valid = 0
         for col in gpu_columns_present:
             val = _to_float(row.get(col))
             before = len(getattr(series, col))
@@ -503,18 +638,31 @@ def read_frames(
             if len(getattr(series, col)) > before:
                 row_gpu_sum += val
                 row_gpu_valid += 1
+                # D 계열은 같은 행 합에 한 번 더 들어간다. **가드·폐기 경로는 위와 동일**이며
+                # (채택된 값만 더한다) 여기서 새 판정을 하지 않는다.
+                if col in STAGE_D_FAMILY_COLUMNS:
+                    row_d_sum += val
+                    row_d_valid += 1
         if row_gpu_valid:
             if row_gpu_valid < len(gpu_columns_present):
                 # 일부 패스만 해소된 행. 합이 그만큼 작으므로 사실을 세어 둔다.
                 series.gpu_sum_partial_rows += 1
             # 백분위를 더하지 않는다: 행에서 먼저 더하고 분포는 그 뒤에 낸다.
             _collect(series, "gpu_sum_ms", series.gpu_sum_ms, row_gpu_sum)
+        if row_d_valid:
+            if row_d_valid < len(stage_d_columns_present):
+                series.stage_d_total_partial_rows += 1
+            # D칸도 같은 규칙 — **행별 합**이지 백분위의 합이 아니다.
+            _collect(
+                series, STAGE_D_TOTAL_COLUMN, series.stage_d_total_ms, row_d_sum
+            )
 
     check_clock_consistency(series, render_start_checked, render_start_violations)
     _add_row_skip_warnings(series)
     _add_discard_warnings(series)
     _add_clock_warnings(series)
     _add_gpu_warnings(series)
+    _add_stage_d_warnings(series)
 
     if series.rows_used == 0:
         raise FrameLogError(
@@ -766,13 +914,25 @@ def check_schema_version(session: dict) -> tuple[Optional[int], bool, Optional[s
     if declared == SCHEMA_VERSION:
         return declared, True, None
     if declared < SCHEMA_VERSION:
+        # 어느 열이 빠져 있을 수 있는지를 **선언 버전 기준으로 계산**한다. 문장에 버전 번호를
+        # 손으로 박아 두면 다음 버전에서 옛 문구가 그대로 남는다(v3 하네스가 "v2에서 늘어난"
+        # 이라고 말하는 상태).
+        missing_cols = [
+            c for c, ver in COLUMN_ADDED_IN.items() if ver > declared
+        ]
+        extra = ""
+        if declared < 2:
+            extra = ", session의 gl/gpu_timer 블록"
         return declared, False, (
             f"session.json이 schema_version={declared}이라고 선언했다 — 하네스는 "
-            f"v{SCHEMA_VERSION}다. **앱이 하네스보다 뒤처진 옛 로그**이며, v2에서 늘어난 것"
-            f"(GPU 패스 시간 열 {', '.join(GPU_TIME_COLUMNS)}, session의 gl/gpu_timer 블록)이 "
+            f"v{SCHEMA_VERSION}다. **앱이 하네스보다 뒤처졌다.** v{declared} 이후에 늘어난 것"
+            f"({', '.join(missing_cols) if missing_cols else '없음'}{extra})이 이 로그에는 "
             f"없을 수 있다. 읽히기는 하지만 stages 블록의 count가 0인 것은 '그 패스가 "
-            f"0ms였다'가 아니라 **그 빌드가 재지 않았다**는 뜻이다. 최신 빌드 런과 같은 "
-            f"조건으로 취급하지 말 것"
+            f"0ms였다'가 아니라 **그 빌드가 재지 않았다**는 뜻이다. "
+            f"⚠ 스키마를 확장할 때는 하네스가 앱보다 **먼저** 들어간다"
+            f"(docs/FRAME_LOG_SCHEMA.md §6) — 앱 라운드가 붙기 전까지 이 경고가 뜨는 것은 "
+            f"정상이고 의도된 순서다. 다만 그 기간의 로그를 최신 빌드 런과 같은 조건으로 "
+            f"취급하지 말 것"
         )
     return declared, False, (
         f"session.json이 schema_version={declared}이라고 선언했다 — 하네스는 "
@@ -833,7 +993,10 @@ def _add_discard_warnings(series: FrameSeries) -> None:
     for name in sorted(series.discarded):
         reasons = series.discarded[name]
         # 사유별 계수는 한 경로에서 나오지만, 열 성격에 따라 그 사유가 뜻하는 바가 다르다.
-        text = GPU_DISCARD_REASON_TEXT if name in GPU_TIME_COLUMNS else DISCARD_REASON_TEXT
+        # 파생 시계열(gpu_sum_ms / stage_d_total_ms)도 GPU 쪽 문장을 쓴다 — 원본이 GPU 열이라
+        # 여기서 "시계 역행"이라고 쓰면 폰 쪽이 시계 코드를 뒤진다.
+        gpu_like = name in GPU_TIME_COLUMNS or name in GPU_DERIVED_SERIES
+        text = GPU_DISCARD_REASON_TEXT if gpu_like else DISCARD_REASON_TEXT
         detail = ", ".join(
             f"{text.get(reason, DISCARD_REASON_TEXT.get(reason, reason))} {count}개"
             for reason, count in sorted(reasons.items())
@@ -878,6 +1041,42 @@ def _add_gpu_warnings(series: FrameSeries) -> None:
             f"{len(series.gpu_columns_present)}개를 다 채우지 못한 채 합산됐다 "
             f"(있는 열: {', '.join(series.gpu_columns_present)}). "
             f"빠진 패스만큼 합이 작으므로 이 분포는 아래쪽으로 치우친다"
+        )
+
+
+def _add_stage_d_warnings(series: FrameSeries) -> None:
+    """D 계열(D칸을 채우는 열들)에 대한 경고.
+
+    두 가지를 말한다:
+      1. **모호성** — `stage_d_ms`와 하위 패스 열이 같은 로그에 동시에 있으면 `stage_d_ms`가
+         "② 전체 합"인지 "또 다른 하위 패스"인지 알 수 없다. 죽이지 않는다(앱이 스키마보다
+         앞서 나갈 수 있다) 대신 **어느 해석을 썼는지 문장에 명시**한다.
+      2. **부분 합** — 하위 패스 하나가 disjoint로 빠진 행은 D가 그만큼 작다.
+    """
+    if series.stage_d_ambiguous:
+        subs = [c for c in series.stage_d_columns_present if c != "stage_d_ms"]
+        series.warnings.append(
+            f"D 계열이 모호하다 — 이 로그에 stage_d_ms와 ② 하위 패스 열이 **동시에** 있다"
+            f"(하위: {', '.join(subs)}). stage_d_ms가 '② 전체 합'인지 '또 다른 하위 패스'인지"
+            f"는 로그만으로 알 수 없다. "
+            f"**하네스는 '또 다른 하위 패스'로 해석했다** — stage_d_ms를 하위 열과 동등하게 "
+            f"취급해 {STAGE_D_TOTAL_COLUMN}(과 gpu_sum_ms)의 행별 합에 그대로 더했다. "
+            f"근거는 **틀렸을 때의 방향**이다: 이 해석이 틀리면 D가 크게 나오고(이중 계상), "
+            f"반대 해석이 틀리면 D가 작게 나온다(실재하는 패스를 뺀다). 예산 안에 든다고 "
+            f"잘못 믿는 쪽이 더 비싸므로 낙관 편향을 만들지 않는 쪽을 택한다. "
+            f"⚠ '스키마가 합계 열을 금지하므로'가 근거가 **아니다** — v2 스키마는 stage_d_ms를 "
+            f"'② 패스(들)의 GPU 시간 합'으로 정의했으므로, v2를 지킨 생산자가 거기에 합계를 "
+            f"넣는 것은 위반이 아니었다(v3부터 그 열은 '패스가 하나인 arm의 ② 패스'다). "
+            f"즉 이 로그가 v2 시절 규칙으로 쓰였다면 stage_d_ms가 합계일 **가능성은 실재한다.** "
+            f"그 경우 {STAGE_D_TOTAL_COLUMN}·gpu_sum_ms는 D를 두 번 센 값이므로 그대로 인용하지 "
+            f"말 것 — 앱 쪽 CSV 헤더 생성부에서 어느 쪽인지 확인하고 한쪽 열을 뺀 뒤 다시 잰다"
+        )
+    if series.stage_d_total_partial_rows:
+        series.warnings.append(
+            f"{STAGE_D_TOTAL_COLUMN}: {series.stage_d_total_partial_rows}개 행이 헤더에 있는 "
+            f"D 계열 열 {len(series.stage_d_columns_present)}개를 다 채우지 못한 채 합산됐다 "
+            f"(있는 열: {', '.join(series.stage_d_columns_present)}). "
+            f"빠진 패스만큼 D가 작으므로 이 분포는 아래쪽으로 치우친다"
         )
 
 

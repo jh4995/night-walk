@@ -23,6 +23,8 @@ from lib.frame_log import (  # noqa: E402
     PIPELINE_STAGES,
     ROW_SKIP_REASON_TEXT,
     SCHEMA_VERSION,
+    STAGE_D_FAMILY_COLUMNS,
+    STAGE_D_TOTAL_COLUMN,
     FrameLogError,
     check_lighting_condition,
     check_pipeline_stages,
@@ -62,9 +64,17 @@ FRAMETIME_PINNED_REL_DIFF = 0.05
 #   나온다. 그래서 라벨을 떼는 대신 **숫자 옆에 arm을 붙인다**(_print_stages / stages 블록).
 #   라벨을 arm에 따라 바꾸는 것은 하네스가 앱의 arm 의미를 해석하기 시작하는 것이고,
 #   그 동기화가 어긋나는 날 조용히 틀린 라벨이 나온다. 매핑 자체는 건드리지 않는다.
+#
+# **D 계열은 전부 D다.** ②를 여러 패스로 쪼개도 채우는 칸은 하나이며, 그 런의 D는
+# `stage_d_total_ms`(D 계열의 행별 합)다 — 감마 arm이든 다패스 arm이든 같은 키로 읽힌다.
 BUDGET_CELL_OF = {
     "stage_b_ms": "B",
     "stage_d_ms": "D",
+    "stage_d_analyze_ms": "D",
+    "stage_d_build_ms": "D",
+    "stage_d_apply_ms": "D",
+    "stage_d_denoise_ms": "D",
+    STAGE_D_TOTAL_COLUMN: "D",  # 파생(행별 합). 실제 CSV 열이 아니다
     "stage_i_ms": "I",
     "gpu_present_ms": None,  # 최종 표시 패스. 실제 GPU 비용이지만 A~J 어느 칸도 아니다
 }
@@ -93,8 +103,38 @@ def empty_pipeline_caveat(camera_fps: float | None) -> str:
     return msg
 
 
+def empty_pipeline_contradiction_caveat(
+    measured_columns: list[str], stages_declared: object
+) -> str:
+    """`pipeline_stages`가 비었/없는데 **GPU 단계 값이 실제로 있는** 경우.
+
+    이때 `empty_pipeline_caveat`를 내면 "여기서부터 ①②③④ 비용이 더해진다"라고 단언하는데,
+    ②는 **이미 더해져 있고 이미 측정돼 있다.** 조건절 없는 거짓 문장이므로 대신 모순을 낸다.
+
+    `gpu_timer_contradicted` / `capture_clock_base_contradicted`와 **같은 패턴**이다 —
+    선언과 실제가 어긋나면 사실을 `source`에 불리언으로 남기고 경고한다.
+    ⚠ 판정선이 아니다. verdict·exit code를 흔들지 않는다.
+    """
+    declared = "키 없음" if stages_declared is None else f"{stages_declared!r}"
+    return (
+        f"단계 선언과 실측이 어긋난다 — session.json의 pipeline_stages는 비어 있는데"
+        f"({declared}) GPU 단계 시계열에는 유효 표본이 있다"
+        f"(값이 나온 열: {', '.join(measured_columns)}). "
+        f"'처리 단계 없음' 단서는 **내지 않았다** — 그 문장은 '여기서부터 ①②③④ 비용이 "
+        f"더해진다'라고 단언하는데, 이 런에서는 그 비용이 이미 더해져 있고 이미 측정돼 있다. "
+        f"원인은 둘 중 하나다: (a) 앱/생성기가 그 패스에 해당하는 pipeline_stages 토큰을 "
+        f"적지 않았다(② 하위 패스 열은 아직 대응 토큰이 없다 — 생산자는 앱이다), "
+        f"(b) 선언이 실제 렌더 경로와 다르다. "
+        f"⚠ pipeline_stages는 baseline_diff의 비교 조건이므로, 고치지 않으면 이 런이 "
+        f"**처리 없는 런과 '같은 조건'으로 비교된다.** 판정·종료 코드는 그대로다"
+    )
+
+
 def frametime_pinned_caveat(
-    pinned: dict, stages: list, camera_fps: float | None = None
+    pinned: dict,
+    stages: list,
+    camera_fps: float | None = None,
+    stages_label: str = "처리 단계",
 ) -> str:
     """처리 단계가 **붙어 있는데도** 프레임타임이 카메라 공급에 묶여 있을 때의 단서.
 
@@ -116,7 +156,10 @@ def frametime_pinned_caveat(
         f"p50(recv_interval_ms)={pinned['recv_p50']:g}ms와 사실상 같다"
         f"(차이 {pinned['rel_diff_p50'] * 100:.2f}%, "
         f"진단 임계 {FRAMETIME_PINNED_REL_DIFF * 100:g}%){supply}. "
-        f"처리 단계 {stages}가 붙어 있는데도 그렇다. "
+        # 라벨을 인자로 받는다. 단계 선언이 비었는데 실측은 있는 모순 런에서는 선언 리스트
+        # (`[]`)를 그대로 찍으면 "처리 단계 []가 붙어 있는데도"라는 거짓 문장이 나간다 —
+        # 그 런에서 근거가 되는 것은 선언이 아니라 **값이 나온 GPU 열**이다.
+        f"{stages_label} {stages}가 붙어 있는데도 그렇다. "
     )
     if pinned["tail_pinned"]:
         body = (
@@ -271,6 +314,21 @@ def _stages_block(
             "유효한 열이 하나도 없는 행은 기여하지 않는다"
         ),
         "gpu_sum_partial_rows": series.gpu_sum_partial_rows,
+        # ── D 계열 (D칸을 채우는 열들) ──────────────────────────────────────
+        # **`stage_d_total_ms`만 보고 D를 인용할 사람**과 **내부 분해를 보고 경량화 레버를
+        # 고를 사람**이 둘 다 있다. 그래서 합과 구성을 같은 블록에 함께 낸다.
+        "stage_d_columns": list(series.stage_d_columns_present),
+        "stage_d_columns_defined": list(STAGE_D_FAMILY_COLUMNS),
+        "stage_d_total_partial_rows": series.stage_d_total_partial_rows,
+        "stage_d_ambiguous": series.stage_d_ambiguous,
+        "stage_d_total_note": (
+            f"{STAGE_D_TOTAL_COLUMN} = stage_d_columns의 **행별 합**이며 이 런의 D칸이다"
+            "(감마 arm은 stage_d_ms 하나, 다패스 arm은 하위 슬롯들 — 어느 쪽이든 이 키가 D다). "
+            "백분위의 합이 아니다: p50(hist)+p50(cdf) != p50(hist+cdf). "
+            "⚠ gpu_sum_ms와 다르다 — gpu_sum_ms는 모든 GPU 열(B + D계열 + I + present)의 합이고 "
+            "이 값은 D 계열만의 합이다. stage_d_ambiguous=true면 stage_d_ms가 합계일 가능성이 "
+            "남아 있어 이 값이 D를 두 번 셌을 수 있다(warnings 참고)"
+        ),
         "has_gpu_timings": series.has_gpu_timings,
     }
     block.update(stats)
@@ -356,7 +414,19 @@ def main() -> int:
     # ── 단계 비용 (GPU 시계). 판정선이 없으므로 verdict를 흔들지 않는다.
     stage_stats = {name: summarize(getattr(series, name)) for name in GPU_TIME_COLUMNS}
     stage_stats["gpu_sum_ms"] = summarize(series.gpu_sum_ms)
+    # D 계열의 행별 합 = 그 런의 D칸. arm에 따라 열 구성이 달라도 이 키 하나로 읽힌다.
+    stage_stats[STAGE_D_TOTAL_COLUMN] = summarize(series.stage_d_total_ms)
     gpu_valid_total = sum(len(v) for v in series.gpu_series.values())
+    # **값이 실제로 나온** 단계 열. 헤더에 있는 것(columns_present)과 다르다 — 전부 -1이면
+    # 여기는 비고, 그때는 "단계를 쟀다"고 말할 수 없다.
+    measured_stage_columns = [c for c, v in series.gpu_series.items() if v]
+    # 단계 선언(빈 배열/키 없음) ↔ 실측 단계 값의 모순. 리스트가 아닌 경우는 여기서 다루지
+    # 않는다(그건 nonlist_pipeline_stages_caveat가 이미 "읽지 못했다"고 말한다).
+    pipeline_stages_contradicted = bool(
+        isinstance(stages_declared, (list, type(None)))
+        and not stages_declared
+        and series.has_gpu_timings
+    )
 
     # session.json이 선언한 GPU timer 지원 여부. 선언과 실제가 모순되면 선언 쪽이
     # 틀렸을 수 있다 (capture_clock_base_contradicted와 같은 패턴).
@@ -409,6 +479,11 @@ def main() -> int:
             "lighting_condition_comparable": lighting_comparable,
             # 단계 어휘 검사. 어휘 밖 토큰은 비교를 끊으므로 사실을 남긴다(판정은 그대로).
             "pipeline_stages_vocab_ok": stages_vocab_ok,
+            # 선언은 "처리 없음"인데 GPU 단계 값이 실제로 있는가.
+            # gpu_timer_contradicted / capture_clock_base_contradicted와 같은 패턴이다.
+            # ⚠ 판정선이 아니다 — verdict·exit code를 바꾸지 않는다.
+            "pipeline_stages_contradicted": pipeline_stages_contradicted,
+            "pipeline_stages_measured_columns": measured_stage_columns,
             "pipeline_stages_unknown_tokens": (
                 [] if stages_vocab_ok or not isinstance(stages_declared, list)
                 else [s for s in stages_declared if s not in PIPELINE_STAGES]
@@ -473,23 +548,44 @@ def main() -> int:
     #   리스트가 아닌 값은 check_pipeline_stages가 이미 경고했다 — 여기서는 죽지 않고,
     #   단계를 전제하는 두 단서(빈 파이프라인 / 묶임)를 **내지 않는 것**으로 처리한다.
     pipeline_stages = stages_declared if isinstance(stages_declared, list) else None
+    # ⚠ **관측은 단계 선언과 무관한 사실이므로 항상 기록한다.** 예전에는 문장을 내지 않는
+    #   분기에서 관측치 키까지 함께 빠져서, 기계 소비자가 "이 런의 프레임타임이 공급에
+    #   묶여 있었나"를 나중에 되물을 근거가 아예 없었다. 문장을 낼지 말지는 분기가 정하되,
+    #   관측치는 여기서 한 번 남긴다.
+    pinned = _frametime_pinned(summary["frametime"])
+    if pinned is not None:
+        summary["frametime"]["pinned_to_camera_supply"] = pinned
     if stages_declared is not None and pipeline_stages is None:
-        pinned = _frametime_pinned(summary["frametime"])
-        if pinned is not None:
-            # 관측 자체는 단계와 무관한 사실이므로 남긴다. 문장만 내지 않는다.
-            summary["frametime"]["pinned_to_camera_supply"] = pinned
         summary["warnings"].append(nonlist_pipeline_stages_caveat(stages_declared))
     elif not pipeline_stages:
-        summary["warnings"].append(
-            empty_pipeline_caveat(_camera_fps(session))
-        )
+        if pipeline_stages_contradicted:
+            # 선언은 "처리 없음"인데 GPU 단계 값이 실제로 있다. "여기서부터 ①②③④ 비용이
+            # 더해진다"는 이 런에서 거짓이므로 그 단서 대신 모순을 낸다.
+            summary["warnings"].append(
+                empty_pipeline_contradiction_caveat(
+                    measured_stage_columns, stages_declared
+                )
+            )
+            # 묶임 단서는 이 상황에서 **오히려 맞는 단서**다(단계가 실제로 붙어 있는데
+            # 프레임타임이 안 변한 경우). 선언이 비었다는 이유로 끄지 않는다. 다만 근거는
+            # 선언 리스트가 아니라 값이 나온 열이므로 라벨을 바꿔 낸다.
+            if pinned is not None:
+                summary["warnings"].append(
+                    frametime_pinned_caveat(
+                        pinned,
+                        measured_stage_columns,
+                        _camera_fps(session),
+                        stages_label="측정된 GPU 단계 열",
+                    )
+                )
+        else:
+            summary["warnings"].append(
+                empty_pipeline_caveat(_camera_fps(session))
+            )
     else:
         # 단계가 붙었다고 empty_pipeline_caveat만 끄면 안 된다. 프레임타임이 공급에
         # 묶여 있는 한 그 단서의 주장은 그대로 참이므로, 조건을 관측으로 바꿔 다시 낸다.
-        pinned = _frametime_pinned(summary["frametime"])
         if pinned is not None:
-            # 관측치를 요약에도 남긴다 — 경고 문장만 있으면 나중에 기계가 되물을 수 없다.
-            summary["frametime"]["pinned_to_camera_supply"] = pinned
             summary["warnings"].append(
                 frametime_pinned_caveat(
                     pinned, list(pipeline_stages), _camera_fps(session)
@@ -581,10 +677,28 @@ def _camera_fps(session: dict) -> float | None:
         return None
 
 
+def _stage_series_order() -> list[str]:
+    """리포트에 찍을 순서. **파생 시계열을 자기 구성 요소 바로 뒤에 둔다.**
+
+    `stage_d_total_ms`를 맨 끝(gpu_sum_ms 옆)에 두면 "D 계열의 합"이 "전체 GPU 합"과
+    나란히 서서 둘을 혼동하기 쉽다. 하위 패스 줄 바로 아래에 두면 무엇을 더한 값인지가
+    화면 배치로 드러난다.
+    """
+    order = list(GPU_TIME_COLUMNS)
+    # D 계열이 GPU_TIME_COLUMNS에서 전부 빠지면 max()가 빈 시퀀스 ValueError를 내고
+    # **집계 전체가 죽는다.** 오늘은 불가능하지만(둘 다 상수), 리포트 배치 문제로 그날
+    # 측정을 통째로 잃을 이유가 없다 — 없으면 맨 끝에 붙인다.
+    d_positions = [i for i, n in enumerate(order) if n in STAGE_D_FAMILY_COLUMNS]
+    order.insert(d_positions[-1] + 1 if d_positions else len(order), STAGE_D_TOTAL_COLUMN)
+    order.append("gpu_sum_ms")
+    return order
+
+
 def _print_stages(summary: dict) -> None:
     """단계 비용(GPU 시계) 출력. **판정선이 없으므로 PASS/FAIL을 찍지 않는다.**"""
     st = summary.get("stages") or {}
     cols = st.get("columns_present") or []
+    d_cols = st.get("stage_d_columns") or []
     arm_long, arm_short = _arm_long(st), _arm_short(st)
     if not cols:
         LOG.info(
@@ -606,21 +720,43 @@ def _print_stages(summary: dict) -> None:
             "[칸] 라벨은 열↔칸 스키마 매핑일 뿐이므로 이 값을 버짓 칸에 옮기지 말 것",
             arm_long,
         )
-    for name in list(GPU_TIME_COLUMNS) + ["gpu_sum_ms"]:
+    # D 계열이 **어떻게 구성됐는지**를 숫자 앞에 먼저 낸다. stage_d_total_ms만 보고 D를
+    # 인용할 사람과 내부 분해를 보고 레버를 고를 사람이 둘 다 있으므로, 어느 열들을 더해
+    # D가 나왔는지가 리포트에서 사라지면 안 된다.
+    if d_cols:
+        LOG.info(
+            "  D칸 구성: %s = %s (행별 합 — 백분위의 합이 아니다)",
+            " + ".join(d_cols), STAGE_D_TOTAL_COLUMN,
+        )
+        if st.get("stage_d_ambiguous"):
+            LOG.warning(
+                "  ⚠ D 계열 모호 — stage_d_ms가 '합계'인지 '또 하나의 하위 패스'인지 "
+                "이 로그로는 알 수 없다. 하네스는 **하위 패스로 해석**해 그대로 더했다 "
+                "(아래 경고 참고)"
+            )
+    for name in _stage_series_order():
         s = st.get(name) or {}
         if not s:
             continue
         cell = BUDGET_CELL_OF.get(name)
         label = f"{name}[{cell}칸]" if cell else name
+        # D칸의 대표값과 그 구성 요소를 눈으로 갈라 놓는다. 들여쓰기가 없으면 하위 패스
+        # 한 줄만 복사해 D칸에 옮기는 일이 생긴다(전체가 아니라 일부인데).
+        if name in STAGE_D_FAMILY_COLUMNS and len(d_cols) > 1:
+            label = "· " + label
         if s.get("count"):
             LOG.info(
-                "  %-20s p50=%-8s p95=%-8s p99=%-8s min=%-8s max=%-8s (n=%s, %s)",
+                "  %-26s p50=%-8s p95=%-8s p99=%-8s min=%-8s max=%-8s (n=%s, %s)",
                 label, s["p50"], s["p95"], s["p99"], s["min"], s["max"],
                 s["count"], arm_short,
             )
-        elif name in cols or (name == "gpu_sum_ms" and cols):
+        elif (
+            name in cols
+            or (name == "gpu_sum_ms" and cols)
+            or (name == STAGE_D_TOTAL_COLUMN and d_cols)
+        ):
             LOG.warning(
-                "  %-20s 유효 표본 0개 — '0ms'가 아니라 재지 못한 것이다 (%s)",
+                "  %-26s 유효 표본 0개 — '0ms'가 아니라 재지 못한 것이다 (%s)",
                 label, arm_short,
             )
 

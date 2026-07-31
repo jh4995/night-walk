@@ -29,6 +29,18 @@ CONDITION_KEYS = (
     ("device", "props", "build_fingerprint"),
     ("session", "build_type"),
     ("session", "pipeline_stages"),
+    # **arm은 그 런이 실제로 무엇을 그렸는지를 정하는 측정 조건이다** — 조명과 정확히 같은
+    # 성격이며, `pipeline_stages`가 이것을 담지 못한다는 것이 독립 검증에서 실증됐다:
+    # `blit_2pass` 런과 `clahe_gamma` 런이 둘 다 pipeline_stages=['blit_2pass']여서
+    # 처리량이 완전히 다른데도 **무경고로 "회귀 없음"**이 나왔다.
+    # 근본 원인: ② 하위 패스 열(stage_d_hist/cdf/apply_ms)에 대응하는 PIPELINE_STAGES 토큰이
+    # 없다. 그 토큰의 생산자는 앱이라 하네스가 먼저 지어낼 수 없으므로(지어내면 앱이 다른
+    # 이름을 쓰는 날 모든 비교가 "조건 다름"이 된다), arm 자체를 조건으로 본다.
+    # ⚠ 대가를 알고 받는다: v1 승격 베이스라인에는 render_arm이 없어(None) 새 passthrough
+    #   런(="passthrough")과 "조건 다름"으로 뜬다. 이건 버그가 아니라 **정직한 표시**다 —
+    #   그 옛 로그는 자기가 어떤 arm이었는지 실제로 기록하지 않았고, "passthrough 상당"은
+    #   우리의 추론이다. comparable은 exit code를 바꾸지 않는다.
+    ("session", "render_arm"),
     # 야간 앱에서 조명은 **공급 fps를 직접 바꾸는 조건**이다. 저조도에서 카메라 AE가 노출을
     # 늘리면 프레임 간격 자체가 벌어져, 밝은 방 런과 야간 런을 비교하면 코드가 그대로여도
     # "회귀"로 보인다. 어휘는 lib/frame_log.py의 LIGHTING_CONDITIONS.
