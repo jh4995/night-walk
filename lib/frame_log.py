@@ -94,6 +94,30 @@ LIGHTING_CONDITIONS = (
     LIGHTING_UNKNOWN,      # 기록되지 않음. 비교 대상으로 쓸 수 없다
 )
 
+# ── 파이프라인 단계 어휘 (session.json: pipeline_stages) ────────────────────
+# 조명과 **같은 이유로** 어휘를 고정한다. `pipeline_stages`는 baseline_diff의
+# CONDITION_KEYS에 들어 있는 비교 조건이라, 같은 구조를 두 이름으로 부르면
+# (`blit_2pass` vs `pass1_oes_to_offscreen`) 모든 비교가 "조건 다름"이 된다.
+#
+# ⚠ **생산자는 앱이다** (`android/.../gl/RenderArm.kt`의 `pipelineStages`). 그러므로 어휘는
+#   앱이 쓰는 문자열로 맞춘다 — 하네스가 자기 이름을 따로 쓰면 합성 런과 실측 런이 영원히
+#   비교 불가가 된다. 합성 생성기(`gen_synthetic_frames.py`)가 이 목록을 따라간다.
+# ⚠ **판정선이 아니다.** 어휘 밖 토큰은 경고만 낸다(미지 열과 같은 취급) — 앱이 새 arm을
+#   하네스보다 먼저 낼 수 있고, 그때 집계가 죽으면 그날 측정을 통째로 잃는다.
+# 이 목록은 `docs/FRAME_LOG_SCHEMA.md` §5의 표와 **같아야 한다.**
+STAGE_BLIT_2PASS = "blit_2pass"        # 3패스 골격(OES→오프스크린→②자리→표시). 앱 생산
+STAGE2_GAMMA = "stage2_gamma"          # ② 자리 감마 패스. 앱 생산
+STAGE_DETECT = "detect"                # ③ 탐지. **앱 미구현** — 현재는 합성 로그만 낸다
+STAGE4_HIGHLIGHT = "stage4_highlight"  # ④ 강조. **앱 미구현** — 현재는 합성 로그만 낸다
+
+PIPELINE_STAGES = (
+    STAGE_BLIT_2PASS,
+    STAGE2_GAMMA,
+    STAGE_DETECT,
+    STAGE4_HIGHLIGHT,
+)
+# 빈 배열 = 처리 없는 arm(passthrough). "단계 없음"은 토큰이 아니라 빈 배열로 적는다.
+
 # ── 폐기 가드 ─────────────────────────────────────────────────────────────
 # 하한(0)은 모든 시계열에 적용한다. 0 이하 간격/지연은 물리적으로 불가능하며
 # 시계가 역행했다는 뜻이다. **버리되 반드시 센다.**
@@ -609,6 +633,91 @@ def check_lighting_condition(session: dict) -> tuple[Optional[str], bool, Option
             f"허용 어휘: {vocab} (목록은 lib/frame_log.py와 docs/FRAME_LOG_SCHEMA.md §5)"
         )
     return val, True, None
+
+
+def check_pipeline_stages(session: dict) -> tuple[object, bool, Optional[str]]:
+    """session.json의 pipeline_stages 어휘를 검사한다.
+
+    반환: (값 원문, 어휘 안인가, 경고 문장 or None).
+    ⚠ **판정선이 아니다.** `check_lighting_condition`과 같은 취급 — PASS/FAIL·exit code를
+    흔들지 않는다. 키가 아예 없는 경우는 여기서 말하지 않는다(빈 파이프라인 단서가
+    analyze_frames 쪽에서 이미 그 사실을 다룬다).
+    """
+    raw = session.get("pipeline_stages")
+    vocab = ", ".join(PIPELINE_STAGES)
+    if raw is None:
+        return None, True, None
+    if not isinstance(raw, list):
+        return raw, False, (
+            f"pipeline_stages가 리스트가 아니다({type(raw).__name__}: {raw!r}) — "
+            "baseline_diff는 이 값을 그대로 비교하므로 타입이 다르면 같은 조건도 "
+            "'조건 다름'이 된다. 앱 쪽 session.json 생성부를 확인할 것"
+        )
+    unknown = [s for s in raw if s not in PIPELINE_STAGES]
+    if unknown:
+        names = ", ".join(repr(s) for s in unknown)
+        return raw, False, (
+            f"pipeline_stages에 어휘 밖 토큰이 있다: {names} — 자유 문자열을 쓰면 같은 "
+            "구조가 서로 다른 이름으로 갈려 baseline_diff의 모든 비교가 '조건 다름'이 된다. "
+            f"허용 어휘: {vocab} (목록은 lib/frame_log.py의 PIPELINE_STAGES와 "
+            "docs/FRAME_LOG_SCHEMA.md §5). 앱이 새 arm을 먼저 낸 것이라면 하네스 쪽 어휘를 "
+            "먼저 등록해야 이후 런이 과거 런과 비교된다"
+        )
+    return raw, True, None
+
+
+def check_schema_version(session: dict) -> tuple[Optional[int], bool, Optional[str]]:
+    """session.json이 선언한 schema_version과 하네스의 SCHEMA_VERSION을 대조한다.
+
+    반환: (선언값, 일치하는가, 경고 문장 or None).
+    ⚠ **경고만이다.** 판정(`meets_*_target`)·종료 코드를 바꾸지 않는다 — 옛 로그는 계속
+    읽혀야 한다(v1 로그는 GPU 열이 없을 뿐 분포는 그대로 나온다). 다만 조용히 넘어가면
+    v1 세션이 v2로 라벨된 요약에 실려 나가고, 나중에 그 요약만 보고는 어느 쪽인지 알 수 없다.
+    """
+    if "schema_version" not in session:
+        return None, False, (
+            f"session.json에 schema_version이 없다 — 하네스는 v{SCHEMA_VERSION}로 읽었지만 "
+            "이 로그가 어느 스키마로 쓰였는지는 로그 자신이 말하지 않는다. "
+            "세션 파일을 주지 않았거나(--session 생략), 스키마 키를 쓰기 전 빌드의 로그다. "
+            "summary.json의 schema_version은 **하네스 버전**이지 이 로그의 버전이 아니다"
+        )
+    raw = session.get("schema_version")
+    # ⚠ `int(raw)`로 뭉개지 않는다. `int(2.7) == 2`라서 **불일치가 조용히 일치로 정규화**되고
+    #   (경고 0건으로 통과한다), `int(True) == 1`이라 타입 오류가 "v1 로그"라는 거짓 사실로
+    #   보고된다. 정수로 딱 떨어지는 값만 버전으로 받고 나머지는 전부 타입 문제로 낸다.
+    #   `2.0`은 받는다 — JSON에서 정수 2와 같은 값이지 불일치가 아니다.
+    declared: Optional[int] = None
+    if isinstance(raw, bool):
+        declared = None  # JSON true/false는 버전이 아니다 (파이썬에서 bool은 int의 하위형)
+    elif isinstance(raw, int):
+        declared = raw
+    elif isinstance(raw, float) and raw.is_integer():
+        declared = int(raw)
+    if declared is None:
+        return raw, False, (
+            f"session.json의 schema_version이 정수가 아니다({raw!r}, 타입 "
+            f"{type(raw).__name__}) — 하네스 버전(v{SCHEMA_VERSION})과 대조할 수 없다. "
+            f"소수점이 붙은 값(예: 2.7)을 정수로 깎아 받으면 **불일치가 일치로 둔갑**하므로 "
+            f"받지 않는다. 앱 쪽 SessionWriter를 확인할 것"
+        )
+    if declared == SCHEMA_VERSION:
+        return declared, True, None
+    if declared < SCHEMA_VERSION:
+        return declared, False, (
+            f"session.json이 schema_version={declared}이라고 선언했다 — 하네스는 "
+            f"v{SCHEMA_VERSION}다. **앱이 하네스보다 뒤처진 옛 로그**이며, v2에서 늘어난 것"
+            f"(GPU 패스 시간 열 {', '.join(GPU_TIME_COLUMNS)}, session의 gl/gpu_timer 블록)이 "
+            f"없을 수 있다. 읽히기는 하지만 stages 블록의 count가 0인 것은 '그 패스가 "
+            f"0ms였다'가 아니라 **그 빌드가 재지 않았다**는 뜻이다. 최신 빌드 런과 같은 "
+            f"조건으로 취급하지 말 것"
+        )
+    return declared, False, (
+        f"session.json이 schema_version={declared}이라고 선언했다 — 하네스는 "
+        f"v{SCHEMA_VERSION}다. **앱이 하네스보다 앞서 나갔다.** 앱이 새로 넣은 열은 "
+        f"KNOWN_COLUMNS에 없어 집계에서 통째로 버려지므로(미지 열 경고를 함께 확인할 것), "
+        f"이 런의 새 지표는 요약에 없다. lib/frame_log.py의 OPTIONAL_COLUMNS/"
+        f"SCHEMA_VERSION과 docs/FRAME_LOG_SCHEMA.md를 먼저 올린 뒤 다시 집계할 것"
+    )
 
 
 def _add_row_skip_warnings(series: FrameSeries) -> None:

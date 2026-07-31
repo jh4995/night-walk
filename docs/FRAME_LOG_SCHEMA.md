@@ -351,6 +351,65 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 `summary.json`의 `source.lighting_condition_comparable = false`로 남긴다.
 **판정(exit code·`meets_*_target`)은 바꾸지 않는다** — 조명은 판정선이 아니라 비교 조건이다.
 
+### `pipeline_stages` — 어휘를 고정한다 (`lighting_condition`과 같은 방식)
+
+**허용 어휘는 이 표와 `lib/frame_log.py`의 `PIPELINE_STAGES` 두 곳이 같아야 한다.**
+`pipeline_stages`는 아래 "비교 조건" 표에 든 `CONDITION_KEYS` 항목이라, 같은 구조를 두 이름으로
+부르면(`blit_2pass` vs `pass1_oes_to_offscreen`) **모든 비교가 "조건 다름"이 된다.**
+실측이 한 번 쌓이면 그 문자열에 묶이므로 어휘는 실측 전에 고정한다.
+
+**생산자는 앱이다** — 토큰은 `android/.../gl/RenderArm.kt`의 `pipelineStages`가 그대로 나간 것이고,
+하네스(`gen_synthetic_frames.py`)가 그 어휘를 따라간다. 반대로 하면 합성 런과 실측 런이 영원히
+비교 불가가 된다.
+
+| 토큰 | 의미 | 생산자 |
+|---|---|---|
+| *(빈 배열)* | 처리 없는 arm(`passthrough`). OES→화면 1패스 | 앱 `RenderArm.PASSTHROUGH` |
+| `blit_2pass` | 3패스 골격(OES→오프스크린→②자리→표시). ② 자리는 단순 복사 | 앱 `RenderArm.BLIT_2PASS` / 생성기 `--stage_b_ms` |
+| `stage2_gamma` | ② 자리에 감마 패스. **② 비용의 하한**이며 알고리즘이 아니다 | 앱 `RenderArm.GAMMA_ONLY` / 생성기 `--stage_d_ms` |
+| `detect` | ③ 탐지. **앱 미구현** — 현재는 합성 로그만 낸다 | 생성기 `--detect_every_n` |
+| `stage4_highlight` | ④ 강조. **앱 미구현** — 현재는 합성 로그만 낸다 | 생성기 `--stage_i_ms` |
+
+- 어휘 밖 토큰이 오면 `analyze_frames.py`가 **경고**하고
+  `source.pipeline_stages_vocab_ok = false` / `source.pipeline_stages_unknown_tokens`에 남긴다.
+- **값이 리스트가 아니어도(int·str·dict) 집계는 끝까지 돈다.** 경고만 붙고 `summary.json`은
+  정상 생성된다 — 여기서 죽으면 그날 측정을 통째로 잃고, 정작 그 사실을 적은 요약도 안 남는다.
+  단계를 전제하는 두 단서(빈 파이프라인 / 프레임타임 묶임)는 그때 **붙이지 않는다.**
+- **하드 에러로 만들지 않는다.** 앱이 새 arm을 하네스보다 먼저 낼 수 있고(미지 열과 같은 상황),
+  그때 집계가 죽으면 그날 측정을 통째로 잃는다. **판정(`meets_*_target`)·종료 코드는 바꾸지 않는다.**
+- 새 arm을 정식으로 쓰려면 `lib/frame_log.py`의 `PIPELINE_STAGES`와 이 표에 **함께** 등록한다.
+  등록 전 런은 과거 런과 "조건 다름"으로 갈린다.
+
+### `schema_version` 대조 — 세션 선언과 하네스 버전을 둘 다 남긴다
+
+`session.json`의 `schema_version`을 아무도 검증하지 않으면, **v1 세션이 v2로 라벨된 요약에
+실려 나간다.** `summary.json`의 최상위 `schema_version`은 하네스가 찍은 값이라, 그 요약만
+보고는 로그 자신이 뭐라고 선언했는지 되물을 수 없다. 그래서 둘을 이름을 갈라 함께 남긴다.
+
+| `summary.json` 키 | 뜻 |
+|---|---|
+| `schema_version` (최상위) | **하네스** 버전 (`lib/frame_log.py: SCHEMA_VERSION`) |
+| `source.schema_version_declared` | 세션이 선언한 값. 키가 없으면 `null` |
+| `source.schema_version_harness` | 위 최상위 값의 사본 — `source` 블록만 보고도 대조가 끝나게 |
+| `source.schema_version_matches_harness` | 두 값이 같은가 |
+
+다르면 방향에 따라 문장이 갈린다. **경고만이다 — 판정·종료 코드를 바꾸지 않는다.**
+옛 로그는 계속 읽혀야 한다(v1 실측 로그로 확인: `p50` 등 모든 값이 그대로 나온다).
+
+| 상황 | 문장 방향 |
+|---|---|
+| 선언 < 하네스 | **S1 이전(앱이 뒤처진) 로그.** v2에서 늘어난 GPU 열·`gl`/`gpu_timer` 블록이 없을 수 있다. `stages`의 count 0은 "0ms"가 아니라 "그 빌드가 재지 않았다" |
+| 선언 > 하네스 | **앱이 하네스보다 앞서 나갔다.** 앱이 새로 넣은 열은 미지 열로 버려지므로 새 지표가 요약에 없다. 하네스를 먼저 올리고 다시 집계할 것 |
+| 키 없음 | 로그가 자기 스키마를 말하지 않는다. `--session`을 생략했거나 스키마 키 이전 빌드 |
+| 정수가 아님 (`2.7` · `"two"` · `true`) | 대조 불가. 앱 쪽 `SessionWriter` 확인 |
+
+> ⚠️ **`int()`로 뭉개지 않는다.** `int(2.7) == 2`라서 **불일치가 경고 없이 일치로 정규화**되고,
+> `int(True) == 1`이라 타입 오류가 "v1 로그"라는 거짓 사실로 보고된다. 정수로 딱 떨어지는
+> 값만 버전으로 받는다(`2.0`은 정수 2와 같은 값이므로 받는다).
+
+`capture_clock_base_contradicted` / `lighting_condition_comparable`과 같은 패턴이다 —
+**선언과 실제가 어긋나면 사실을 `source` 블록에 불리언으로 남기고 경고한다.**
+
 ### 비교 조건 (`baseline_diff.py`가 다르면 "비교가 아니라 착시"라고 경고)
 
 `CONDITION_KEYS`에 있는 것만이 비교 조건이다.
@@ -408,23 +467,31 @@ gpu_present_ms                                        ← 버짓 칸이 없는 �
 - 백프레셔는 **`STRATEGY_KEEP_ONLY_LATEST`**. 큐에 쌓으면 프레임타임이 좋아 보이고 지연만 는다
 - 로그는 **메모리에 모았다가 끝날 때 한 번에 쓴다.** 매 프레임 파일 I/O를 하면 측정 대상이 오염된다
 - 측정은 **release 빌드, 실기기**로만. 에뮬레이터 프레임은 실기기 숫자가 아니다
-- 출력 위치는 `getExternalFilesDir(null)` = `/sdcard/Android/data/<pkg>/files/`.
-  `pull_frames.py`가 이 경로를 기본값으로 본다(§8). 다른 곳에 쓰면 `--remote_dir`로 알려줘야 한다
+- 출력 위치는 **런별 디렉토리**다:
+  `getExternalFilesDir(null)/runs/<YYYYMMDD_HHMMSS>/{frames.csv,session.json}`
+  = `/sdcard/Android/data/<pkg>/files/runs/<YYYYMMDD_HHMMSS>/`.
+  `pull_frames.py`가 이 경로를 기본값으로 본다(§8). 앱 외부 파일 디렉토리가 다르면
+  `--remote_dir`로 그 **베이스**를 알려준다(런은 그 아래 `runs/`에서 찾는다).
+  ⚠️ **`files/` 바로 아래에 평면으로 쓰지 않는다.** 그 자리는 S1 이전 빌드의 잔해가 남는
+  곳이라, 회수 스크립트가 거기서 집으면 낡은 로그가 조용히 최신 측정 행세를 한다
 - `session.json`의 **`lighting_condition`은 측정할 때 실제 조건으로 채운다**(§5 어휘).
   비워 두면 그 런은 나중에 아무것과도 정직하게 비교할 수 없다
 
 ## 8. 사용법
 
 ```bash
-# ① 폰에서 로그를 가져온다 (outputs/poc_pull/<run_ts>/ 로 들어간다)
-python scripts/pull_frames.py                       # 기본 패키지 com.bammasil.poc
+# ① 폰에서 로그를 가져온다 (outputs/poc_pull/<run_ts>/<기기 런 이름>/ 로 들어간다)
+python scripts/pull_frames.py                        # 기기의 **가장 최근 런** 하나
+python scripts/pull_frames.py --list                 # 회수하지 않고 런 목록만 (이름·크기·시각)
+python scripts/pull_frames.py --run 20260731_032312  # 특정 런
+python scripts/pull_frames.py --all                  # runs/ 아래 전부 (야간 여러 런을 한 번에)
 python scripts/pull_frames.py --serial <serial>      # 기기 여러 대면 필수
-python scripts/pull_frames.py --package <pkg> --remote_dir /sdcard/...  # 경로가 다르면
+python scripts/pull_frames.py --package <pkg> --remote_dir /sdcard/...  # 베이스 경로가 다르면
 
 # ② 가져온 로그를 집계 (기기 메타는 adb로 자동 수집)
 python scripts/analyze_frames.py \
-  --frames outputs/poc_pull/<run_ts>/frames.csv \
-  --session outputs/poc_pull/<run_ts>/session.json
+  --frames outputs/poc_pull/<run_ts>/<기기 런 이름>/frames.csv \
+  --session outputs/poc_pull/<run_ts>/<기기 런 이름>/session.json
 
 # 이전 측정과 비교해 회귀 판정 (CI: 회귀=1, 판정 불가=3)
 python scripts/baseline_diff.py --baseline <이전>/summary.json --current <이번>/summary.json
@@ -459,15 +526,52 @@ python scripts/gen_synthetic_frames.py --stage_d_ms 60                          
 > 안 붙는다** — 어느 커밋의 앱이 뱉은 로그인지 나중에 알 수 없다.
 > `pull_frames.py`는 `init_run(stage="poc_pull")`을 거치므로 같은 디렉토리에
 > `run_meta.json`(git commit·dirty·argv)과 `pull_result.json`(adb 명령·returncode·출력 원문,
-> 기기 메타, 원격 `ls` 결과)이 함께 남는다.
+> 기기 메타, 원격 `ls` 결과, **실제로 어느 원격 경로에서 가져왔는지**)이 함께 남는다.
 >
 > | 종료 코드 | 뜻 |
 > |---|---|
-> | 0 | 두 파일 모두 0바이트 초과로 가져옴 |
+> | 0 | 선택된 런의 두 파일을 모두 0바이트 초과로 가져옴 (`--list`는 목록을 낸 뒤 0) |
 > | 2 | adb를 찾지 못함 (`--adb`로 경로 지정 가능) |
 > | 3 | 기기 문제 — 0대 / 여러 대인데 `--serial` 없음 / 지정 serial이 `device` 상태 아님. **기기를 추측해 고르지 않는다** |
-> | 4 | `adb pull` 실패, 또는 **0바이트 파일**(0바이트는 "가져왔다"가 아니다) |
-> | 5 | `--no_outputs` — 스탬프 있는 목적지가 없어 pull하지 않았다 |
+> | 4 | `adb pull` 실패, **0바이트 파일**, **회수할 런이 0개**(`runs/`가 비었거나 런 디렉토리가 하나도 없거나 `--run` 이름이 기기에 없음), **원격 조사 실패**(권한 거부 등), `--run`+`--all` 동시 지정 |
+> | 5 | `--no_outputs` — 스탬프 있는 목적지가 없어 아무것도 하지 않았다(`--list` 포함) |
+
+#### 원격 레이아웃 선택 규칙 — 조용한 폴백이 오염 경로였다
+
+앱은 `<files>/runs/<YYYYMMDD_HHMMSS>/`에 쓴다(§7). 예전 구현은 `runs/`를 모르고
+`<files>/` 바로 아래의 **평면 파일**을 가져오면서 `ok=true`·exit 0을 냈고, 그 자리에는
+S1 이전 빌드의 낡은 로그가 남아 있었다. `pipeline_stages`가 빈 배열이라 `baseline_diff`는
+새 passthrough 런과 **"비교 가능"으로 판정**해 버린다 — 실패가 아니라 조용한 오염이다.
+
+| 기기 상태 | 동작 |
+|---|---|
+| `runs/`에 런 있음 | 기본은 **가장 최근 하나**(정렬 규칙은 아래). `--run`으로 지정, `--all`로 전부 |
+| `runs/`에 런 있음 **+ 평면 파일도 남아 있음** | `runs/`를 쓰되 **평면 파일이 남아 있다고 경고**한다(측정 전에 지울 대상) |
+| `runs/`는 있는데 **비어 있음** | **실패(4).** 폴백하지 않는다 — "런이 없다"와 "낡은 파일이 있다"는 다른 상황이다 |
+| `runs/`에 엔트리는 있는데 **런 디렉토리가 하나도 없음**(파일만 있음) | **실패(4). 기본·`--list`·`--all` 세 모드 전부.** 비어 있는 것과 같은 결론이며, 런이 아닌 항목의 이름을 실패 문장에 싣는다 |
+| `runs/`는 있는데 **읽을 수 없음**(권한 거부 등) | **실패(4).** "런이 없다"로 뭉개지 않고 **`ls`의 returncode와 stderr 원문으로 권한을 지목**한다 |
+| `runs/`가 **아예 없음** + 평면 파일 있음 | 평면 폴백. **크게 경고한다**(S1 이전 로그이며 지금 측정과 비교 금지). 로컬 디렉토리 이름은 `_legacy_flat` — 기기 런 이름과 모양이 다르다 |
+| `runs/`가 없는데 `--run`/`--all` 지정 | **실패(4).** 명시적으로 런을 지목했는데 옛 파일을 대신 주지 않는다 |
+| `runs/`도 없고 평면 파일도 없음 | **실패(4).** 앱이 한 번도 측정을 끝내지 않았거나 경로가 다르다 |
+
+> **0개 회수는 어느 모드에서도 성공이 아니다.** F1이 "낡은 걸 가져오고 성공"이었다면
+> "아무것도 안 가져오고 `ok=true`"는 같은 계열의 조용한 성공이다. 선택 단계에서 대상이
+> 0개면 pull 루프에 들어가기 전에 실패로 낸다(방어선이 이중으로 있다).
+> 실패해도 `pull_result.json`은 남는다 — 그때 기기에 무엇이 있었는지가 기록의 일부다.
+
+> **"가장 최근"은 사전순이 아니다.** 런 이름은 `YYYYMMDD_HHMMSS`이고 같은 초에 두 번
+> 시작하면 앱이 `_2`, `_3`, … `_10`으로 접미사를 붙이는데, 사전순으로는 `_10 < _2`라서
+> 틀린 런을 "최신"으로 고른다. 접미사를 **숫자로 떼어** 정렬한다
+> (`pull_frames.py: run_sort_key`). 규격에서 벗어난 이름은 원본 문자열로 정렬한다.
+
+**출력은 항상 `<out_dir>/<기기 런 이름>/{frames.csv,session.json}`이다.** 평면으로 떨어뜨리지
+않는다 — 어느 기기 런에서 온 숫자인지가 경로에 남아야 하고, `--all`이면 런마다 하나씩 생긴다.
+
+> ⚠️ **`--remote_dir`에 런 디렉토리를 직접 주지 말 것.** 이 옵션은 앱 외부 파일 디렉토리
+> (그 아래에서 `runs/`를 찾는다)를 가리킨다. 런 디렉토리를 직접 주면 그 안에 `runs/`가 없으니
+> 평면 폴백이 걸려 **"S1 이전 로그"라는 거짓 경고**와 함께 `_legacy_flat/`으로 떨어진다.
+> 여기를 영리하게 만들지 않는 이유: 추론을 넣으면 그 경고가 진짜로 필요한 자리에서 약해진다.
+> 특정 런은 `--run`으로 고른다.
 
 ---
 
@@ -505,3 +609,23 @@ python scripts/gen_synthetic_frames.py --stage_d_ms 60                          
   ⚠️ 앱 쪽 `SessionWriter.kt`의 `SCHEMA_VERSION`과 `FrameLogRecorder.kt`의 헤더는
   **android 트랙에서 따로 맞춘다**(이 커밋에는 없다). 열이 없는 v1 로그는 그대로 읽히고
   `stages`의 count가 0이 될 뿐이다 — 실측 로그 `run_ts=20260731_003819`로 확인했다.
+- **v2.1 (2026-07-31, 팀원2) — 오염 경로 3건.** 스키마 자체(열 이름·타입)는 그대로이므로
+  `SCHEMA_VERSION`은 2를 유지한다.
+  **① `pull_frames.py`가 `runs/`를 본다**(§7·§8). 앱이 런별 디렉토리로 옮긴 뒤에도 회수
+  스크립트가 `files/` 평면 경로를 보면서 **낡은 로그를 가져오고 성공을 보고**하던 것을 막는다.
+  기본=최근 런 하나 / `--run` / `--all` / `--list`, 출력은 `<out_dir>/<기기 런 이름>/`,
+  평면 폴백은 `runs/`가 없을 때만 + 큰 경고, `runs/`가 비었으면 실패.
+  **② `schema_version` 대조**(§5). 세션 선언과 하네스 버전을 둘 다 `summary.json`에 남기고
+  다르면 방향별로 경고한다 — 판정·종료 코드는 그대로이며 v1 로그는 계속 읽힌다.
+  **③ `pipeline_stages` 어휘 고정**(§5). 생성기가 쓰던 `pass1_oes_to_offscreen`/`stage2_lowlight`를
+  **앱 어휘**(`blit_2pass`/`stage2_gamma`)로 통일했다. 어휘 밖 토큰은 경고(조명과 같은 취급).
+  실기기 확인: android 커밋 `0fe533f`의 런 3개를 회수해 집계했고(`schema_version=2` 선언 일치,
+  `pipeline_stages=["blit_2pass"]`가 어휘 안), v1 실측 로그의 분포는 그대로다
+  (`run_ts=20260730_235122`의 `p50=32.665` 재현 — 승격 베이스라인이 무효화되지 않았다).
+  📌 **독립 검증 6건 반영**(harness-verifier, 2026-07-31): ① `runs/`에 런 디렉토리가 하나도
+  없을 때 `--all`이 **0개 회수하고 `ok=true`**를 내던 것과 기본/`--list`가 `IndexError`(문서에
+  없는 exit 1, `pull_result.json` 미생성)로 죽던 것을 가드 하나로 닫았다. ② 권한 거부를
+  "앱이 아직 측정을 안 끝냈다"로 오진단하던 것을 `ls` returncode/stderr로 갈라 지목한다.
+  ③ `pipeline_stages`가 스칼라면 `list()`가 `TypeError`를 내 집계가 죽던 것 → 경고만.
+  ④ `_10 < _2` 사전순 때문에 "가장 최근"이 틀리던 것 → 접미사를 숫자로 떼어 정렬.
+  ⑤ `schema_version: 2.7`이 `int()`에 깎여 조용히 "일치"가 되던 것 → 타입 오류로 경고.

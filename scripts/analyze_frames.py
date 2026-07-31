@@ -20,10 +20,13 @@ from lib.frame_log import (  # noqa: E402
     ANOMALOUS_SKIP_REASONS,
     GPU_SUM_COLUMNS,
     GPU_TIME_COLUMNS,
+    PIPELINE_STAGES,
     ROW_SKIP_REASON_TEXT,
     SCHEMA_VERSION,
     FrameLogError,
     check_lighting_condition,
+    check_pipeline_stages,
+    check_schema_version,
     read_frames,
     read_session,
 )
@@ -125,6 +128,23 @@ def frametime_pinned_caveat(
         "'단계를 얹었는데 프레임타임 회귀가 없다'는 관측은 'D=0'이 아니라 "
         "'D < 공급 주기'로만 읽어야 한다. 단계 비용은 stages 블록(GPU timer)으로만 말할 것. "
         "⚠ 이 임계는 진단용이며 판정선(lib/targets.py)이 아니다"
+    )
+
+
+def nonlist_pipeline_stages_caveat(raw) -> str:
+    """`pipeline_stages`가 리스트가 아닐 때. **집계를 죽이지 않는다.**
+
+    `docs/FRAME_LOG_SCHEMA.md` §5가 "하드 에러로 만들지 않는다 — 그때 집계가 죽으면 그날
+    측정을 통째로 잃는다"라고 약속한 자리이고, `lib/frame_log.py`도 이 검사가 판정선이
+    아니라고 못박고 있다. 값이 이상하면 **요약이 나오되 그 사실이 요약에 적혀 있어야** 한다.
+    """
+    return (
+        f"pipeline_stages가 리스트가 아니라 이 런의 단계 구성을 읽지 못했다 "
+        f"({type(raw).__name__}: {raw!r}) — 빈 파이프라인 단서도 프레임타임 묶임 단서도 "
+        f"붙이지 않았다(둘 다 '단계가 무엇인지'를 전제한다). 이 로그의 프레임타임이 무엇의 "
+        f"비용인지는 이 요약만으로 알 수 없고, baseline_diff는 이 값을 그대로 비교하므로 "
+        f"같은 조건이어도 '조건 다름'이 된다. 집계와 판정은 그대로 진행했다 — "
+        f"어휘·타입 검사는 판정선이 아니다"
     )
 
 
@@ -248,6 +268,10 @@ def main() -> int:
     # 조명 조건. 판정(exit code)은 흔들지 않지만, 없거나 unknown이면 그 런은 나중에
     # 아무것과도 정직하게 비교할 수 없으므로 경고로 낸다.
     lighting, lighting_comparable, lighting_warning = check_lighting_condition(session)
+    # 단계 어휘. 조명과 같은 취급 — 비교 조건이지 판정선이 아니다.
+    stages_declared, stages_vocab_ok, stages_warning = check_pipeline_stages(session)
+    # 세션이 선언한 스키마 버전 ↔ 하네스 버전. 다르면 경고만 낸다(옛 로그는 계속 읽힌다).
+    schema_declared, schema_matches, schema_warning = check_schema_version(session)
 
     # ── 단계 비용 (GPU 시계). 판정선이 없으므로 verdict를 흔들지 않는다.
     stage_stats = {name: summarize(getattr(series, name)) for name in GPU_TIME_COLUMNS}
@@ -263,6 +287,8 @@ def main() -> int:
     gpu_timer_contradicted = gpu_timer_declared and gpu_valid_total == 0
 
     summary = {
+        # ⚠ 이건 **하네스** 버전이다. 이 로그가 어느 스키마로 쓰였는지는
+        #   source.schema_version_declared 쪽이며, 둘은 다를 수 있다.
         "schema_version": SCHEMA_VERSION,
         "run_ts": paths.run_ts,
         "label": args.label,
@@ -292,6 +318,17 @@ def main() -> int:
             # 비교 가능성을 판정한다. 여기 둘은 사람이 읽는 사본이 아니라 **검사 결과**다.
             "lighting_condition": lighting,
             "lighting_condition_comparable": lighting_comparable,
+            # 단계 어휘 검사. 어휘 밖 토큰은 비교를 끊으므로 사실을 남긴다(판정은 그대로).
+            "pipeline_stages_vocab_ok": stages_vocab_ok,
+            "pipeline_stages_unknown_tokens": (
+                [] if stages_vocab_ok or not isinstance(stages_declared, list)
+                else [s for s in stages_declared if s not in PIPELINE_STAGES]
+            ),
+            # 세션이 **선언한** 스키마 버전과 하네스 버전을 둘 다 남긴다. 하네스 값만
+            # 찍으면 v1 세션이 v2로 라벨된 요약에 실려 나가고 되물을 근거가 사라진다.
+            "schema_version_declared": schema_declared,
+            "schema_version_harness": SCHEMA_VERSION,
+            "schema_version_matches_harness": schema_matches,
             # CSV 헤더에 있었지만 집계에 쓰이지 않은 열. 비어 있지 않으면 오타를 의심한다.
             "unknown_columns": series.unknown_columns,
             # 열 사이 물리 관계로 본 시계 혼용 교차검사 (t_capture_ns 문제와 별개)
@@ -339,8 +376,19 @@ def main() -> int:
         },
     }
 
-    pipeline_stages = session.get("pipeline_stages")
-    if not pipeline_stages:
+    # ⚠ `list(pipeline_stages)`를 그냥 씌우지 않는다. int면 TypeError로 **집계 전체가 죽어
+    #   summary.json이 안 남고**(어휘·타입 검사는 판정선이 아니므로 exit code를 흔들면 안 된다),
+    #   문자열은 글자로 dict는 키로 쪼개져 "단계" 자리에 엉뚱한 것이 출력된다.
+    #   리스트가 아닌 값은 check_pipeline_stages가 이미 경고했다 — 여기서는 죽지 않고,
+    #   단계를 전제하는 두 단서(빈 파이프라인 / 묶임)를 **내지 않는 것**으로 처리한다.
+    pipeline_stages = stages_declared if isinstance(stages_declared, list) else None
+    if stages_declared is not None and pipeline_stages is None:
+        pinned = _frametime_pinned(summary["frametime"])
+        if pinned is not None:
+            # 관측 자체는 단계와 무관한 사실이므로 남긴다. 문장만 내지 않는다.
+            summary["frametime"]["pinned_to_camera_supply"] = pinned
+        summary["warnings"].append(nonlist_pipeline_stages_caveat(stages_declared))
+    elif not pipeline_stages:
         summary["warnings"].append(
             empty_pipeline_caveat(_camera_fps(session))
         )
@@ -366,6 +414,12 @@ def main() -> int:
     if lighting_warning:
         # 판정은 바꾸지 않는다. 조명은 판정선이 아니라 **비교 조건**이다.
         summary["warnings"].append(lighting_warning)
+    if stages_warning:
+        # 조명과 같은 취급 — 단계 어휘도 판정선이 아니라 비교 조건이다.
+        summary["warnings"].append(stages_warning)
+    if schema_warning:
+        # 판정·종료 코드는 바꾸지 않는다. 옛 로그는 계속 읽혀야 한다(하위호환).
+        summary["warnings"].append(schema_warning)
     if capture_clock_mismatch and declared_clock_base not in ("", "unknown", None):
         summary["warnings"].append(
             f"session.json은 capture_clock_base='{declared_clock_base}'라고 선언했지만 "
@@ -523,6 +577,12 @@ def _print_report(summary: dict) -> None:
         LOG.warning(
             "⚠ 시계 일관성 위반 — 어긋난 열: %s",
             ", ".join(cc.get("suspect_columns") or []),
+        )
+    # 스키마 버전이 맞으면 한 줄로 확인해 준다(어긋난 경우는 아래 경고 루프가 말한다).
+    if src.get("schema_version_matches_harness"):
+        LOG.info(
+            "스키마 버전: 세션 선언 v%s = 하네스 v%s",
+            src.get("schema_version_declared"), src.get("schema_version_harness"),
         )
     # 조명 조건이 성하면 한 줄로 확인해 준다(어긋난 경우는 아래 경고 루프가 말한다).
     if src.get("lighting_condition_comparable"):

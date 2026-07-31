@@ -25,6 +25,10 @@ from lib.frame_log import (  # noqa: E402
     MISSING,
     REQUIRED_COLUMNS,
     SCHEMA_VERSION,
+    STAGE2_GAMMA,
+    STAGE4_HIGHLIGHT,
+    STAGE_BLIT_2PASS,
+    STAGE_DETECT,
     write_frames,
 )
 from lib.run_utils import common_argparser, init_run  # noqa: E402
@@ -191,15 +195,18 @@ def main() -> int:
     write_frames(frames_path, rows, columns=columns)
 
     # 파이프라인 단계 목록 — 어느 arm으로 잰 것인지가 비교 조건이다(baseline_diff).
+    # ⚠ 토큰은 **앱 어휘**(lib/frame_log.py의 PIPELINE_STAGES = android RenderArm.pipelineStages)를
+    #   그대로 쓴다. 생성기가 자기 이름을 따로 쓰면(예전의 'pass1_oes_to_offscreen' /
+    #   'stage2_lowlight') 같은 구조인데도 합성 런과 실측 런이 영원히 "조건 다름"이 된다.
     pipeline_stages: list[str] = []
     if args.stage_b_ms > 0:
-        pipeline_stages.append("pass1_oes_to_offscreen")
+        pipeline_stages.append(STAGE_BLIT_2PASS)
     if args.stage_d_ms > 0:
-        pipeline_stages.append("stage2_lowlight")
+        pipeline_stages.append(STAGE2_GAMMA)
     if args.detect_every_n > 0:
-        pipeline_stages.append("detect")
+        pipeline_stages.append(STAGE_DETECT)
     if args.stage_i_ms > 0:
-        pipeline_stages.append("stage4_highlight")
+        pipeline_stages.append(STAGE4_HIGHLIGHT)
 
     session = {
         "schema_version": SCHEMA_VERSION,
