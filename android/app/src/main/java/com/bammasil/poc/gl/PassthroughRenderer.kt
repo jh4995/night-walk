@@ -28,14 +28,18 @@ import javax.microedition.khronos.opengles.GL10
  *   기존 승격 베이스라인을 재현하는 경로이므로 여기에 새 GL 호출을 끼워 넣지 않는다.
  * - 그 외 — ②를 얹을 자리를 만드는 **3패스 골격**:
  *   ```
- *   패스1  OES  → FBO_A (처리 해상도)      → 나중에 stage_b_ms
- *   패스2  FBO_A → FBO_B (처리 해상도) ②   → 나중에 stage_d_ms
- *   패스3  FBO_B → 화면 (surface 크기)     → 나중에 gpu_present_ms
+ *   패스1  OES  → FBO_A (처리 해상도)      → stage_b_ms
+ *   패스2  FBO_A → FBO_B (처리 해상도) ②   → stage_d_ms
+ *   패스3  FBO_B → 화면 (surface 크기)     → gpu_present_ms
  *   ```
  *   **패스마다 `glBindFramebuffer` + `glClear`를 명시**한다. 타일 기반 GPU(Mali-G68)에서
- *   드라이버가 렌더패스를 병합하면 다음 라운드의 timer query 귀속이 흐려진다.
+ *   드라이버가 렌더패스를 병합하면 timer query 귀속이 흐려진다.
  *
- * 이번 라운드에는 GPU timer query가 없다. ②의 알고리즘(CLAHE)도 없다 — 자리만 만든다.
+ * 3패스 arm은 [GpuTimerRing]으로 패스별 GPU 시간을 잰다. **패스스루 arm에는 query를 하나도
+ * 걸지 않는다** — query 자체가 GPU 동작과 드라이버 스케줄링을 바꾸므로, 승격 베이스라인을
+ * 재현하는 경로에 넣으면 그 기준이 기준이 아니게 된다.
+ *
+ * ②의 알고리즘(CLAHE)은 아직 없다 — 자리만 만든다.
  *
  * ### 타임스탬프를 찍는 위치 (정직하게 문서화해야 하는 지점)
  * `GLSurfaceView`를 쓰면 `swapBuffers`는 프레임워크가 `onDrawFrame` 반환 **후에** 하므로
@@ -47,8 +51,8 @@ import javax.microedition.khronos.opengles.GL10
  * - `output_interval_ms`(연속 `onDrawFrame` 종료 간격)는 `swapBuffers`가 다음 사이클 앞에서
  *   블록하므로 **실제 표시 주기 = 진짜 프레임타임**이 된다.
  * - `render_latency_ms`는 `glDrawArrays`가 즉시 반환하므로 **CPU 제출 비용이고 GPU 실행
- *   시간이 아니다.** "렌더가 사실상 무료"로 읽으면 틀린다. 실제 GPU 비용은 timer query가
- *   필요하고 이번 범위가 아니다. 같은 문장이 `session.json`에도 남는다.
+ *   시간이 아니다.** "렌더가 사실상 무료"로 읽으면 틀린다. 실제 GPU 비용은 `stage_*_ms` /
+ *   `gpu_present_ms` 열에 따로 있다. 같은 문장이 `session.json`에도 남는다.
  */
 class PassthroughRenderer(
     private val recorder: FrameLogRecorder,
@@ -130,6 +134,12 @@ class PassthroughRenderer(
     private var fboWidth = 0
     private var fboHeight = 0
 
+    /**
+     * 패스별 GPU 시간. **3패스 arm에서만** 쓴다. 링·query 객체는 GL 스레드 전용이고,
+     * 회수된 값은 [FrameLogRecorder.setGpuTiming]으로 **그 query를 건 프레임의 행**에 간다.
+     */
+    private val gpuTimer = GpuTimerRing(recorder)
+
     private val texMatrix = FloatArray(16)
     private val vertexBuffer: FloatBuffer = ByteBuffer
         .allocateDirect(VERTEX_DATA.size * 4)
@@ -162,12 +172,22 @@ class PassthroughRenderer(
         // 능력 프로브는 프로그램을 만들기 전에 찍는다 — 컴파일 실패로 조기 반환하는 경로가
         // 생기더라도 GL 문자열은 남아야 원인을 되물을 수 있다.
         capabilities = GlCapabilitiesProbe.probe()
+        // 확장 유무는 프로브 실측이 유일한 근거다. 링은 그 값을 받아 두고, 실제로 걸 수
+        // 있는지는 자기 프로브(glBeginQuery + glGetError)로 따로 확인한다.
+        gpuTimer.onContextCreated(
+            capabilities?.disjointTimerQuery ?: GlCapabilitiesProbe.UNKNOWN
+        )
         oesProgram = buildProgram(VERTEX_SHADER_OES, FRAGMENT_SHADER_OES)
         blitProgram = buildProgram(VERTEX_SHADER_2D, FRAGMENT_SHADER_BLIT)
         gammaProgram = buildProgram(VERTEX_SHADER_2D, FRAGMENT_SHADER_GAMMA)
         oesTextureId = createOesTexture()
         Matrix.setIdentityM(texMatrix, 0)
         pendingRecvNs.set(NO_FRAME)
+
+        // 컨텍스트가 재생성됐는데 이미 3패스 arm이면 여기서 다시 준비한다.
+        if (arm != RenderArm.PASSTHROUGH) {
+            gpuTimer.prepare()
+        }
 
         val created = SurfaceTexture(oesTextureId)
         created.setOnFrameAvailableListener(this, frameSignalHandler)
@@ -207,11 +227,16 @@ class PassthroughRenderer(
             collectClockProbe(tCaptureNs)
         }
 
-        dispatchDraw()
+        // 계측은 **측정 중 + 새 프레임이 있는 드로우**로만 한다. 그래야 CSV 행 하나에
+        // query 한 벌이 정확히 대응하고, 대기 화면에서 GPU 동작을 바꾸지 않는다.
+        dispatchDraw(hasNewFrame && recorder.isRecording)
 
         val tRenderEndNs = SystemClock.elapsedRealtimeNanos()
         if (hasNewFrame) {
-            recorder.record(tRecvNs, tCaptureNs, tRenderStartNs, tRenderEndNs)
+            val slot = recorder.record(tRecvNs, tCaptureNs, tRenderStartNs, tRenderEndNs)
+            // 이번 프레임에 건 query가 어느 행을 채워야 하는지 여기서 확정한다.
+            // 계측하지 않은 프레임에서 불러도 안전하다(링이 스스로 걸러 낸다).
+            gpuTimer.commitFrame(slot)
         } else {
             recorder.noteDrawWithoutNewFrame()
         }
@@ -268,6 +293,10 @@ class PassthroughRenderer(
                 GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
             }
             offscreenStatus = "arm=passthrough — 오프스크린을 만들지 않는다(기존 1패스 재현)"
+        } else {
+            // 일회성 프로브와 query 객체 생성을 **측정 전에** 끝내 둔다. 지연 초기화에
+            // 맡기면 그 비용이 측정 첫 프레임에 얹힌다.
+            gpuTimer.prepare()
         }
         Log.i(TAG, "arm 전환: ${next.id}")
     }
@@ -285,7 +314,16 @@ class PassthroughRenderer(
     /** 측정 시작 시 GL 스레드에서 부른다. 런별로 세야 의미가 있는 카운터들. */
     fun resetRenderCounters() {
         offscreenFallbackDraws = 0
+        // 세대를 올려 이전 런의 in-flight query 결과가 이번 런의 행에 들어가는 것을 막는다.
+        gpuTimer.beginRun()
     }
+
+    /**
+     * 측정 정지 후 `frames.csv`를 쓰기 **직전에** GL 스레드에서 부른다.
+     * 반환값의 `instrumented`가 CSV에 GPU 열을 실을지를 정하고, 나머지는 `session.json`의
+     * `gpu_timer` 블록이 된다.
+     */
+    fun finishGpuTimerRun(): GpuTimerReport = gpuTimer.finishRun()
 
     // ── 내부 ─────────────────────────────────────────────────────────────
 
@@ -304,10 +342,10 @@ class PassthroughRenderer(
     }
 
     /**
-     * arm 하나로 갈린다. **passthrough는 새 코드 경로를 타지 않는다** — FBO도 만들지 않고
-     * 아래 [drawPassthrough]로 바로 간다.
+     * arm 하나로 갈린다. **passthrough는 새 코드 경로를 타지 않는다** — FBO도 만들지 않고,
+     * GPU timer query도 걸지 않고, 아래 [drawPassthrough]로 바로 간다.
      */
-    private fun dispatchDraw() {
+    private fun dispatchDraw(instrument: Boolean) {
         val oes = oesProgram ?: return
         if (arm == RenderArm.PASSTHROUGH) {
             drawPassthrough(oes)
@@ -322,7 +360,7 @@ class PassthroughRenderer(
             drawPassthrough(oes)
             return
         }
-        drawThreePass(oes, stage2, present)
+        drawThreePass(oes, stage2, present, instrument)
     }
 
     /** 기존 1패스. 승격 베이스라인 재현 경로이므로 호출 순서를 바꾸지 않는다. */
@@ -335,29 +373,63 @@ class PassthroughRenderer(
 
     /**
      * 3패스 골격. 패스마다 바인드·뷰포트·clear를 **명시**한다.
-     * 이걸 생략하면 드라이버가 렌더패스를 병합할 수 있고, 그러면 다음 라운드에서 패스별
-     * timer query를 붙여도 어느 패스의 비용인지 귀속이 흐려진다.
+     * 이걸 생략하면 드라이버가 렌더패스를 병합할 수 있고, 그러면 패스별 timer query를
+     * 붙여도 어느 패스의 비용인지 귀속이 흐려진다.
+     *
+     * ### query 경계를 어디에 두는가 (타일 GPU에서 정직해야 하는 지점)
+     * 세 query가 이 시퀀스의 **모든 GL 명령을 빈틈없이** 덮도록 걸었다 —
+     * `beginPass()` … `endPass()`가 연달아 붙어 있고 그 사이에 아무 명령도 없다.
+     *
+     * ⚠ **그러나 "명령을 덮는다"는 "그 명령이 유발한 GPU 작업을 덮는다"가 아니다.**
+     * 타일 기반 GPU는 드로우콜을 즉시 실행하지 않고 타일 단위로 몰아 처리하므로, 어떤
+     * 작업이 어느 query 구간에 담기는지는 드라이버가 정한다. 확실한 것 하나:
+     * **패스3은 기본 프레임버퍼에 그리는데 그 타일 해결은 `eglSwapBuffers`에서 일어나고,
+     * `GLSurfaceView`는 그것을 `onDrawFrame` 반환 **후에** 부른다** — 세 query 전부의
+     * 바깥이다. `GLSurfaceView`를 쓰는 한 이 경계는 우리가 옮길 수 없다.
+     *
+     * 그래서 두 갈래가 있고 **어느 쪽이든 "합이 정확하다"고는 말할 수 없다:**
+     *  - 드라이버가 `glEndQuery`에서 렌더패스를 쪼갠다 → 계측이 측정 대상 워크로드 자체를
+     *    바꾸고 있다.
+     *  - 쪼개지 않는다 → 온스크린 해결 비용이 `gpu_present_ms` 밖으로 떨어져 `gpu_sum_ms`가
+     *    **과소**가 된다.
+     *
+     * **우리는 이 기기에서 둘 중 어느 쪽인지 판별하지 못했다.** 따라서 개별 열의 경계는
+     * ±1패스만큼 흐리고, **합도 하한으로 읽어야 한다.** 같은 문장이 `session.json`의
+     * `gpu_timer.attribution_note`에도 나간다.
      */
-    private fun drawThreePass(oes: QuadProgram, stage2: QuadProgram, present: QuadProgram) {
-        // 패스1: OES → FBO_A (처리 해상도). 나중에 stage_b_ms.
+    private fun drawThreePass(
+        oes: QuadProgram,
+        stage2: QuadProgram,
+        present: QuadProgram,
+        instrument: Boolean,
+    ) {
+        val timing = instrument && gpuTimer.beginFrame()
+
+        // 패스1: OES → FBO_A (처리 해상도). stage_b_ms.
+        if (timing) gpuTimer.beginPass()
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[0])
         GLES20.glViewport(0, 0, fboWidth, fboHeight)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         drawQuad(oes, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
         // 같은 텍스처 유닛에 OES와 2D를 동시에 물려 두면 드라이버에 따라 경고·미정의가 된다.
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+        if (timing) gpuTimer.endPass()
 
-        // 패스2: FBO_A → FBO_B (처리 해상도). ②가 들어갈 자리. 나중에 stage_d_ms.
+        // 패스2: FBO_A → FBO_B (처리 해상도). ②가 들어갈 자리. stage_d_ms.
+        if (timing) gpuTimer.beginPass()
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[1])
         GLES20.glViewport(0, 0, fboWidth, fboHeight)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         drawQuad(stage2, GLES20.GL_TEXTURE_2D, fboTextures[0])
+        if (timing) gpuTimer.endPass()
 
-        // 패스3: FBO_B → 화면 (surface 크기). 나중에 gpu_present_ms.
+        // 패스3: FBO_B → 화면 (surface 크기). gpu_present_ms.
+        if (timing) gpuTimer.beginPass()
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
+        if (timing) gpuTimer.endPass()
     }
 
     /** 프레임당 객체를 만들지 않는다 — 인자는 전부 원시형이고 프로그램은 미리 만들어 둔다. */
@@ -477,6 +549,8 @@ class PassthroughRenderer(
         surfaceTexture?.release()
         surfaceTexture = null
         releaseOffscreen()
+        // query 객체도 컨텍스트에 매달려 있다. 빠뜨리면 컨텍스트가 재생성될 때마다 샌다.
+        gpuTimer.releaseGl()
         if (oesTextureId != 0) {
             GLES20.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
             oesTextureId = 0

@@ -227,7 +227,10 @@ class MainActivity : ComponentActivity() {
             renderer.setArm(arm)
             renderer.resetClockProbe()
             renderer.resetRenderCounters()
-            recorder.start(startedNs)
+            // GPU 패스 시간 칸은 **3패스 arm에서만** 잡는다. 패스스루는 계측하지 않으므로
+            // 칸도 없고 CSV 열도 없다. 실제로 열을 실을지는 정지 시점에 timer 실적을 보고
+            // 정한다(프로브가 실패했으면 열을 싣지 않는다).
+            recorder.start(startedNs, gpuColumns = arm != RenderArm.PASSTHROUGH)
         }
         Log.i(TAG, "측정 시작 (arm=${arm.id}, run=${runDirName})")
     }
@@ -280,7 +283,10 @@ class MainActivity : ComponentActivity() {
             }
             val framesFile = File(runDir, "frames.csv")
             val sessionFile = File(runDir, "session.json")
-            val rows = recorder.writeCsv(framesFile)
+            // ⚠ CSV를 쓰기 **전에** 링을 마감한다. 여기서 마지막 비차단 폴링이 돌아
+            //   회수 가능한 tail을 행에 채우고, 남은 미해소 개수를 확정한다.
+            val gpuTimer = renderer.finishGpuTimerRun()
+            val rows = recorder.writeCsv(framesFile, gpuTimer.instrumented)
             SessionWriter.write(
                 sessionFile,
                 SessionFacts(
@@ -310,10 +316,23 @@ class MainActivity : ComponentActivity() {
                     processHeight = renderer.processHeight,
                     offscreenStatus = renderer.offscreenStatus,
                     offscreenFallbackDraws = renderer.offscreenFallbackDraws,
+                    gpuTimer = gpuTimer,
                 ),
             )
             lastRunPath = runDir.absolutePath
             Log.i(TAG, "로그 저장: ${framesFile.absolutePath} ($rows 행, arm=${arm.id})")
+            // 스모크 확인용. 인용 가능한 숫자는 여전히 파일에 남은 것뿐이다.
+            Log.i(
+                TAG,
+                "GPU timer: instrumented=${gpuTimer.instrumented} " +
+                    "supported=${gpuTimer.supported} " +
+                    "frames=${gpuTimer.instrumentedFrames} resolved=${gpuTimer.resolvedFrames} " +
+                    "positive=${gpuTimer.positiveSamples} zero=${gpuTimer.zeroResultQueries} " +
+                    "disjoint=${gpuTimer.disjointFrames} " +
+                    "unresolved=${gpuTimer.unresolvedQueries} " +
+                    "ringFull=${gpuTimer.skippedRingFullFrames} " +
+                    "beginErr=${gpuTimer.beginQueryError} off=${gpuTimer.disabledReason}"
+            )
             "저장 완료: $rows 행 (arm=${arm.id})\n→ ${runDir.absolutePath}"
         } catch (t: Throwable) {
             Log.e(TAG, "로그 저장 실패", t)
