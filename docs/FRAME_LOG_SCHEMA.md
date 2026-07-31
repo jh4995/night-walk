@@ -61,6 +61,46 @@ session.json    이 측정이 어떤 조건이었는지
   위반이 정상이라 범인 열을 엉뚱하게 지목하게 된다).
 - ⚠️ **프레임타임은 이 값들의 미터가 아니다 → §3의 "임계 검출기" 항.**
 
+#### 이 숫자를 읽을 때의 조건 (S2 실측에서 확인된 것)
+
+**1. arm 없이 인용하지 않는다.** 위 표의 "버짓 칸"은 **이 열이 어느 칸을 채울 열인가**라는
+스키마 사실이지, "그 런의 그 패스가 그 단계를 실제로 돌렸다"는 주장이 아니다. 어느 패스에
+무엇이 들어갔는지는 그 런의 **`render_arm`**이 정한다(§5) — 예컨대 ② 자리에 처리를 넣지
+않은 arm에서도 `stage_d_ms`는 나온다. 그래서 `analyze_frames.py`는 라벨을 arm에 따라 바꾸지
+않고(하네스가 앱의 arm 의미를 해석하기 시작하면 어휘가 어긋나는 날 **조용히 틀린 라벨**이
+나온다) **숫자 옆에 arm을 붙인다** — 리포트의 각 줄과 `summary.json`의
+`stages.render_arm` / `stages.render_arm_known` 양쪽에. **`render_arm_known=false`인 단계
+비용은 `FRAME_BUDGET.md`의 칸에 옮길 수 없다.**
+
+**2. 열별 차분(arm A − arm B)은 아직 신뢰할 수 없다.** 실측에서 **바꾸지 않은 패스3이 바꾼
+패스2와 거의 같은 폭으로** 움직였다(p50 차, ms. 같은 기기 SM-A346N, 집계 `run_ts` 표기):
+
+| 비교 | 패스1 `stage_b_ms` | 패스2 `stage_d_ms` | 패스3 `gpu_present_ms` |
+|---|---|---|---|
+| `blit_2pass`(20260731_125522) → `gamma_only`(20260731_121922) | −0.001 | **+0.239** | **+0.231** |
+| `blit_2pass`(20260731_125522) → `gamma_only`(20260731_121455) | +0.007 | **+0.211** | **+0.180** |
+
+패스3은 두 arm에서 같은 코드인데도 바꾼 패스와 같은 자릿수로 움직인다(패스1은 노이즈 수준으로
+일치). 원인이 **패스 간 귀속 번짐**(`session.gpu_timer.attribution_note`)인지 **런 간
+DVFS/발열 차**인지 아직 갈라내지 못했다 → **열별 차분을 근거로 쓰려면 같은 arm 반복 런으로
+노이즈 바닥을 먼저 확정해야 한다.** 그 전에는 "②가 +0.2ms"라고 말할 수 없다.
+⚠️ 위 표의 `blit_2pass` 런은 `lighting_condition`이 `unknown`이고 `gamma_only` 두 런은
+`indoor_bright`다 — 선언된 비교 조건부터 다르다(`baseline_diff`는 이 쌍을 "조건 다름"으로
+낸다). 표는 **"차분을 아직 못 쓴다"는 근거**이지 ② 비용의 추정치가 아니다.
+
+**3. `skipped_ring_full_frames`가 0이 아니면 분포를 할인해 읽는다.** timer query 링이 가득
+차서 계측을 건너뛴 프레임은 **회수가 밀린 구간 = GPU가 뒤처진 프레임**, 즉 가장 비싼
+프레임이다. 그래서 그 값이 0이 아니면 `stage_*_ms`·`gpu_sum_ms`의 **p95/p99가 낙관 쪽으로
+치우친다.** 카운터는 `session.gpu_timer.skipped_ring_full_frames`에 있고,
+`analyze_frames.py`가 0이 아닐 때만 경고하며 `summary.json`의
+`stages.skipped_ring_full_frames`에도 함께 싣는다.
+
+**4. `gpu_sum_ms`는 하한일 수 있다.** 패스3(기본 프레임버퍼)의 **타일 해결이
+`eglSwapBuffers`에서 일어나는데 그 시점은 세 query 전부의 바깥**이다(`GLSurfaceView`가
+`onDrawFrame` 반환 후에 부른다). 자세한 갈래와 그 한계는 앱이 적는
+`session.gpu_timer.attribution_note`에 있다 — **B·D 칸을 이 값으로 채울 때 그 문구를 함께
+옮긴다.**
+
 **위 세 표에 없는 열은 집계에 쓰이지 않고, 하네스가 이름을 지목해 경고한다 → §4 "열 단위 방어선".**
 
 ### 유도값은 저장하지 않는다
@@ -108,6 +148,10 @@ session.json    이 측정이 어떤 조건이었는지
   "무엇을 더한 값인지"가 맞아야 하고, 두 키를 대조해야 알 수 있는 상태로 두지 않는다.
 - `gpu_present_ms`도 `gpu_sum_ms`에 **포함한다.** 버짓 칸이 없다는 것은 A~J 매핑이 없다는
   뜻이지 GPU를 안 쓴다는 뜻이 아니다. 칸별로 보고 싶으면 개별 시계열을 본다.
+- **`render_arm`을 이 블록에도 싣는다**(`stages.render_arm` / `stages.render_arm_known`).
+  `session` 블록에도 있지만, **이 블록만 떼어 읽는 경로**가 열려 있으면 그 소비자에게는
+  arm이 사라진 채 `stage_d_ms`만 남는다 → §2 "이 숫자를 읽을 때의 조건" 1항.
+  분포의 낙관 편향 지표인 `stages.skipped_ring_full_frames`도 같은 이유로 함께 싣는다(3항).
 - **판정선이 없다.** `stages`의 어떤 값도 `verdict.meets_*`나 종료 코드를 흔들지 않는다.
 
 > ⚠️ **프레임타임은 단계 비용의 미터가 아니라 임계 검출기다.**
@@ -350,6 +394,28 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 키가 없거나 `unknown`이면 `analyze_frames.py`가 경고하고
 `summary.json`의 `source.lighting_condition_comparable = false`로 남긴다.
 **판정(exit code·`meets_*_target`)은 바꾸지 않는다** — 조명은 판정선이 아니라 비교 조건이다.
+
+### `render_arm` — 단계 비용 숫자의 동반 조건
+
+**허용 어휘는 이 표와 `lib/frame_log.py`의 `RENDER_ARMS` 두 곳이 같아야 한다.**
+생산자는 앱이다 — `android/.../gl/RenderArm.kt`의 `id`가 `SessionWriter`를 거쳐 그대로 나간다.
+
+| 값 | 이 arm에서 각 패스가 무엇인가 | `pipeline_stages` |
+|---|---|---|
+| `passthrough` | 처리 0. OES→화면 1패스. **계측하지 않는다**(GPU 열 자체가 없다) | `[]` |
+| `blit_2pass` | 3패스 골격. **② 자리(패스2)는 단순 복사**이며 저조도 개선이 아니다 | `["blit_2pass"]` |
+| `gamma_only` | ② 자리에 감마 패스. **② 비용의 하한**이며 알고리즘이 아니다 | `["blit_2pass", "stage2_gamma"]` |
+
+- **이 표는 사람이 읽는 것이고, 하네스는 이 의미를 해석하지 않는다.** 하네스가 하는 일은
+  "그 문자열이 아는 어휘인가"를 보고 **숫자 옆에 arm을 붙이는 것**까지다. 해석을 시작하면
+  앱이 arm을 추가할 때마다 하네스가 따라가야 하고, 동기화가 어긋나는 날 조용히 틀린 라벨이
+  나온다 → §2 "이 숫자를 읽을 때의 조건" 1항.
+- 키가 없거나 어휘 밖이면 `stages.render_arm_known = false`가 되고, **단계 비용 열이 있는
+  런에 한해** 경고가 붙는다(옮길 숫자가 없는 v1·패스스루 런까지 매번 경고하면 곧 아무도 안
+  본다 — 그때도 사실은 리포트 줄과 `stages.render_arm`에 그대로 드러난다).
+- **판정선이 아니다.** `lighting_condition`·`pipeline_stages`와 같은 취급으로,
+  `meets_*_target`·종료 코드를 흔들지 않는다. 어휘 밖 값이 와도 집계는 끝까지 돈다.
+- 새 arm을 정식으로 쓰려면 `RENDER_ARMS`와 이 표에 **함께** 등록한다.
 
 ### `pipeline_stages` — 어휘를 고정한다 (`lighting_condition`과 같은 방식)
 
@@ -629,3 +695,21 @@ S1 이전 빌드의 낡은 로그가 남아 있었다. `pipeline_stages`가 빈 
   ③ `pipeline_stages`가 스칼라면 `list()`가 `TypeError`를 내 집계가 죽던 것 → 경고만.
   ④ `_10 < _2` 사전순 때문에 "가장 최근"이 틀리던 것 → 접미사를 숫자로 떼어 정렬.
   ⑤ `schema_version: 2.7`이 `int()`에 깎여 조용히 "일치"가 되던 것 → 타입 오류로 경고.
+- **v2.2 (2026-07-31, 팀원2) — 단계 비용 숫자가 arm 없이 돌아다니는 경로를 막는다.**
+  스키마 자체(CSV 열 이름·타입)는 그대로라 `SCHEMA_VERSION`은 2를 유지한다.
+  발단: `blit_2pass` arm의 `stage_d_ms`는 ② 저조도가 아니라 **단순 복사 패스**인데, 리포트
+  한 줄(`stage_d_ms[D칸] p50=1.177 …`)만 보고 D칸에 전사하면 **재지도 않은 칸이 채워진다**
+  (독립 검증 지적). **`budget_cell` 매핑은 그대로 둔다** — 틀린 것은 라벨이 아니라 arm 없이
+  숫자를 읽는 것이고, 하네스가 arm 의미를 해석하기 시작하면 어휘가 어긋나는 날 조용히 틀린
+  라벨이 나온다. 대신 **arm을 숫자 옆에 붙였다**: 리포트의 단계 비용 절 제목과 **각 줄**,
+  그리고 `summary.json`의 `stages.render_arm` / `stages.render_arm_known`(§3).
+  `render_arm` 어휘를 `lib/frame_log.py`의 `RENDER_ARMS`와 §5 표에 고정했고, 키가 없거나
+  어휘 밖이면 **단계 비용 열이 있는 런에 한해** 경고한다(판정·종료 코드는 그대로).
+  `skipped_ring_full_frames`가 0이 아니면 경고하고 `stages`에도 싣는다 — 링이 차서 버려지는
+  것은 가장 느린 프레임이라 p95/p99가 낙관 쪽으로 치우친다.
+  §2에 **"이 숫자를 읽을 때의 조건" 4항**을 박았다(arm 동반 / 열별 차분 미신뢰 — 바꾸지 않은
+  패스3이 바꾼 패스2와 같은 폭으로 움직였다 / 링 편향 / `gpu_sum_ms` 하한).
+  실기기 확인: `blit_2pass`(집계 `run_ts=20260731_125522`) · `passthrough`(`20260731_125538`) ·
+  `render_arm` 없는 v1 로그(`20260731_125545`)에서 각각 arm이 드러나고 죽지 않는다.
+  하위호환: v1 로그의 `frametime` 블록이 승격 베이스라인 `20260730_poc_empty_a34.json`과
+  **비트 단위로 같다**(`p50=32.703`, `p95=38.071`).

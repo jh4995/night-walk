@@ -26,6 +26,7 @@ from lib.frame_log import (  # noqa: E402
     FrameLogError,
     check_lighting_condition,
     check_pipeline_stages,
+    check_render_arm,
     check_schema_version,
     read_frames,
     read_session,
@@ -54,6 +55,13 @@ FRAMETIME_PINNED_REL_DIFF = 0.05
 
 # 단계 열 → FRAME_BUDGET.md §3의 칸 이름. **배정치가 아니라 칸 이름만** 쓴다
 # (단계별 배정치는 폐기됐다 — 단계 비용은 실측으로만 말한다).
+#
+# ⚠ 이 매핑은 **"이 열이 어느 칸을 채울 열인가"라는 스키마 사실**이지, "이 런의 그 패스가
+#   그 단계를 실제로 돌렸다"는 주장이 아니다. 어느 패스에 무엇이 들어갔는지는 그 런의
+#   `render_arm`이 정한다 — 예컨대 패스2에 처리를 넣지 않은 arm에서도 `stage_d_ms`는
+#   나온다. 그래서 라벨을 떼는 대신 **숫자 옆에 arm을 붙인다**(_print_stages / stages 블록).
+#   라벨을 arm에 따라 바꾸는 것은 하네스가 앱의 arm 의미를 해석하기 시작하는 것이고,
+#   그 동기화가 어긋나는 날 조용히 틀린 라벨이 나온다. 매핑 자체는 건드리지 않는다.
 BUDGET_CELL_OF = {
     "stage_b_ms": "B",
     "stage_d_ms": "D",
@@ -169,12 +177,66 @@ def gpu_timer_contradiction_warning(declared: dict, columns_present: list[str]) 
     )
 
 
-def _stages_block(series, stats: dict) -> dict:
+def ring_full_bias_warning(n: int, gpu_timer: dict) -> str:
+    """timer query 링이 가득 차 계측을 건너뛴 프레임이 있을 때.
+
+    **왜 이것만 경고인가:** 문서에만 둘 사실(귀속 번짐·gpu_sum 하한)은 이 빌드에서 항상
+    참이라 매 런 뜨면 곧 아무도 안 본다. 반면 이 값은 **0이 아닐 때만** 발생하는 그 런의
+    사고이고, 편향의 **방향이 정해져 있다**(느린 프레임이 빠지므로 tail이 낙관). 이미
+    같은 성격의 폐기 경고(_add_discard_warnings)가 있는 자리와 같은 부류다.
+    ⚠ 판정선이 아니다 — verdict·exit code를 흔들지 않는다.
+    """
+    depth = gpu_timer.get("ring_depth_frames")
+    instrumented = gpu_timer.get("instrumented_frames")
+    extra = ""
+    if isinstance(instrumented, int) and instrumented > 0:
+        extra = f" (계측 프레임 {instrumented}개 중)"
+    return (
+        f"gpu_timer.skipped_ring_full_frames={n}{extra} — 링"
+        + (f"(깊이 {depth})" if depth is not None else "")
+        + "이 가득 차서 계측을 건너뛴 프레임이 있다. 링이 차는 것은 query 회수가 밀렸을 때, "
+        "즉 **GPU가 뒤처진 구간**이므로 빠진 쪽이 가장 비싼 프레임이다. 그래서 stage_*_ms와 "
+        "gpu_sum_ms의 p95·p99는 낙관 쪽으로 치우쳐 있다 — 이 런의 tail을 상한으로 쓰지 말 것. "
+        "⚠ 판정선이 아니다(verdict를 흔들지 않는다)"
+    )
+
+
+def _arm_short(stages: dict) -> str:
+    """숫자 줄 옆에 붙일 짧은 arm 표기. **줄에서 떼어져도 뜻이 유지돼야 한다.**"""
+    arm = stages.get("render_arm")
+    if stages.get("render_arm_known"):
+        return f"arm={arm}"
+    if arm is None:
+        return "arm=미상"
+    return f"arm={arm!r}(어휘 밖)"
+
+
+def _arm_long(stages: dict) -> str:
+    arm = stages.get("render_arm")
+    if stages.get("render_arm_known"):
+        return f"render_arm={arm}"
+    if arm is None:
+        return "render_arm=미상 (session.json에 키 없음)"
+    return f"render_arm={arm!r} (하네스 어휘 밖)"
+
+
+def _stages_block(
+    series,
+    stats: dict,
+    render_arm: object,
+    render_arm_known: bool,
+    ring_full_frames: object,
+) -> dict:
     """단계 비용 블록. **frametime과 분리한다.**
 
     간격/체류시간(frametime)과 단계 비용(stages)은 다른 물리량이고 **다른 시계**에서
     온다. 같은 키에 섞으면 소비자가 자기가 받은 숫자가 어느 시계의 무엇인지 구분할 수
     없다 — render_latency_ms와 recv_to_render_ms를 같은 키에 넣지 않는 것과 같은 이유다.
+
+    `render_arm`은 session 블록에도 있지만 **여기에 한 번 더 싣는다.** 이 블록만 떼어
+    읽는 소비자(사람이든 스크립트든)에게 arm이 사라지면, 그 사람이 보는 stage_*_ms는
+    "어느 렌더 경로에서 나왔는지 모르는 숫자"가 되고 그대로 버짓 칸에 전사된다.
+    숫자와 그 숫자의 조건은 같은 블록에 있어야 한다.
     """
     block = {
         "clock": (
@@ -182,6 +244,20 @@ def _stages_block(series, stats: dict) -> dict:
             "frametime 값과 더하거나 빼지 않으며, 시계 교차검사(A/B) 대상도 아니다"
         ),
         "columns_present": list(series.gpu_columns_present),
+        # **arm 없이 아래 숫자를 인용하지 않는다.** session 블록의 사본이 아니라, 이 블록을
+        # 단독으로 읽는 경로를 막기 위한 동반 기록이다.
+        "render_arm": render_arm,
+        "render_arm_known": render_arm_known,
+        "render_arm_note": (
+            "budget_cell은 '이 열이 어느 칸을 채울 열인가'라는 스키마 사실이지, 이 arm이 그 "
+            "단계를 실제로 돌렸다는 주장이 아니다. 어느 패스에 무엇이 들어갔는지는 render_arm이 "
+            "정한다 — 아래 분포를 FRAME_BUDGET.md의 칸에 옮길 때 arm을 함께 옮길 것. "
+            "render_arm_known=false면 그 숫자는 인용 대상이 아니다"
+        ),
+        # 링이 가득 차 계측을 건너뛴 프레임 수(session.gpu_timer). 0이 아니면 **가장 느린
+        # 프레임이 빠진 것**이라 아래 p95/p99가 낙관 쪽으로 치우친다. session 블록에만 두면
+        # 이 블록만 읽는 소비자에게는 그 편향이 보이지 않는다. 값이 없으면 None.
+        "skipped_ring_full_frames": ring_full_frames,
         "budget_cell": dict(BUDGET_CELL_OF),
         # **이 런에서 실제로 합산 대상이 된 열.** 상수 전체 목록을 그대로 실으면
         # 헤더에 2개뿐인 로그에서도 4개가 실려 "4개를 다 더한 값"으로 오독된다.
@@ -272,6 +348,10 @@ def main() -> int:
     stages_declared, stages_vocab_ok, stages_warning = check_pipeline_stages(session)
     # 세션이 선언한 스키마 버전 ↔ 하네스 버전. 다르면 경고만 낸다(옛 로그는 계속 읽힌다).
     schema_declared, schema_matches, schema_warning = check_schema_version(session)
+    # 렌더 arm. **단계 비용 숫자의 동반 조건**이라 stages 블록에 함께 싣는다.
+    # 경고는 단계 비용 열이 실제로 있을 때만 낸다(아래) — 옮길 숫자가 없는 런까지 매번
+    # 경고하면 정작 위험한 런에서 아무도 안 본다.
+    render_arm, render_arm_known, render_arm_warning = check_render_arm(session)
 
     # ── 단계 비용 (GPU 시계). 판정선이 없으므로 verdict를 흔들지 않는다.
     stage_stats = {name: summarize(getattr(series, name)) for name in GPU_TIME_COLUMNS}
@@ -285,6 +365,15 @@ def main() -> int:
         gpu_timer_decl = {}
     gpu_timer_declared = bool(gpu_timer_decl.get("supported"))
     gpu_timer_contradicted = gpu_timer_declared and gpu_valid_total == 0
+
+    # 링이 가득 차 계측을 건너뛴 프레임 수. bool은 int의 하위형이라 먼저 배제한다
+    # (true가 1로 계상되면 "1프레임 빠졌다"는 거짓 사실이 된다).
+    ring_full_raw = gpu_timer_decl.get("skipped_ring_full_frames")
+    ring_full = (
+        ring_full_raw
+        if isinstance(ring_full_raw, int) and not isinstance(ring_full_raw, bool)
+        else None
+    )
 
     summary = {
         # ⚠ 이건 **하네스** 버전이다. 이 로그가 어느 스키마로 쓰였는지는
@@ -347,7 +436,9 @@ def main() -> int:
         },
         # 단계 비용은 frametime과 **다른 물리량이자 다른 시계**라 블록을 나눈다.
         # 판정선이 없다 — verdict.meets_*는 여기 값을 보지 않는다.
-        "stages": _stages_block(series, stage_stats),
+        "stages": _stages_block(
+            series, stage_stats, render_arm, render_arm_known, ring_full
+        ),
         "targets": {
             "target_fps": targets.TARGET_FPS,
             "frame_budget_ms": round(targets.FRAME_BUDGET_MS, 1),
@@ -411,6 +502,14 @@ def main() -> int:
         summary["warnings"].append(
             gpu_timer_contradiction_warning(gpu_timer_decl, series.gpu_columns_present)
         )
+    # arm 미상 경고는 **옮길 숫자가 있을 때만.** GPU 열이 하나도 없는 로그(v1·패스스루)는
+    # 버짓 칸에 전사될 단계 비용 자체가 없으므로 경고 대상이 아니다 — 그런 런에도 매번
+    # 뜨면 곧 아무도 안 보게 되고, 정작 위험한 런에서 묻힌다. 그 경우에도 사실 자체는
+    # stages.render_arm(=null)과 리포트 줄에 그대로 드러난다.
+    if render_arm_warning and series.gpu_columns_present:
+        summary["warnings"].append(render_arm_warning)
+    if ring_full:
+        summary["warnings"].append(ring_full_bias_warning(ring_full, gpu_timer_decl))
     if lighting_warning:
         # 판정은 바꾸지 않는다. 조명은 판정선이 아니라 **비교 조건**이다.
         summary["warnings"].append(lighting_warning)
@@ -486,10 +585,27 @@ def _print_stages(summary: dict) -> None:
     """단계 비용(GPU 시계) 출력. **판정선이 없으므로 PASS/FAIL을 찍지 않는다.**"""
     st = summary.get("stages") or {}
     cols = st.get("columns_present") or []
+    arm_long, arm_short = _arm_long(st), _arm_short(st)
     if not cols:
-        LOG.info("단계 비용(GPU timer): 열 없음 — 이 로그로는 단계 비용을 말할 수 없다")
+        LOG.info(
+            "단계 비용(GPU timer): 열 없음 — 이 로그로는 단계 비용을 말할 수 없다 [%s]",
+            arm_long,
+        )
         return
-    LOG.info("단계 비용 — GPU 시계 (프레임타임과 다른 시계, 판정선 없음)")
+    # arm을 절 제목과 각 줄에 **둘 다** 낸다. 제목만 붙이면 한 줄만 복사해 옮기는 순간
+    # 조건이 떨어져 나가고, 그 줄이 곧 버짓표의 한 칸이 된다.
+    LOG.info("단계 비용 — GPU 시계 [%s] (프레임타임과 다른 시계, 판정선 없음)", arm_long)
+    if st.get("render_arm_known"):
+        LOG.info(
+            "  ⚠ [칸] 라벨은 '이 열이 어느 칸을 채울 열인가'라는 스키마 사실이다 — "
+            "이 arm이 그 단계를 실제로 돌렸다는 뜻이 아니다. 숫자를 arm과 떼어 옮기지 말 것"
+        )
+    else:
+        LOG.warning(
+            "  ⚠ %s — 아래 숫자가 어느 렌더 경로의 것인지 알 수 없다. "
+            "[칸] 라벨은 열↔칸 스키마 매핑일 뿐이므로 이 값을 버짓 칸에 옮기지 말 것",
+            arm_long,
+        )
     for name in list(GPU_TIME_COLUMNS) + ["gpu_sum_ms"]:
         s = st.get(name) or {}
         if not s:
@@ -498,11 +614,15 @@ def _print_stages(summary: dict) -> None:
         label = f"{name}[{cell}칸]" if cell else name
         if s.get("count"):
             LOG.info(
-                "  %-20s p50=%-8s p95=%-8s p99=%-8s min=%-8s max=%-8s (n=%s)",
-                label, s["p50"], s["p95"], s["p99"], s["min"], s["max"], s["count"],
+                "  %-20s p50=%-8s p95=%-8s p99=%-8s min=%-8s max=%-8s (n=%s, %s)",
+                label, s["p50"], s["p95"], s["p99"], s["min"], s["max"],
+                s["count"], arm_short,
             )
         elif name in cols or (name == "gpu_sum_ms" and cols):
-            LOG.warning("  %-20s 유효 표본 0개 — '0ms'가 아니라 재지 못한 것이다", label)
+            LOG.warning(
+                "  %-20s 유효 표본 0개 — '0ms'가 아니라 재지 못한 것이다 (%s)",
+                label, arm_short,
+            )
 
 
 def _print_report(summary: dict) -> None:

@@ -118,6 +118,29 @@ PIPELINE_STAGES = (
 )
 # 빈 배열 = 처리 없는 arm(passthrough). "단계 없음"은 토큰이 아니라 빈 배열로 적는다.
 
+# ── 렌더 arm 어휘 (session.json: render_arm) ───────────────────────────────
+# **arm은 단계 비용 숫자의 일부다.** `stage_d_ms`가 D칸을 채울 열이라는 것은 스키마 사실
+# (analyze_frames의 BUDGET_CELL_OF)이지만, **그 런에서 패스2가 무엇을 그렸는지는 arm이
+# 정한다.** 그래서 arm을 떼고 `stage_d_ms` 숫자만 옮기면 재지도 않은 칸을 채우게 된다.
+#
+# ⚠ **하네스는 arm의 의미를 해석하지 않는다.** 여기 있는 것은 "그 문자열이 우리가 아는
+#   어휘인가"뿐이고, 어느 arm이 어느 단계를 실제로 돌렸는지는 판단하지 않는다. 해석을
+#   시작하면 앱이 arm을 추가할 때마다 하네스가 따라가야 하고, 그 동기화가 어긋나는 날
+#   **조용히 틀린 라벨**이 나온다. 하네스가 하는 일은 숫자 옆에 arm을 붙이는 것까지다.
+#
+# ⚠ **생산자는 앱이다** (`android/.../gl/RenderArm.kt`의 `id` → SessionWriter의 `render_arm`).
+#   PIPELINE_STAGES와 같은 취급 — 어휘 밖 값도 죽이지 않고 경고만 낸다(앱이 새 arm을
+#   하네스보다 먼저 낼 수 있다). 이 목록은 `docs/FRAME_LOG_SCHEMA.md` §5와 같아야 한다.
+RENDER_ARM_PASSTHROUGH = "passthrough"   # 처리 0. 승격 베이스라인 재현용
+RENDER_ARM_BLIT_2PASS = "blit_2pass"     # 3패스 골격
+RENDER_ARM_GAMMA_ONLY = "gamma_only"     # ② 자리에 감마 패스
+
+RENDER_ARMS = (
+    RENDER_ARM_PASSTHROUGH,
+    RENDER_ARM_BLIT_2PASS,
+    RENDER_ARM_GAMMA_ONLY,
+)
+
 # ── 폐기 가드 ─────────────────────────────────────────────────────────────
 # 하한(0)은 모든 시계열에 적용한다. 0 이하 간격/지연은 물리적으로 불가능하며
 # 시계가 역행했다는 뜻이다. **버리되 반드시 센다.**
@@ -664,6 +687,46 @@ def check_pipeline_stages(session: dict) -> tuple[object, bool, Optional[str]]:
             "먼저 등록해야 이후 런이 과거 런과 비교된다"
         )
     return raw, True, None
+
+
+def check_render_arm(session: dict) -> tuple[object, bool, Optional[str]]:
+    """session.json의 render_arm을 검사한다. **단계 비용 숫자의 동반자다.**
+
+    반환: (값 원문, 어휘 안의 arm인가, 경고 문장 or None).
+
+    ⚠ **판정선이 아니다** — `check_pipeline_stages`와 같은 취급. PASS/FAIL·exit code를
+    흔들지 않는다. 다만 arm을 모르는 채로 `stage_*_ms`를 버짓 칸에 옮기면 재지도 않은
+    칸이 채워지므로, 모르면 **모른다는 사실이 드러나야** 한다.
+
+    경고를 **언제 낼지는 호출자가 정한다.** 단계 비용 열이 하나도 없는 로그(v1·패스스루)는
+    옮길 숫자 자체가 없어서 위험이 없고, 그런 런까지 매번 경고하면 곧 아무도 안 본다.
+    """
+    vocab = ", ".join(RENDER_ARMS)
+    if "render_arm" not in session:
+        return None, False, (
+            "session.json에 render_arm이 없다 — 이 런의 단계 비용(stage_*_ms)이 **어느 렌더 "
+            "경로에서 나온 것인지 알 수 없다.** 열 이름의 [칸] 라벨은 '이 열이 어느 칸을 채울 "
+            "열인가'라는 스키마 사실일 뿐이고, 그 패스가 실제로 무엇을 그렸는지는 arm이 정한다. "
+            "arm 미상인 단계 비용은 FRAME_BUDGET.md의 칸에 옮기지 말 것. "
+            f"허용 어휘: {vocab} (앱 android/.../gl/RenderArm.kt가 생산한다)"
+        )
+    raw = session.get("render_arm")
+    if not isinstance(raw, str) or not raw.strip():
+        return raw, False, (
+            f"render_arm이 문자열이 아니거나 비어 있다({type(raw).__name__}: {raw!r}) — "
+            "이 런의 단계 비용을 어느 렌더 경로의 것으로 기록할지 알 수 없다. "
+            f"앱 쪽 SessionWriter를 확인할 것. 허용 어휘: {vocab}"
+        )
+    val = raw.strip()
+    if val not in RENDER_ARMS:
+        return val, False, (
+            f"render_arm='{val}'은 하네스가 아는 어휘 밖이다 — 앱이 새 arm을 하네스보다 먼저 "
+            "낸 것일 수 있다(집계는 그대로 진행했다). 하네스는 arm의 **의미를 해석하지 않으므로** "
+            "이 런의 stage_*_ms가 각각 무엇을 그린 패스인지 확인하기 전에는 버짓 칸에 옮기지 말 것. "
+            f"허용 어휘: {vocab} (목록은 lib/frame_log.py의 RENDER_ARMS와 "
+            "docs/FRAME_LOG_SCHEMA.md §5)"
+        )
+    return val, True, None
 
 
 def check_schema_version(session: dict) -> tuple[Optional[int], bool, Optional[str]]:
