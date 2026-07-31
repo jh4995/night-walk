@@ -674,6 +674,52 @@ gpu_present_ms                                        ← 버짓 칸이 없는 �
 
 ## 8. 사용법
 
+### 런이 여러 개인 세션은 `run_session.py`로 (아래 ①②를 대신 돌려 준다)
+
+arm·조명·길이가 정해진 런을 여러 개 찍는 날(S3-3 9런 같은)에는 회수·집계·비교를 손으로
+맞추지 않는다. **한 번 틀리면 그 런은 통째로 못 쓴다** — 실제로 조명 `unknown`으로 나간
+런이 한 세션에 여러 개 생겼다.
+
+```bash
+python scripts/run_session.py --print_plan     # 계획만 확인 (기기·진행 파일을 건드리지 않는다)
+python scripts/run_session.py                  # 세션 시작 — 남은 런부터 이어간다
+python scripts/run_session.py --status         # 어디까지 했나
+python scripts/run_session.py --report         # 남은 런을 더 찍지 않고 집계·비교만 다시
+python scripts/run_session.py --plan my.json --session_id night_2   # 계획을 파일로
+```
+
+- **폰은 사람이 조작한다.** `adb shell input`으로 버튼을 누르는 기능은 일부러 없다 —
+  좌표는 기기·해상도·OS에 따라 바뀌고, 틀린 좌표로 엉뚱한 걸 눌러도 스크립트는 성공을
+  보고한다. 스크립트는 **계획 제시 → 대기 → 검증**만 한다.
+- **검증이 존재 이유다.** 런이 끝나면 회수해서 `session.json`의 `render_arm` ·
+  `lighting_condition` · `build_type` · `build.git_dirty` · **분석 창 길이**를 계획과
+  대조하고, 어긋나면 크게 알리고 **그 칸을 실패로 남긴다**(다음 실행에서 다시 제시된다).
+- **중단·재개된다.** 진행 상태는 `outputs/measure_session/_sessions/<session_id>.json`에
+  남고, 각 실행은 자기 `init_run()` 스탬프를 갖는다(그 run_ts가 `invocations[]`에 쌓인다).
+- **판정선을 갖지 않는다.** PASS/FAIL은 `analyze_frames`(`lib/targets.py`)와
+  `baseline_diff`가 낸다. 이 스크립트는 실행과 대조만 하고, 세션 끝에
+  **노이즈 바닥(같은 arm 반복의 열별 차이)** 과 **arm 간 차분**을 나란히 낸다 —
+  차분이 바닥보다 작으면 그건 신호가 아니다. `gpu_present_ms`는 arm이 달라도 같은
+  코드인데 움직이므로 **arm 비교에 항상 함께** 나온다(귀속 번짐 지표).
+- 프롬프트: `Enter`=측정 끝났음 · `s [사유]`=건너뛰기 · `q`=중단(재개 가능) ·
+  `u <기기 런 이름>`=이미 찍힌 런을 쓴다(신규 감지를 건너뛰지만 **계획 대조는 그대로 돈다**).
+
+| 종료 코드 | 뜻 |
+|---|---|
+| 0 | 계획의 모든 런이 통과. 세션 리포트 생성 |
+| 1 | 남은 런이 있다(중단했거나 어긋난 칸이 남았다) — 다시 실행하면 이어간다 |
+| 2 | 계획이 잘못됐다 (어휘 밖 arm/조명, `unknown` 조명 계획, 깨진 JSON, 없는 파일) |
+| 3 | adb 없음 / 기기 문제 — 계획 대조가 불가능하므로 세션을 진행하지 않는다 |
+| 5 | `--no_outputs` — 진행 파일을 남길 수 없어 재개가 불가능하다(`--print_plan`만 가능) |
+| 6 | 남은 런은 없지만 **건너뛴** 칸이 있다 — 완주가 아니다 |
+| 7 | 진행 파일과 계획이 어긋난다(계획 지문·`warmup_sec` 불일치) — 재개 거부 |
+
+> ⚠️ **3분 런은 지속 성능 근거가 아니다.** warmup을 빼면 분석 창이 2.5분이라
+> `lib/targets.py`의 `SUSTAINED_SEC`에 한참 못 미친다. 리포트는 그런 런을 `envelope_only`로
+> 표시하고 단서를 붙인다 — **봉투 점으로만 인용한다.**
+> 같은 이유로 "10분" 런도 warmup 30초를 빼면 570s라 지속 창(600s)에 못 미친다.
+> 지속 근거로 쓰려면 **warmup + `SUSTAINED_SEC`**(= 10.5분) 이상 찍는다.
+
 ```bash
 # ① 폰에서 로그를 가져온다 (outputs/poc_pull/<run_ts>/<기기 런 이름>/ 로 들어간다)
 python scripts/pull_frames.py                        # 기기의 **가장 최근 런** 하나

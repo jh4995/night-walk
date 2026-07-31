@@ -101,6 +101,14 @@ cd android && ./gradlew assembleRelease && adb install -r app/build/outputs/apk/
 > 로그는 런마다 `files/runs/<YYYYMMDD_HHMMSS>/`에 따로 쌓인다 —
 > **PC 없이 연속으로 여러 런을 찍고 나중에 한 번에 회수할 수 있다**(`--all`).
 
+> 🧭 **런이 여러 개인 세션은 `python scripts/run_session.py`가 안내·검증한다.**
+> 위 2·4·5를 사람이 매번 맞추다 보면 틀리고(이번 세션에만 조명 `unknown` 런이 여러 개
+> 나왔다), 틀린 런은 통째로 못 쓴다. 스크립트는 **폰을 조작하지 않고**(좌표 탭 금지 —
+> 틀린 좌표로 눌러도 성공을 보고한다) 계획을 제시하고 기다렸다가, 회수한 `session.json`이
+> 계획한 arm·조명·길이와 맞는지 대조해 **어긋나면 그 칸을 실패로 남긴다.** 중단·재개되고,
+> 끝나면 노이즈 바닥·arm 차분·`baseline_diff`까지 낸다.
+> 자세한 것은 [docs/FRAME_LOG_SCHEMA.md §8](docs/FRAME_LOG_SCHEMA.md#8-사용법).
+
 ⚠️ 측정은 **release 빌드 · 실기기**로만. 에뮬레이터 프레임은 실기기 숫자가 아니다.
 
 ## 측정 하네스
@@ -109,6 +117,8 @@ cd android && ./gradlew assembleRelease && adb install -r app/build/outputs/apk/
 스탬프 없는 숫자는 나중에 비교가 불가능하므로 측정 스크립트는 예외 없이 이걸 통해 돈다.
 
 ```
+python scripts/run_session.py            # 다중 런 측정 세션 안내·검증·집계 (중단/재개)
+python scripts/run_session.py --print_plan   # 계획만 확인 (기기를 건드리지 않는다)
 python scripts/smoke_run_utils.py        # 하네스 동작 확인
 python scripts/gen_synthetic_frames.py   # 합성 프레임 로그 (실기기 없이 경로 시험)
 python scripts/pull_frames.py            # 폰에서 로그 회수 (기본: 가장 최근 런 1개)
