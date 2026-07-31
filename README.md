@@ -35,7 +35,7 @@
 | [STATUS.md](docs/STATUS.md) | **현재 상태** — 어디까지 왔나 · 다음 한 수 · 알려진 이슈 · 막혀 있는 것 |
 | [FRAME_LOG_SCHEMA.md](docs/FRAME_LOG_SCHEMA.md) | 폰(PoC)이 뱉고 PC(하네스)가 읽는 프레임 로그 형식 — 팀 계약이 아니라 내 두 트랙 사이의 규격 |
 | [baselines/](docs/baselines/) | **기준 측정값.** `outputs/`는 git 추적을 안 하므로, 승격하지 않은 숫자는 그 머신에만 남는다 |
-| [아이디어기획서_밤마실_20260729.pdf](docs/아이디어기획서_밤마실_20260729.pdf) | **공식 제출본(7/29).** 목표 성능·MVP 범위·KPI·역할의 최종 출처. 수정 금지 — 대조 결과는 `research/RESEARCH_20260731_UPSTREAM.md` |
+| `docs/아이디어기획서_밤마실_20260729.pdf` | **공식 제출본(7/29).** 목표 성능·MVP 범위·KPI·역할의 최종 출처. ⚠️ **git 추적 안 함**(대용량 바이너리) — 원본은 모델링 담당 레포 `docs/`에 있다. **대조 결과는 아래 UPSTREAM 문서에 텍스트로 남아 있으므로 PDF 없이도 읽을 수 있다** |
 
 ### 보관 (`docs/archive/`) — 역할이 끝남
 
@@ -76,8 +76,11 @@ planner (읽기전용, 두 트랙 모두 + 접합부)
 
 ## 앱 (`android/`)
 
-빈 파이프라인 PoC. CameraX `Preview` → 우리 `SurfaceTexture`(OES) → GL 패스스루 →
-`GLSurfaceView` (제로카피, 처리 없음). 폰은 **타임스탬프만 남기고 판정은 PC가 한다.**
+CameraX `Preview` → 우리 `SurfaceTexture`(OES) → GL → `GLSurfaceView` (제로카피).
+**arm 스피너로 렌더 경로를 고른다** — `passthrough`(1패스, 처리 없음) /
+`blit_2pass`(3패스 골격) / `gamma_only`(패스2에 감마). ② 셰이더가 꽂힐 자리는 **패스2**다.
+3패스 arm은 **GPU timer query로 패스별 시간**(`stage_b_ms`·`stage_d_ms`·`gpu_present_ms`)을 남긴다.
+폰은 **타임스탬프만 남기고 판정은 PC가 한다.**
 
 ```
 cd android && ./gradlew assembleRelease && adb install -r app/build/outputs/apk/release/app-release.apk
@@ -85,11 +88,18 @@ cd android && ./gradlew assembleRelease && adb install -r app/build/outputs/apk/
 
 **측정 절차 (틀리면 숫자를 못 씀):**
 
-1. **조명 스피너를 실제 조건으로 고른다.** 기본값 `unknown`으로 나가면 그 런은 비교 대상이 못 된다
-2. 폰을 고정하고 측정 시작 → **30초 warmup + 목표 시간** (지속 판정은 연속 10분)
-3. **반드시 "측정 정지" 버튼으로 끝낸다.** 뒤로가기로 끝내면 로그 flush가 버려질 수 있다
-4. **폰을 연결한 상태로** `pull_frames.py` → `analyze_frames.py`
+1. **커밋된 상태에서 빌드·설치한다.** `BuildConfig`에 git commit과 dirty 여부가 박히며,
+   `git_dirty=true`로 찍힌 런은 나중에 어느 코드가 낸 숫자인지 말할 수 없다
+2. **스피너 둘을 실제 값으로 고른다 — 조명과 arm.** 둘 다 측정 조건이고, 기본값으로 나간
+   런은 비교 대상이 못 된다. arm은 `session.json`의 `pipeline_stages`가 되어
+   `baseline_diff`의 비교 조건으로 들어간다
+3. 폰을 고정하고 측정 시작 → **30초 warmup + 목표 시간** (지속 판정은 연속 10분)
+4. **반드시 "측정 정지" 버튼으로 끝낸다.** 뒤로가기로 끝내면 로그 flush가 버려질 수 있다
+5. **폰을 연결한 상태로** `pull_frames.py` → `analyze_frames.py`
    (기기 메타가 분석 시점에 수집되고 `device.props.model`이 비교 조건이다)
+
+> 로그는 런마다 `files/runs/<YYYYMMDD_HHMMSS>/`에 따로 쌓인다 —
+> **PC 없이 연속으로 여러 런을 찍고 나중에 한 번에 회수할 수 있다**(`--all`).
 
 ⚠️ 측정은 **release 빌드 · 실기기**로만. 에뮬레이터 프레임은 실기기 숫자가 아니다.
 
@@ -101,7 +111,9 @@ cd android && ./gradlew assembleRelease && adb install -r app/build/outputs/apk/
 ```
 python scripts/smoke_run_utils.py        # 하네스 동작 확인
 python scripts/gen_synthetic_frames.py   # 합성 프레임 로그 (실기기 없이 경로 시험)
-python scripts/pull_frames.py            # 폰에서 로그 회수 (adb — 손 adb pull 대신 이걸 쓴다)
+python scripts/pull_frames.py            # 폰에서 로그 회수 (기본: 가장 최근 런 1개)
+python scripts/pull_frames.py --list     # 기기에 어떤 런이 있는지만 본다
+python scripts/pull_frames.py --all      # 쌓아 둔 런을 한 번에 (야간에 여러 런 찍고 복귀했을 때)
 python scripts/analyze_frames.py --frames <csv>   # 집계 + 판정 → summary.json
 python scripts/baseline_diff.py --baseline <a> --current <b>   # 회귀 판정
 ```

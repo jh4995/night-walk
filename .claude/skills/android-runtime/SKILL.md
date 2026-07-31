@@ -8,8 +8,21 @@ user-invocable: false
 
 밤마실의 **폰 위에서 도는 부분** 전부: 카메라 → 전처리 → 추론 → 렌더.
 
-> **현재 상태:** `android/` 디렉토리는 아직 없다. 빈 파이프라인 PoC를 한 번 만들었다가
-> 취소했으므로, 첫 작업이 스캐폴딩 생성이라면 그 사실을 전제로 계획한다.
+> **현재 상태 (2026-07-31):** `android/` 앱이 **존재하고 실기기에서 돈다.**
+> CameraX `Preview` → OES `SurfaceTexture` → GL → `GLSurfaceView` (제로카피).
+>
+> - **arm 스피너**로 렌더 경로를 고른다: `passthrough`(1패스) / `blit_2pass`(3패스 골격) /
+>   `gamma_only`(패스2에 감마). **② 셰이더가 꽂힐 자리는 패스2다.**
+> - **GPU timer query가 동작한다** — `GL_TIME_ELAPSED_EXT`(0x88BF)를 코어 `glBeginQuery`로.
+>   `GLES30`에 `glQueryCounterEXT`가 없어 타임스탬프 방식은 JNI 없이 불가능하고,
+>   `GL_TIME_ELAPSED`는 중첩이 안 되므로 **패스별 순차 query**다.
+> - `passthrough` arm은 **계측하지 않는다.** 승격 베이스라인 재현 기준이라 query 자체가
+>   GPU 동작을 바꾸면 안 된다. 이 arm의 동등성을 깨는 변경은 FAIL이다.
+> - 로그는 **런별 디렉토리** `files/runs/<YYYYMMDD_HHMMSS>/`. `BuildConfig`에 빌드 시점
+>   git commit·dirty가 박힌다.
+>
+> **새로 만드는 것이 아니라 있는 것 위에 얹는다.** 스캐폴딩을 다시 만들지 마라.
+> 상세는 `docs/STATUS.md`와 `docs/FRAME_LOG_SCHEMA.md`.
 
 ---
 

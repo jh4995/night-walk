@@ -6,6 +6,10 @@ outputs/
 *.tflite
 *.engine
 
+# 제출 문서 원본 (대용량 바이너리). 원본은 모델링 담당 레포 docs/ 에 있고,
+# 대조 결과는 docs/research/RESEARCH_20260731_UPSTREAM.md 에 텍스트로 남는다
+docs/*.pdf
+
 # 파이썬
 __pycache__/
 *.pyc
