@@ -45,14 +45,21 @@ class SessionFacts(
     val processHeight: Int,
     val offscreenStatus: String,
     val offscreenFallbackDraws: Int,
-    /** 이 런의 GPU timer 실적. 3패스 arm이 아니면 전부 0이고 `instrumented=false`다. */
+    /** ② 자리 자원의 상태(사람이 읽는 문장). arm에 따라 뜻이 다르다. */
+    val stage2Status: String,
+    /** 이 런의 GPU timer 실적. 계측 arm이 아니면 전부 0이고 `instrumented=false`다. */
     val gpuTimer: GpuTimerReport,
 )
 
 object SessionWriter {
 
-    /** `lib/frame_log.py`의 `SCHEMA_VERSION`. 열이 늘면 양쪽을 함께 올린다. */
-    const val SCHEMA_VERSION = 2
+    /**
+     * `lib/frame_log.py`의 `SCHEMA_VERSION`. 열이 늘면 양쪽을 함께 올린다.
+     *
+     * v3에서 D 계열 하위 열(`stage_d_analyze_ms` / `stage_d_build_ms` / `stage_d_apply_ms` /
+     * `stage_d_denoise_ms`)이 들어왔고, 이 앱은 그중 앞의 셋을 `drago` arm에서 낸다.
+     */
+    const val SCHEMA_VERSION = 3
 
     fun write(file: File, facts: SessionFacts) {
         file.writeText(build(facts).toString(2) + "\n")
@@ -266,12 +273,15 @@ object SessionWriter {
         json.put("method", GpuTimerRing.METHOD)
         json.put("target_enum", "GL_TIME_ELAPSED_EXT=0x88BF, GL_GPU_DISJOINT_EXT=0x8FBB")
         json.put("ring_depth_frames", GpuTimerRing.RING_DEPTH)
-        json.put("queries_per_frame", GpuTimerRing.PASS_COUNT)
+        // arm마다 패스 수가 다르다(3패스 골격 3개 / drago 5개) → 상수가 아니라 실적에서 낸다.
+        json.put("queries_per_frame", report.passesPerFrame)
+        json.put("max_passes_per_frame", GpuTimerRing.MAX_PASS_COUNT)
 
         // 실제로 CSV에 실은 열. 재지 않은 열은 싣지 않는다(§CSV_HEADER 주석).
+        // 이름의 출처는 arm 하나다(RenderArm.gpuColumns) — 여기에 사본을 만들지 않는다.
         val columns = JSONArray()
         if (report.instrumented) {
-            for (name in FrameLogRecorder.GPU_CSV_HEADER.split(",")) {
+            for (name in facts.arm.gpuColumns) {
                 columns.put(name)
             }
         }
@@ -291,14 +301,25 @@ object SessionWriter {
         report.beginQueryError?.let { json.put("begin_query_error", it) }
         report.disabledReason?.let { json.put("disabled_reason", it) }
 
+        if (facts.arm == RenderArm.DRAGO) {
+            json.put(
+                "compute_pass_note",
+                "이 arm의 패스2·패스3은 glDispatchCompute다. 컴퓨트는 타일러를 거치지 않으므로 " +
+                    "아래 attribution_note의 '렌더패스 병합' 갈래가 그대로 적용되지는 않는다. " +
+                    "대신 SSBO 배리어(glMemoryBarrier)의 실제 대기가 어느 query에 담기는지는 " +
+                    "드라이버가 정한다 — 배리어를 **소비하는 쪽 패스의 맨 앞**에 두었으므로 " +
+                    "대기 비용은 소비자(패스3·패스4) 쪽으로 청구되도록 의도했다. 그것이 " +
+                    "실제로 그렇게 되는지는 **이 기기에서 검증하지 못했다**"
+            )
+        }
         json.put(
             "attribution_note",
-            "세 query가 3패스 시퀀스의 모든 GL **명령**을 빈틈없이 덮는다. 그러나 타일 기반 " +
+            "query가 패스 시퀀스의 모든 GL **명령**을 빈틈없이 덮는다. 그러나 타일 기반 " +
                 "GPU(Mali-G68)에서 '명령을 덮는 것'은 '그 명령이 유발한 GPU 작업을 덮는 것'이 " +
                 "아니다 — 어느 작업이 어느 query 구간에 담기는지는 드라이버가 정한다. " +
-                "확실한 것: 패스3은 기본 프레임버퍼에 그리는데 그 타일 해결은 " +
+                "확실한 것: 마지막 패스는 기본 프레임버퍼에 그리는데 그 타일 해결은 " +
                 "eglSwapBuffers에서 일어나고 GLSurfaceView는 그것을 onDrawFrame 반환 **후에** " +
-                "부른다 — 세 query 전부의 바깥이다(GLSurfaceView를 쓰는 한 옮길 수 없다). " +
+                "부른다 — 모든 query의 바깥이다(GLSurfaceView를 쓰는 한 옮길 수 없다). " +
                 "그래서 두 갈래이고 어느 쪽이든 '합은 정확하다'가 성립하지 않는다: " +
                 "(1) 드라이버가 glEndQuery에서 렌더패스를 쪼갠다 → **계측이 측정 대상 " +
                 "워크로드를 바꾸고 있다**, (2) 쪼개지 않는다 → **온스크린 해결 비용이 " +
@@ -309,8 +330,8 @@ object SessionWriter {
         )
         json.put(
             "instrumentation_overhead_note",
-            "계측 on/off A/B는 이 빌드로 할 수 없다 — 3패스 arm은 항상 계측하고 패스스루 " +
-                "arm은 절대 계측하지 않으므로, 두 arm의 차이에서 '3패스 비용'과 'query 비용'을 " +
+            "계측 on/off A/B는 이 빌드로 할 수 없다 — 패스스루가 아닌 arm은 항상 계측하고 " +
+                "패스스루 arm은 절대 계측하지 않으므로, 두 arm의 차이에서 '패스 비용'과 'query 비용'을 " +
                 "분리할 수단이 없다(구조적 한계이며 토글을 새로 만들지 않았다). 즉 여기 값에 " +
                 "query 자체의 오버헤드가 얼마나 섞였는지는 미측정이다"
         )
@@ -366,7 +387,64 @@ object SessionWriter {
                 json.put(
                     "note",
                     "② 저조도 개선 알고리즘이 아니다. pow() 한 번짜리 프래그먼트로 " +
-                        "**② 비용의 하한**만 본다. CLAHE는 다음 라운드다"
+                        "**② 비용의 하한**만 본다"
+                )
+            }
+            RenderArm.DRAGO -> {
+                json.put("algorithm", "drago_tonemap")
+                json.put("upstream_reference", "scripts/lowlight.py D1 (OpenCV TonemapDrago)")
+                json.put("gamma", RenderArm.DRAGO_GAMMA.toDouble())
+                json.put("saturation", RenderArm.DRAGO_SATURATION.toDouble())
+                json.put("bias", RenderArm.DRAGO_BIAS.toDouble())
+                json.put("src_gamma", RenderArm.DRAGO_SRC_GAMMA.toDouble())
+                json.put("luma_weights", RenderArm.DRAGO_LUMA_WEIGHTS)
+                json.put(
+                    "uniforms",
+                    JSONArray()
+                        .put(RenderArm.DRAGO_SRC_GAMMA_UNIFORM)
+                        .put(RenderArm.DRAGO_OUT_GAMMA_UNIFORM)
+                        .put(RenderArm.DRAGO_SATURATION_UNIFORM)
+                        .put(RenderArm.DRAGO_BIAS_UNIFORM)
+                )
+                // 지어낸 계약값을 조용히 굳히지 않기 위한 문장이다. 지우지 말 것.
+                json.put("provenance", RenderArm.DRAGO_PROVENANCE)
+                json.put("upstream_deviation", RenderArm.DRAGO_DEVIATION)
+                json.put("flicker_note", RenderArm.DRAGO_FLICKER_NOTE)
+                json.put("gpu_status", facts.stage2Status)
+                json.put(
+                    "operates_on",
+                    "선형 RGB 3채널 전부 (A1·A2가 LAB의 L만 건드리는 것과 다르다). " +
+                        "sRGB를 pow(x, src_gamma)로 선형화한 뒤 오퍼레이터에 넣고 " +
+                        "pow(x, 1/gamma)로 되씌운다"
+                )
+                json.put(
+                    "note",
+                    "전역 통계가 필요해 ② 자리가 3단(리덕션 → 계수 → 적용)이다. " +
+                        "하위 패스를 합치지 않고 D 계열 슬롯 3개에 그대로 낸다 " +
+                        "(docs/FRAME_LOG_SCHEMA.md §2)"
+                )
+                json.put(
+                    "how_to_compare",
+                    "🔴 **stage_d_total_ms만 인용하지 말 것 — ② 증분을 과소로 낸다.** " +
+                        "상류 CPU 실측(720p 82.9ms)과 비교할 숫자는 **gpu_sum_ms의 arm 간 " +
+                        "차분**이다(이 arm − blit_2pass). 근거: 독립 검증 실측에서 " +
+                        "gpu_present_ms가 **세 arm에서 글자 그대로 같은 코드인데** " +
+                        "blit_2pass 1.875 → gamma_only 2.123 → drago 3.597ms로 움직였다. " +
+                        "즉 ② 증분의 약 27%가 D 열이 아니라 present에 앉는다 — " +
+                        "stage_d_total_ms 5.75ms vs gpu_sum 차분 6.36ms(약 10% 과소). " +
+                        "⚠ **그 6.36ms도 하한이다** — 패스3의 타일 해결이 eglSwapBuffers에서 " +
+                        "일어나 세 query 전부의 바깥이다(gpu_timer.attribution_note). " +
+                        "⚠ 그리고 상류 82.9ms는 PC CPU/NumPy 기준이라 조건이 다르다 — " +
+                        "나란히 놓을 때 그 사실을 함께 옮길 것"
+                )
+                json.put(
+                    "cost_breakdown_note",
+                    "D 내부 분해를 '리덕션이 60%'로 읽지 말 것. analyze의 비용 중 약 1.13ms는 " +
+                        "리덕션이 아니라 **FBO_A를 처음 소비하는 패스의 자리 비용**이다 " +
+                        "(blit_2pass의 같은 자리 단순 복사가 1.128ms). 3패스 골격 대비 " +
+                        "**증분**으로 보면 analyze+build +3.47(55%) · apply−복사 +1.11(18%) · " +
+                        "present 번짐 +1.72(27%)이며 합이 gpu_sum 증분과 맞는다. " +
+                        "경량화 레버를 고를 때 '리덕션만 반으로 줄이면 D가 30% 준다'는 읽기는 틀린다"
                 )
             }
         }
@@ -380,8 +458,25 @@ object SessionWriter {
         json.put("gl_surface_size", "${facts.glSurfaceWidth}x${facts.glSurfaceHeight}")
         json.put("egl_context_client_version", facts.eglContextClientVersion)
         json.put("render_mode", "RENDERMODE_WHEN_DIRTY (onFrameAvailable에서 requestRender)")
-        json.put("draw_call", "패스당 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)")
-        json.put("shader_language", "GLSL ES 1.00 (전 패스 공통)")
+        json.put(
+            "draw_call",
+            if (facts.arm == RenderArm.DRAGO) {
+                "그리기 패스는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), " +
+                    "통계 패스 2개는 glDispatchCompute"
+            } else {
+                "패스당 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)"
+            }
+        )
+        json.put(
+            "shader_language",
+            if (facts.arm == RenderArm.DRAGO) {
+                "GLSL ES 1.00 (패스1·패스5) + GLSL ES 3.10 (패스2·3 컴퓨트, 패스4 적용). " +
+                    "적용 패스가 SSBO를 읽어야 해서 310으로 올렸고, ESSL은 한 프로그램 안에서 " +
+                    "버전을 섞지 못하므로 그 패스의 정점 셰이더도 310이다"
+            } else {
+                "GLSL ES 1.00 (전 패스 공통)"
+            }
+        )
 
         // 처리 해상도. **값을 지어내지 않는다** — 협상 전이면 그 사실을 그대로 적는다.
         val process = JSONObject()
@@ -399,15 +494,19 @@ object SessionWriter {
             )
         }
         process.put("offscreen_status", facts.offscreenStatus)
+        process.put("stage2_status", facts.stage2Status)
         // 0이 아니면 선언한 pipeline_stages와 실제로 탄 경로가 어긋난 것이다.
         process.put("frames_fell_back_to_passthrough", facts.offscreenFallbackDraws)
         json.put("processing", process)
 
-        // ⚠ S1의 `future_gpu_column`을 `gpu_column`으로 이름만 바꿨다. 매핑 자체는 S1이
-        //   선언한 것 그대로다(패스1→stage_b_ms, 패스2→stage_d_ms, 패스3→gpu_present_ms).
-        //   이제 실제로 채우므로 "future"가 아니다. 이 키는 하네스의 비교 조건이 아니다.
+        // ⚠ S1의 `future_gpu_column`을 `gpu_column`으로 이름만 바꿨다. 3패스 arm의 매핑은 S1이
+        //   선언한 것 그대로이고(패스1→stage_b_ms, 패스2→stage_d_ms, 패스3→gpu_present_ms),
+        //   `drago`에서만 패스2 자리가 3단으로 벌어진다. 이 키는 하네스의 비교 조건이 아니다.
+        //   **열 이름의 출처는 RenderArm.gpuColumns 하나**이므로 여기서도 그 목록을 순서대로
+        //   꺼내 쓴다 — 손으로 다시 적으면 어긋나는 날 조용히 틀린 라벨이 나간다.
         val passes = JSONArray()
         val instrumented = facts.gpuTimer.instrumented
+        val columns = facts.arm.gpuColumns
         if (facts.arm == RenderArm.PASSTHROUGH) {
             passes.put(
                 JSONObject()
@@ -420,36 +519,63 @@ object SessionWriter {
                     .put("instrumented", false)
             )
         } else {
-            passes.put(
-                JSONObject()
-                    .put("index", 1)
-                    .put("name", "oes_to_fbo_a")
-                    .put("target", "FBO_A (처리 해상도)")
-                    .put("shader", "OES 패스스루 + uTexMatrix")
-                    .put("gpu_column", "stage_b_ms")
-                    .put("instrumented", instrumented)
-            )
-            passes.put(
-                JSONObject()
-                    .put("index", 2)
-                    .put("name", "stage2_slot")
-                    .put("target", "FBO_B (처리 해상도)")
-                    .put(
-                        "shader",
-                        if (facts.arm == RenderArm.GAMMA_ONLY) "감마 (uGamma)" else "단순 복사"
+            val names: List<Triple<String, String, String>> =
+                if (facts.arm == RenderArm.DRAGO) {
+                    listOf(
+                        Triple(
+                            "oes_to_fbo_a", "FBO_A (처리 해상도)", "OES 패스스루 + uTexMatrix"
+                        ),
+                        Triple(
+                            "stage2_drago_analyze",
+                            "통계 SSBO (glDispatchCompute)",
+                            "전역 통계 리덕션 — 로그평균 휘도(Σlog)와 최대 휘도. " +
+                                "워크그룹 공유메모리 리덕션 + SSBO atomic으로 dispatch 1회",
+                        ),
+                        Triple(
+                            "stage2_drago_build",
+                            "통계 SSBO (glDispatchCompute, 스레드 1개)",
+                            "통계 → 톤커브 계수(logAvg / Lmax / biasPow). " +
+                                "CPU로 읽어오면 GPU 동기화가 걸리므로 GPU에서 계산한다",
+                        ),
+                        Triple(
+                            "stage2_drago_apply",
+                            "FBO_B (처리 해상도)",
+                            "Drago 톤맵 적용 + 감마 (uSrcGamma / uOutGamma / uSaturation)",
+                        ),
+                        Triple(
+                            "present", "default framebuffer (surface 크기)", "단순 복사"
+                        ),
                     )
-                    .put("gpu_column", "stage_d_ms")
-                    .put("instrumented", instrumented)
-            )
-            passes.put(
-                JSONObject()
-                    .put("index", 3)
-                    .put("name", "present")
-                    .put("target", "default framebuffer (surface 크기)")
-                    .put("shader", "단순 복사")
-                    .put("gpu_column", "gpu_present_ms")
-                    .put("instrumented", instrumented)
-            )
+                } else {
+                    listOf(
+                        Triple(
+                            "oes_to_fbo_a", "FBO_A (처리 해상도)", "OES 패스스루 + uTexMatrix"
+                        ),
+                        Triple(
+                            "stage2_slot",
+                            "FBO_B (처리 해상도)",
+                            if (facts.arm == RenderArm.GAMMA_ONLY) "감마 (uGamma)" else "단순 복사",
+                        ),
+                        Triple(
+                            "present", "default framebuffer (surface 크기)", "단순 복사"
+                        ),
+                    )
+                }
+            for (i in names.indices) {
+                val (name, target, shader) = names[i]
+                passes.put(
+                    JSONObject()
+                        .put("index", i + 1)
+                        .put("name", name)
+                        .put("target", target)
+                        .put("shader", shader)
+                        .put(
+                            "gpu_column",
+                            if (i < columns.size) columns[i] else JSONObject.NULL
+                        )
+                        .put("instrumented", instrumented)
+                )
+            }
         }
         json.put("passes", passes)
         json.put(

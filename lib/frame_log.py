@@ -191,12 +191,17 @@ LIGHTING_CONDITIONS = (
 # 이 목록은 `docs/FRAME_LOG_SCHEMA.md` §5의 표와 **같아야 한다.**
 STAGE_BLIT_2PASS = "blit_2pass"        # 3패스 골격(OES→오프스크린→②자리→표시). 앱 생산
 STAGE2_GAMMA = "stage2_gamma"          # ② 자리 감마 패스. 앱 생산
+STAGE2_DRAGO = "stage2_drago"          # ② Drago 톤매핑(리덕션+계수+적용 3패스). 앱 생산
 STAGE_DETECT = "detect"                # ③ 탐지. **앱 미구현** — 현재는 합성 로그만 낸다
 STAGE4_HIGHLIGHT = "stage4_highlight"  # ④ 강조. **앱 미구현** — 현재는 합성 로그만 낸다
 
+# ⚠ 여기에 **아직 없는 arm의 토큰을 미리 만들지 않는다.** 생산자가 앱이므로, 앱이 그 arm을
+#   실제로 내기 전에 하네스가 이름을 지으면 앱이 다른 이름을 쓰는 날 같은 구조가 두 이름으로
+#   갈려 모든 비교가 "조건 다름"이 된다. arm이 붙을 때마다 앱이 쓴 문자열로 여기 등록한다.
 PIPELINE_STAGES = (
     STAGE_BLIT_2PASS,
     STAGE2_GAMMA,
+    STAGE2_DRAGO,
     STAGE_DETECT,
     STAGE4_HIGHLIGHT,
 )

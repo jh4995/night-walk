@@ -34,12 +34,20 @@ import javax.microedition.khronos.opengles.GL10
  *   ```
  *   **패스마다 `glBindFramebuffer` + `glClear`를 명시**한다. 타일 기반 GPU(Mali-G68)에서
  *   드라이버가 렌더패스를 병합하면 timer query 귀속이 흐려진다.
+ * - [RenderArm.DRAGO] — 위 골격의 **패스2 자리가 3단으로 벌어진 5패스**:
+ *   ```
+ *   패스1  OES   → FBO_A                  → stage_b_ms
+ *   패스2  전역 통계 리덕션(컴퓨트)        → stage_d_analyze_ms
+ *   패스3  통계 → 톤커브 계수(컴퓨트)      → stage_d_build_ms
+ *   패스4  FBO_A → FBO_B  톤맵+감마        → stage_d_apply_ms
+ *   패스5  FBO_B → 화면                    → gpu_present_ms
+ *   ```
+ *   ②의 하위 패스를 **합치지 않는다**(`docs/FRAME_LOG_SCHEMA.md` §2) — 게이트를 넘었을 때
+ *   다음 질문이 "어디가 비싼가"이고, 합치면 그 정보가 사라진다. 자세한 것은 [DragoStage].
  *
- * 3패스 arm은 [GpuTimerRing]으로 패스별 GPU 시간을 잰다. **패스스루 arm에는 query를 하나도
- * 걸지 않는다** — query 자체가 GPU 동작과 드라이버 스케줄링을 바꾸므로, 승격 베이스라인을
- * 재현하는 경로에 넣으면 그 기준이 기준이 아니게 된다.
- *
- * ②의 알고리즘(CLAHE)은 아직 없다 — 자리만 만든다.
+ * 패스스루가 아닌 arm은 [GpuTimerRing]으로 패스별 GPU 시간을 잰다. **패스스루 arm에는
+ * query를 하나도 걸지 않는다** — query 자체가 GPU 동작과 드라이버 스케줄링을 바꾸므로,
+ * 승격 베이스라인을 재현하는 경로에 넣으면 그 기준이 기준이 아니게 된다.
  *
  * ### 타임스탬프를 찍는 위치 (정직하게 문서화해야 하는 지점)
  * `GLSurfaceView`를 쓰면 `swapBuffers`는 프레임워크가 `onDrawFrame` 반환 **후에** 하므로
@@ -109,6 +117,18 @@ class PassthroughRenderer(
     var offscreenFallbackDraws = 0
         private set
 
+    /** ② 자리 자원의 현재 상태(사람이 읽는 문장). `session.json`의 `stage2_params`로 나간다. */
+    val stage2Status: String
+        get() = when (arm) {
+            RenderArm.DRAGO ->
+                if (dragoApplyProgram == null) {
+                    "적용 패스(프래그먼트) 프로그램을 만들지 못했다 — " + dragoStage.status
+                } else {
+                    dragoStage.status
+                }
+            else -> "② 자리에 전역 통계가 필요 없는 arm이다 (셰이더 1패스)"
+        }
+
     @Volatile
     private var arm: RenderArm = RenderArm.DEFAULT
 
@@ -127,6 +147,12 @@ class PassthroughRenderer(
 
     /** 패스2(감마). ② 자리의 비용 하한. */
     private var gammaProgram: QuadProgram? = null
+
+    /** `drago` arm의 적용 패스(패스4). `#version 310 es`라 정점 셰이더도 따로 쓴다. */
+    private var dragoApplyProgram: QuadProgram? = null
+
+    /** `drago` arm의 전역 통계(리덕션 + 계수). 자원과 상태를 통째로 소유한다. */
+    private val dragoStage = DragoStage()
 
     /** [0]=FBO_A, [1]=FBO_B. 0이면 미생성. GL 스레드 전용. */
     private val fbos = IntArray(FBO_COUNT)
@@ -180,12 +206,20 @@ class PassthroughRenderer(
         oesProgram = buildProgram(VERTEX_SHADER_OES, FRAGMENT_SHADER_OES)
         blitProgram = buildProgram(VERTEX_SHADER_2D, FRAGMENT_SHADER_BLIT)
         gammaProgram = buildProgram(VERTEX_SHADER_2D, FRAGMENT_SHADER_GAMMA)
+        // ② Drago. 컴퓨트를 못 쓰는 컨텍스트면 DragoStage가 스스로 꺼지고 그 이유를 남긴다.
+        dragoStage.onContextCreated(capabilities)
+        dragoApplyProgram = if (dragoStage.ready) {
+            buildProgram(DragoStage.VERTEX_SHADER_ES31, DragoStage.APPLY_SHADER)
+        } else {
+            null
+        }
         oesTextureId = createOesTexture()
         Matrix.setIdentityM(texMatrix, 0)
         pendingRecvNs.set(NO_FRAME)
 
-        // 컨텍스트가 재생성됐는데 이미 3패스 arm이면 여기서 다시 준비한다.
+        // 컨텍스트가 재생성됐는데 이미 계측 arm이면 여기서 다시 준비한다.
         if (arm != RenderArm.PASSTHROUGH) {
+            gpuTimer.setPassCount(arm.gpuColumns.size)
             gpuTimer.prepare()
         }
 
@@ -294,6 +328,9 @@ class PassthroughRenderer(
             }
             offscreenStatus = "arm=passthrough — 오프스크린을 만들지 않는다(기존 1패스 재현)"
         } else {
+            // 패스 수는 arm이 정한다(RenderArm.gpuColumns). prepare 전에 알려 줘야
+            // 링이 이번 arm의 개수로 엔트리를 건다.
+            gpuTimer.setPassCount(next.gpuColumns.size)
             // 일회성 프로브와 query 객체 생성을 **측정 전에** 끝내 둔다. 지연 초기화에
             // 맡기면 그 비용이 측정 첫 프레임에 얹힌다.
             gpuTimer.prepare()
@@ -351,8 +388,18 @@ class PassthroughRenderer(
             drawPassthrough(oes)
             return
         }
-        val stage2 = if (arm == RenderArm.GAMMA_ONLY) gammaProgram else blitProgram
         val present = blitProgram
+        if (arm == RenderArm.DRAGO) {
+            val apply = dragoApplyProgram
+            if (apply == null || present == null || !dragoStage.ready || !ensureOffscreen()) {
+                offscreenFallbackDraws++
+                drawPassthrough(oes)
+                return
+            }
+            drawDrago(oes, apply, present, instrument)
+            return
+        }
+        val stage2 = if (arm == RenderArm.GAMMA_ONLY) gammaProgram else blitProgram
         if (stage2 == null || present == null || !ensureOffscreen()) {
             // 3패스를 못 돌면 조용히 넘어가지 않는다. 세어서 session.json에 남긴다 —
             // 선언한 pipeline_stages와 실제 경로가 어긋난 채로 숫자가 나가면 안 된다.
@@ -432,6 +479,69 @@ class PassthroughRenderer(
         if (timing) gpuTimer.endPass()
     }
 
+    /**
+     * `drago` arm의 5패스. [drawThreePass]의 패스2 자리가 **리덕션 → 계수 → 적용**으로
+     * 벌어진 것이고, 나머지(패스1·표시)는 글자 그대로 같은 코드다.
+     *
+     * ### 왜 하위 3단을 한 query로 묶지 않는가
+     * `docs/FRAME_LOG_SCHEMA.md` §2가 금지한다 — 앱이 합치면 그건 유도값이고, **어느 패스가
+     * 비싼지가 사라진다.** 게이트를 넘었을 때 팀장에게 넘길 것이 정확히 그 정보다
+     * (리덕션이 지배하는지 적용이 지배하는지에 따라 경량화 레버가 완전히 달라진다).
+     *
+     * ### 컴퓨트 패스의 귀속은 프래그먼트 패스보다 **덜** 흐리다
+     * `glDispatchCompute`는 타일러를 거치지 않으므로 `drawThreePass`의 주의사항(렌더패스
+     * 병합)이 그대로 적용되지는 않는다. 다만 `glMemoryBarrier`의 실제 대기가 어느 query에
+     * 담기는지는 여전히 드라이버가 정한다 — 배리어를 **소비하는 쪽 패스의 맨 앞**에 두어
+     * 대기 비용이 소비자에게 청구되게 했다(임의 선택이며 `session.json`에 그대로 적는다).
+     */
+    private fun drawDrago(
+        oes: QuadProgram,
+        apply: QuadProgram,
+        present: QuadProgram,
+        instrument: Boolean,
+    ) {
+        val timing = instrument && gpuTimer.beginFrame()
+
+        // 패스1: OES → FBO_A (처리 해상도). stage_b_ms.
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[0])
+        GLES20.glViewport(0, 0, fboWidth, fboHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(oes, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+        if (timing) gpuTimer.endPass()
+
+        // 패스2: 전역 통계 리덕션. stage_d_analyze_ms.
+        // ⚠ FBO_A를 **어태치먼트에서 떼고** 나서 텍스처로 읽는다. 붙여 둔 채로 샘플링하면
+        //   피드백 루프이고 결과가 미정의다.
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        dragoStage.analyze(fboTextures[0], fboWidth, fboHeight)
+        if (timing) gpuTimer.endPass()
+
+        // 패스3: 통계 → 톤커브 계수. stage_d_build_ms.
+        if (timing) gpuTimer.beginPass()
+        dragoStage.build()
+        if (timing) gpuTimer.endPass()
+
+        // 패스4: FBO_A → FBO_B. 톤맵 적용 + 감마. stage_d_apply_ms.
+        if (timing) gpuTimer.beginPass()
+        dragoStage.beforeApply()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[1])
+        GLES20.glViewport(0, 0, fboWidth, fboHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(apply, GLES20.GL_TEXTURE_2D, fboTextures[0])
+        if (timing) gpuTimer.endPass()
+
+        // 패스5: FBO_B → 화면 (surface 크기). gpu_present_ms.
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
+        if (timing) gpuTimer.endPass()
+    }
+
     /** 프레임당 객체를 만들지 않는다 — 인자는 전부 원시형이고 프로그램은 미리 만들어 둔다. */
     private fun drawQuad(program: QuadProgram, textureTarget: Int, textureId: Int) {
         GLES20.glUseProgram(program.handle)
@@ -445,6 +555,16 @@ class PassthroughRenderer(
             // 상수로 박지 않고 uniform으로 넣는다(INTERFACES.md §B-5 요청). 실제로 쓴 값은
             // session.json의 stage2_params에 provenance와 함께 남는다.
             GLES20.glUniform1f(program.uGamma, RenderArm.GAMMA_MEASUREMENT_VALUE)
+        }
+        // Drago 파라미터도 같은 이유로 전부 uniform이다. 없는 프로그램에서는 -1이라 건너뛴다.
+        if (program.uSrcGamma >= 0) {
+            GLES20.glUniform1f(program.uSrcGamma, RenderArm.DRAGO_SRC_GAMMA)
+        }
+        if (program.uOutGamma >= 0) {
+            GLES20.glUniform1f(program.uOutGamma, RenderArm.DRAGO_GAMMA)
+        }
+        if (program.uSaturation >= 0) {
+            GLES20.glUniform1f(program.uSaturation, RenderArm.DRAGO_SATURATION)
         }
 
         vertexBuffer.position(0)
@@ -477,6 +597,9 @@ class PassthroughRenderer(
             return false
         }
         if (fboWidth == w && fboHeight == h && fbos[0] != 0 && fbos[1] != 0) return true
+        // 처리 해상도의 유일한 출처가 여기이므로, 해상도에 의존하는 ② 상수도 여기서 잡는다
+        // (셰이더 쪽에 해상도를 하드코딩하지 않기 위해서다).
+        dragoStage.onProcessSizeChanged(w, h)
 
         releaseOffscreen()
         GLES20.glGenTextures(FBO_COUNT, fboTextures, 0)
@@ -551,6 +674,8 @@ class PassthroughRenderer(
         releaseOffscreen()
         // query 객체도 컨텍스트에 매달려 있다. 빠뜨리면 컨텍스트가 재생성될 때마다 샌다.
         gpuTimer.releaseGl()
+        // ② Drago의 컴퓨트 프로그램과 SSBO도 같은 이유로 여기서 반납한다.
+        dragoStage.releaseGl()
         if (oesTextureId != 0) {
             GLES20.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
             oesTextureId = 0
@@ -558,9 +683,11 @@ class PassthroughRenderer(
         deleteProgram(oesProgram)
         deleteProgram(blitProgram)
         deleteProgram(gammaProgram)
+        deleteProgram(dragoApplyProgram)
         oesProgram = null
         blitProgram = null
         gammaProgram = null
+        dragoApplyProgram = null
     }
 
     private fun deleteProgram(program: QuadProgram?) {
@@ -607,6 +734,11 @@ class PassthroughRenderer(
             // 플래그를 두지 않는다.
             uTexMatrix = GLES20.glGetUniformLocation(handle, "uTexMatrix"),
             uGamma = GLES20.glGetUniformLocation(handle, RenderArm.GAMMA_UNIFORM),
+            uSrcGamma = GLES20.glGetUniformLocation(handle, RenderArm.DRAGO_SRC_GAMMA_UNIFORM),
+            uOutGamma = GLES20.glGetUniformLocation(handle, RenderArm.DRAGO_OUT_GAMMA_UNIFORM),
+            uSaturation = GLES20.glGetUniformLocation(
+                handle, RenderArm.DRAGO_SATURATION_UNIFORM
+            ),
         )
     }
 
@@ -634,6 +766,12 @@ class PassthroughRenderer(
         val uTexMatrix: Int,
         /** 이 프로그램에 없으면 -1. */
         val uGamma: Int,
+        /** Drago: sRGB → 선형 지수. 이 프로그램에 없으면 -1. */
+        val uSrcGamma: Int,
+        /** Drago: 되씌우는 감마. 이 프로그램에 없으면 -1. */
+        val uOutGamma: Int,
+        /** Drago: `mapLuminance`의 채도 지수. 이 프로그램에 없으면 -1. */
+        val uSaturation: Int,
     )
 
     companion object {

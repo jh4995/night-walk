@@ -11,8 +11,8 @@ import java.util.concurrent.atomic.AtomicLong
  * 매 프레임 파일 I/O를 하면 write 지연이 프레임타임에 섞이고, 매 프레임 객체를 만들면
  * GC가 측정을 오염시킨다 → 값은 [LongArray] 청크에만 담는다(객체 0개).
  *
- * 프레임당 long 개수는 [stride]다. GPU 패스 시간을 받는 런에서만 3칸이 더 붙는다
- * ([VALUES_PER_FRAME_GPU]) — 패스스루 arm은 계측하지 않으므로 그 칸을 잡지도 않는다.
+ * 프레임당 long 개수는 [stride]다. GPU 패스 시간을 받는 런에서만 **arm의 패스 수만큼** 칸이
+ * 더 붙는다(`RenderArm.gpuColumns`) — 패스스루 arm은 계측하지 않으므로 그 칸을 잡지도 않는다.
  *
  * **스레드 규약:** [start]·[record]·[setGpuTiming]·[writeCsv]는 **GL 스레드에서만** 부른다.
  * UI는 [recordedFrames] 같은 volatile 카운터만 읽는다.
@@ -29,6 +29,18 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
      * 바뀌면 [setGpuTiming]의 슬롯 → 오프셋 계산이 통째로 어긋난다.
      */
     private var stride = VALUES_PER_FRAME_BASE
+
+    /**
+     * 이 런이 잡은 GPU 열 개수. 0이면 GPU 칸 자체가 없다.
+     * [stride] = [VALUES_PER_FRAME_BASE] + 이 값.
+     */
+    private var gpuColumnCount = 0
+
+    /**
+     * CSV에 붙일 GPU 열 헤더(쉼표 구분). [start]에서 한 번 만든다 —
+     * 프레임 경로에서는 만들지 않는다.
+     */
+    private var gpuHeader = ""
 
     @Volatile
     var isRecording = false
@@ -59,16 +71,19 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
         private set
 
     /**
-     * @param gpuColumns GPU 패스 시간 칸을 잡을 것인가(= 3패스 arm인가). false면 청크에
-     *   그 칸 자체가 없고 [setGpuTiming]은 무시된다.
+     * @param gpuColumns 이 런이 실을 GPU 패스 시간 열 이름 — **패스 순서 그대로**이며
+     *   출처는 `RenderArm.gpuColumns` 하나다. 비어 있으면(패스스루) 청크에 그 칸 자체가
+     *   없고 [setGpuTiming]은 무시된다.
      */
-    fun start(startedElapsedNs: Long, gpuColumns: Boolean) {
+    fun start(startedElapsedNs: Long, gpuColumns: List<String>) {
         chunks.clear()
         cursor = 0
         recordedFrames = 0
         drawsWithoutNewFrame = 0
         surfaceFramesAvailable.set(0)
-        stride = if (gpuColumns) VALUES_PER_FRAME_GPU else VALUES_PER_FRAME_BASE
+        gpuColumnCount = gpuColumns.size
+        gpuHeader = gpuColumns.joinToString(",")
+        stride = VALUES_PER_FRAME_BASE + gpuColumnCount
         this.startedElapsedNs = startedElapsedNs
         this.stoppedElapsedNs = 0L
         isRecording = true
@@ -109,12 +124,12 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
         chunk[cursor + 1] = tCaptureNs
         chunk[cursor + 2] = tRenderStartNs
         chunk[cursor + 3] = tRenderEndNs
-        if (stride == VALUES_PER_FRAME_GPU) {
-            // 새 LongArray는 0으로 차 있다. 0은 "그 패스가 0ms였다"는 적극적 주장이므로
-            // **반드시** -1로 덮는다. back-fill이 안 오면 이 값이 그대로 나간다.
-            chunk[cursor + 4] = MISSING_NS
-            chunk[cursor + 5] = MISSING_NS
-            chunk[cursor + 6] = MISSING_NS
+        // 새 LongArray는 0으로 차 있다. 0은 "그 패스가 0ms였다"는 적극적 주장이므로
+        // **반드시** -1로 덮는다. back-fill이 안 오면 이 값이 그대로 나간다.
+        var g = 0
+        while (g < gpuColumnCount) {
+            chunk[cursor + VALUES_PER_FRAME_BASE + g] = MISSING_NS
+            g++
         }
         cursor += stride
         val slot = recordedFrames
@@ -126,17 +141,24 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
      * [record]가 돌려준 슬롯에 GPU 패스 시간을 **나중에** 채운다(단위 ns, 없으면 음수).
      * 범위를 벗어난 슬롯이나 GPU 칸이 없는 런에서는 조용히 무시한다 — 잘못된 행에
      * 쓰는 것보다 안 쓰는 쪽이 낫다.
+     *
+     * @param values 패스 순서대로의 ns. **호출자가 재사용하는 배열**이므로 여기서 보관하지
+     *   않고 즉시 복사한다.
+     * @param count 실제로 유효한 개수. 이 런이 잡은 칸 수와 다르면 **아무것도 쓰지 않는다** —
+     *   어긋난 개수로 쓰면 열이 한 칸씩 밀린 채 그럴듯해 보인다.
      */
-    fun setGpuTiming(slot: Int, stageBNs: Long, stageDNs: Long, presentNs: Long) {
-        if (stride != VALUES_PER_FRAME_GPU) return
+    fun setGpuTiming(slot: Int, values: LongArray, count: Int) {
+        if (gpuColumnCount == 0 || count != gpuColumnCount) return
         if (slot < 0 || slot >= recordedFrames) return
         val chunkIndex = slot / chunkFrames
         if (chunkIndex >= chunks.size) return
         val chunk = chunks[chunkIndex]
-        val offset = (slot % chunkFrames) * stride
-        chunk[offset + 4] = stageBNs
-        chunk[offset + 5] = stageDNs
-        chunk[offset + 6] = presentNs
+        val offset = (slot % chunkFrames) * stride + VALUES_PER_FRAME_BASE
+        var g = 0
+        while (g < count) {
+            chunk[offset + g] = values[g]
+            g++
+        }
     }
 
     /**
@@ -148,10 +170,10 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
      *   그건 다른 뜻이다(§CSV_HEADER 주석).
      */
     fun writeCsv(file: File, includeGpuColumns: Boolean): Int {
-        val emitGpu = includeGpuColumns && stride == VALUES_PER_FRAME_GPU
+        val emitGpu = includeGpuColumns && gpuColumnCount > 0
         var rows = 0
         BufferedWriter(FileWriter(file), 1 shl 16).use { out ->
-            out.write(if (emitGpu) CSV_HEADER + ',' + GPU_CSV_HEADER else CSV_HEADER)
+            out.write(if (emitGpu) CSV_HEADER + ',' + gpuHeader else CSV_HEADER)
             out.write("\n")
             val line = StringBuilder(128)
             for (chunkIndex in chunks.indices) {
@@ -167,9 +189,11 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
                         .append(chunk[i + 3]).append(',')
                         .append(DROPPED_UNKNOWN)
                     if (emitGpu) {
-                        appendMs(line.append(','), chunk[i + 4])
-                        appendMs(line.append(','), chunk[i + 5])
-                        appendMs(line.append(','), chunk[i + 6])
+                        var g = 0
+                        while (g < gpuColumnCount) {
+                            appendMs(line.append(','), chunk[i + VALUES_PER_FRAME_BASE + g])
+                            g++
+                        }
                     }
                     line.append('\n')
                     out.write(line.toString())
@@ -203,9 +227,6 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
         /** 타임스탬프 4개. GPU를 재지 않는 런의 프레임당 long 개수다. */
         const val VALUES_PER_FRAME_BASE = 4
 
-        /** 위 4개 + `stage_b` / `stage_d` / `gpu_present`(ns). */
-        const val VALUES_PER_FRAME_GPU = 7
-
         /** [record]가 슬롯을 주지 못했을 때. */
         const val NO_SLOT = -1
 
@@ -213,7 +234,7 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
         const val MISSING_NS = -1L
 
         /**
-         * 헤더 규칙 (스키마 v2):
+         * 헤더 규칙 (스키마 v3):
          *
          * 1. 여기 쓰는 이름은 `lib/frame_log.py`의 `REQUIRED_COLUMNS + OPTIONAL_COLUMNS`에
          *    있는 이름과 **글자까지** 같아야 한다. 오타를 내면 하네스가 미지 열 경고를 내지만
@@ -223,23 +244,16 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
          *
          * ⚠ **"열 없음"과 "전부 -1"은 하네스에서 다르게 보고된다.** 재지 않은 열을 헤더에
          * 넣고 -1로 채우면 `_add_gpu_warnings`가 "열은 있는데 유효 표본이 0개다 = 쟀는데 못
-         * 얻었다"고 말한다. 그건 사실이 아니다(애초에 재지 않았다). 그래서 [GPU_CSV_HEADER]는
+         * 얻었다"고 말한다. 그건 사실이 아니다(애초에 재지 않았다). 그래서 GPU 열은
          * **실제로 query를 건 런에서만** 붙는다(`writeCsv(includeGpuColumns=...)`).
+         *
+         * ⚠ GPU 열 이름의 출처는 `RenderArm.gpuColumns` **하나**다. 여기에 두 번째 사본을
+         * 만들지 않는다 — arm마다 열 구성이 다르므로(3패스 arm 3개, drago 5개) 상수로 박으면
+         * 어긋나는 날 열이 한 칸씩 밀린다. 단위는 **ms(float)**이고 출처는 GPU 시계라
+         * `t_*_ns`(CLOCK_BOOTTIME)와 서로 더하거나 뺄 수 없다(스키마 §2).
          */
         const val CSV_HEADER =
             "frame_idx,t_recv_ns,t_capture_ns,t_render_start_ns,t_render_end_ns,dropped_since_last"
-
-        /**
-         * 3패스 arm에서만 붙는 GPU 패스 시간 열. 이름은 `lib/frame_log.py`의
-         * `GPU_TIME_COLUMNS`와 **글자까지** 같아야 한다.
-         *
-         * `stage_i_ms`는 없다 — ④ 오버레이 arm이 아직 없어서 잴 것이 없다. 재지 않는 열을
-         * 싣지 않는 것이 위 규칙이다.
-         *
-         * ⚠ 단위는 **ms(float)**이고 출처는 GPU 시계다. `t_*_ns`(CLOCK_BOOTTIME)와 다른
-         * 시계라 서로 더하거나 뺄 수 없다(스키마 §2).
-         */
-        const val GPU_CSV_HEADER = "stage_b_ms,stage_d_ms,gpu_present_ms"
 
         /**
          * `dropped_since_last`는 **항상 -1**이다.

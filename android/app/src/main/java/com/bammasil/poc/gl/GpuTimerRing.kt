@@ -35,12 +35,14 @@ import com.bammasil.poc.log.FrameLogRecorder
  * 링 엔트리에 함께 들고 있다가([commitFrame]) 해소될 때 그 슬롯에 쓴다.
  *
  * ### 패스 인덱스 → 열
- * `session.json`의 `render.passes[].gpu_column`과 같은 매핑이다. [PASS_COUNT]를 바꾸면
- * [consume]의 인자 개수도 함께 고쳐야 한다.
+ * **매핑의 유일한 출처는 [RenderArm.gpuColumns]다**(`session.json`의
+ * `render.passes[].gpu_column`도 같은 목록에서 나온다). arm마다 패스 수가 다르므로
+ * ([RenderArm.DRAGO]는 ② 자리가 3단이라 5패스다) 이 클래스는 개수를 상수로 갖지 않고
+ * [setPassCount]로 받는다. query는 항상 [MAX_PASS_COUNT]칸을 잡아 두고 앞에서부터 쓴다 —
+ * arm을 바꿔도 재할당하지 않기 위해서다.
  * ```
- * 0  패스1 OES → FBO_A   stage_b_ms      (버짓 B칸)
- * 1  패스2 ② 자리        stage_d_ms      (버짓 D칸)
- * 2  패스3 → 화면        gpu_present_ms  (칸 아님)
+ * 3패스 arm : stage_b_ms, stage_d_ms, gpu_present_ms
+ * drago     : stage_b_ms, stage_d_analyze_ms, stage_d_build_ms, stage_d_apply_ms, gpu_present_ms
  * ```
  *
  * **스레드 규약: 전부 GL 스레드에서만 부른다.** 컨텍스트가 현재가 아니면 전부 무의미하다.
@@ -60,14 +62,28 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
     /** `GlCapabilitiesProbe`의 3-상태 문자열. 프로브 전에는 unknown. */
     private var extensionPresent: String = GlCapabilitiesProbe.UNKNOWN
 
-    /** [PASS_COUNT] × [RING_DEPTH]개를 **한 번에** 잡는다. 프레임당 할당 0. */
-    private val queryIds = IntArray(PASS_COUNT * RING_DEPTH)
+    /**
+     * 이번 arm이 프레임당 거는 query 수 = [RenderArm.gpuColumns]의 개수.
+     * [setPassCount]로만 바뀌며, **이미 떠 있는 엔트리에는 소급되지 않는다**
+     * ([entryPassCount] 참고).
+     */
+    private var passCount = DEFAULT_PASS_COUNT
+
+    /** [MAX_PASS_COUNT] × [RING_DEPTH]개를 **한 번에** 잡는다. 프레임당 할당 0. */
+    private val queryIds = IntArray(MAX_PASS_COUNT * RING_DEPTH)
 
     /** 엔트리 i가 채워야 할 CSV 행 슬롯. [SLOT_NONE]이면 채울 행이 없다. */
     private val entrySlot = IntArray(RING_DEPTH) { SLOT_NONE }
 
     /** 엔트리 i를 건 런의 세대. [generation]과 다르면 결과를 버린다. */
     private val entryGeneration = IntArray(RING_DEPTH) { STALE_GENERATION }
+
+    /**
+     * 엔트리 i를 걸 때의 패스 수. arm이 바뀌면 [passCount]가 달라지는데, 아직 떠 있는
+     * 엔트리를 새 개수로 회수하면 **걸지도 않은 query 이름을 읽어**(GL_INVALID_OPERATION)
+     * 링이 통째로 막힌다. 그래서 회수는 엔트리가 기억하는 개수로 한다.
+     */
+    private val entryPassCount = IntArray(RING_DEPTH)
 
     /** FIFO 링. query는 건 순서대로 해소되므로 head부터 보면 된다. */
     private var head = 0
@@ -82,8 +98,8 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
     /** `glGetQueryObjectuiv` / `glGetIntegerv` 공용. 프레임당 할당을 만들지 않기 위해서다. */
     private val scratch = IntArray(1)
 
-    /** 한 엔트리에서 읽어 낸 패스별 ns. 재사용한다. */
-    private val values = LongArray(PASS_COUNT)
+    /** 한 엔트리에서 읽어 낸 패스별 ns. 재사용한다(프레임당 할당 0). */
+    private val values = LongArray(MAX_PASS_COUNT)
 
     /**
      * 런 세대. [beginRun]에서 올린다. 이전 런의 in-flight query가 다음 런의 슬롯에
@@ -122,6 +138,21 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
     }
 
     /**
+     * arm이 바뀌었을 때(GL 스레드) 프레임당 패스 수를 알려 준다. **측정 중에는 부르지
+     * 않는다** — arm 전환 자체가 측정 중에 금지돼 있다(UI에서 스피너를 잠근다).
+     *
+     * 아직 떠 있는 엔트리는 [entryPassCount]에 자기 개수를 들고 있으므로 여기서 건드리지
+     * 않는다. 값 자체는 [RenderArm.gpuColumns]에서 오며 이 클래스가 정하지 않는다.
+     */
+    fun setPassCount(count: Int) {
+        if (count <= 0 || count > MAX_PASS_COUNT) {
+            Log.w(TAG, "패스 수 $count 는 1..$MAX_PASS_COUNT 밖이다 — 무시한다")
+            return
+        }
+        passCount = count
+    }
+
+    /**
      * 컨텍스트가 죽었거나 재생성됐다. query 객체를 지우고 처음 상태로 되돌린다 —
      * 이걸 빠뜨리면 컨텍스트가 재생성될 때마다 query 객체가 샌다.
      */
@@ -132,6 +163,7 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
         queryIds.fill(0)
         entrySlot.fill(SLOT_NONE)
         entryGeneration.fill(STALE_GENERATION)
+        entryPassCount.fill(0)
         head = 0
         inFlight = 0
         activeEntry = NO_ENTRY
@@ -195,8 +227,9 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
         }
         var unresolved = 0
         for (i in 0 until inFlight) {
-            if (entryGeneration[(head + i) % RING_DEPTH] == generation) {
-                unresolved += PASS_COUNT
+            val entry = (head + i) % RING_DEPTH
+            if (entryGeneration[entry] == generation) {
+                unresolved += entryPassCount[entry]
             }
         }
         unresolvedQueries = unresolved
@@ -214,6 +247,7 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
             positiveSamples = positiveSamples,
             zeroResultQueries = zeroResultQueries,
             unresolvedQueries = unresolved,
+            passesPerFrame = passCount,
             disjointFrames = disjointFrames,
             discardedDisjointQueries = discardedDisjointQueries,
             skippedRingFullFrames = skippedRingFullFrames,
@@ -249,6 +283,7 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
         inFlight++
         entrySlot[activeEntry] = SLOT_NONE
         entryGeneration[activeEntry] = generation
+        entryPassCount[activeEntry] = passCount
         passCursor = 0
         instrumentedFrames++
         return true
@@ -257,12 +292,13 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
     /** 패스 하나의 GL 명령을 감싼다. [beginFrame]이 true를 준 프레임에서만 부른다. */
     fun beginPass() {
         val entry = activeEntry
-        if (entry == NO_ENTRY || passCursor >= PASS_COUNT) return
-        GLES30.glBeginQuery(TIME_ELAPSED_EXT, queryIds[entry * PASS_COUNT + passCursor])
+        if (entry == NO_ENTRY || passCursor >= entryPassCount[entry]) return
+        GLES30.glBeginQuery(TIME_ELAPSED_EXT, queryIds[entry * MAX_PASS_COUNT + passCursor])
     }
 
     fun endPass() {
-        if (activeEntry == NO_ENTRY || passCursor >= PASS_COUNT) return
+        val entry = activeEntry
+        if (entry == NO_ENTRY || passCursor >= entryPassCount[entry]) return
         GLES30.glEndQuery(TIME_ELAPSED_EXT)
         passCursor++
     }
@@ -278,13 +314,16 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
         val entry = activeEntry
         if (entry == NO_ENTRY) return
         activeEntry = NO_ENTRY
-        if (passCursor < PASS_COUNT) {
+        val expected = entryPassCount[entry]
+        if (passCursor < expected) {
             // 방어선. 패스 수가 모자란 채로 두면 그 query는 영원히 미해소로 남아 **링이
             // 막힌다**(그 뒤로 계측이 통째로 죽는다). 남은 것을 빈 query로 소진시키고
             // 이 프레임은 통째로 버린다 — 반쪽 값을 행에 쓰지 않는다.
             malformedFrames++
-            while (passCursor < PASS_COUNT) {
-                GLES30.glBeginQuery(TIME_ELAPSED_EXT, queryIds[entry * PASS_COUNT + passCursor])
+            while (passCursor < expected) {
+                GLES30.glBeginQuery(
+                    TIME_ELAPSED_EXT, queryIds[entry * MAX_PASS_COUNT + passCursor]
+                )
                 GLES30.glEndQuery(TIME_ELAPSED_EXT)
                 passCursor++
             }
@@ -319,7 +358,7 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
         for (i in 0 until inFlight) {
             val entry = (head + i) % RING_DEPTH
             if (entryGeneration[entry] == generation) {
-                discardedDisjointQueries += PASS_COUNT
+                discardedDisjointQueries += entryPassCount[entry]
             }
             entryGeneration[entry] = STALE_GENERATION
             entrySlot[entry] = SLOT_NONE
@@ -333,9 +372,12 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
     private fun drainResolved() {
         while (inFlight > 0) {
             val entry = head
-            val base = entry * PASS_COUNT
+            val base = entry * MAX_PASS_COUNT
+            // ⚠ 이 엔트리를 **걸 때의** 개수로 읽는다. 현재 passCount로 읽으면 arm 전환
+            //   직후 걸지도 않은 query 이름을 읽게 된다.
+            val count = entryPassCount[entry]
             var ready = true
-            for (p in 0 until PASS_COUNT) {
+            for (p in 0 until count) {
                 scratch[0] = 0
                 GLES30.glGetQueryObjectuiv(
                     queryIds[base + p], GLES30.GL_QUERY_RESULT_AVAILABLE, scratch, 0
@@ -346,7 +388,7 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
                 }
             }
             if (!ready) return
-            for (p in 0 until PASS_COUNT) {
+            for (p in 0 until count) {
                 scratch[0] = 0
                 GLES30.glGetQueryObjectuiv(queryIds[base + p], GLES30.GL_QUERY_RESULT, scratch, 0)
                 // ⚠ 결과는 **32비트**로만 받는다(`glGetQueryObjectuiv`. 64비트 진입점이
@@ -358,25 +400,26 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
             }
             head = (head + 1) % RING_DEPTH
             inFlight--
-            consume(entry)
+            consume(entry, count)
         }
     }
 
     /** [values]를 엔트리가 가리키는 행에 back-fill한다. 세대가 다르면 버린다. */
-    private fun consume(entry: Int) {
+    private fun consume(entry: Int, count: Int) {
         val slot = entrySlot[entry]
         val sameRun = entryGeneration[entry] == generation
         entrySlot[entry] = SLOT_NONE
         entryGeneration[entry] = STALE_GENERATION
         if (!sameRun) return
         resolvedFrames++
-        resolvedQueries += PASS_COUNT
-        for (p in 0 until PASS_COUNT) {
+        resolvedQueries += count
+        for (p in 0 until count) {
             if (values[p] > 0L) positiveSamples++ else zeroResultQueries++
         }
         if (slot == SLOT_NONE) return
-        // PASS_COUNT=3 전제. 패스가 늘면 여기 인자도 함께 늘려야 한다.
-        recorder.setGpuTiming(slot, values[0], values[1], values[2])
+        // 열 순서는 RenderArm.gpuColumns 그대로다 — 개수가 arm마다 다르므로 배열로 넘긴다
+        // (재사용 배열이라 프레임당 할당은 여전히 0이다).
+        recorder.setGpuTiming(slot, values, count)
     }
 
     /**
@@ -456,7 +499,11 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
         passCursor = 0
         state = State.READY
         disabledReason = null
-        Log.i(TAG, "GPU timer 준비 완료 (query ${queryIds.size}개, 패스 $PASS_COUNT × 링 $RING_DEPTH)")
+        Log.i(
+            TAG,
+            "GPU timer 준비 완료 (query ${queryIds.size}개 = 최대 $MAX_PASS_COUNT 패스 × " +
+                "링 $RING_DEPTH, 이번 arm의 패스 수 $passCount)"
+        )
     }
 
     private fun disable(reason: String) {
@@ -488,8 +535,15 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
     companion object {
         const val TAG = "GpuTimerRing"
 
-        /** 패스1·패스2·패스3. 늘리면 [consume]의 `setGpuTiming` 인자도 함께 늘린다. */
-        const val PASS_COUNT = 3
+        /**
+         * query를 미리 잡아 두는 최대 패스 수. **현재 가장 긴 arm이 기준**이다
+         * ([RenderArm.DRAGO]의 5패스). 더 긴 arm이 생기면 여기를 올린다 — 올리지 않으면
+         * [setPassCount]가 거부하고 그 사실이 로그에 남는다(조용히 잘리지 않는다).
+         */
+        const val MAX_PASS_COUNT = 5
+
+        /** arm을 고르기 전의 기본값. 3패스 골격 arm의 패스 수다. */
+        const val DEFAULT_PASS_COUNT = 3
 
         /**
          * 몇 프레임분의 query를 동시에 띄워 둘 것인가. GPU가 CPU보다 1~2프레임 뒤에
@@ -541,6 +595,8 @@ class GpuTimerReport(
     val zeroResultQueries: Int,
     /** 정지 시점에 아직 안 끝난 query 수(tail). 해당 행은 `-1`로 남는다. */
     val unresolvedQueries: Int,
+    /** 이 런의 arm이 프레임당 건 query 수 = `RenderArm.gpuColumns`의 개수. */
+    val passesPerFrame: Int,
     /** disjoint가 세워진 채로 읽힌 프레임 수. */
     val disjointFrames: Int,
     /** 그 때문에 버린 query 수. */

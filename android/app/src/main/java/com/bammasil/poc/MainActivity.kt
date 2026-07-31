@@ -227,10 +227,10 @@ class MainActivity : ComponentActivity() {
             renderer.setArm(arm)
             renderer.resetClockProbe()
             renderer.resetRenderCounters()
-            // GPU 패스 시간 칸은 **3패스 arm에서만** 잡는다. 패스스루는 계측하지 않으므로
-            // 칸도 없고 CSV 열도 없다. 실제로 열을 실을지는 정지 시점에 timer 실적을 보고
-            // 정한다(프로브가 실패했으면 열을 싣지 않는다).
-            recorder.start(startedNs, gpuColumns = arm != RenderArm.PASSTHROUGH)
+            // GPU 패스 시간 칸의 개수와 이름은 **arm이 정한다**(RenderArm.gpuColumns).
+            // 패스스루는 계측하지 않으므로 목록이 비어 있고 CSV 열도 없다. 실제로 열을
+            // 실을지는 정지 시점에 timer 실적을 보고 정한다(프로브가 실패했으면 안 싣는다).
+            recorder.start(startedNs, gpuColumns = arm.gpuColumns)
         }
         Log.i(TAG, "측정 시작 (arm=${arm.id}, run=${runDirName})")
     }
@@ -316,6 +316,7 @@ class MainActivity : ComponentActivity() {
                     processHeight = renderer.processHeight,
                     offscreenStatus = renderer.offscreenStatus,
                     offscreenFallbackDraws = renderer.offscreenFallbackDraws,
+                    stage2Status = renderer.stage2Status,
                     gpuTimer = gpuTimer,
                 ),
             )
