@@ -9,6 +9,11 @@
 
 - **문서 지도는 [README.md](README.md).** 규약 4개는 루트, 리서치는 `docs/research/`.
   `docs/archive/`는 킥오프 이전 상태라 **요구사항 출처가 아니다.**
+- **상류 원문 2종이 계약 문서보다 최신일 수 있다** — 공식 제출본
+  [`docs/아이디어기획서_밤마실_20260729.pdf`](docs/아이디어기획서_밤마실_20260729.pdf)와
+  모델링 담당 레포(`kty2001/KDT_Hackathon`). 대조 결과와 충돌 목록은
+  [`docs/research/RESEARCH_20260731_UPSTREAM.md`](docs/research/RESEARCH_20260731_UPSTREAM.md).
+  **② A안은 CLAHE+감마 하나가 아니다** — 거기부터 읽는다.
 - **규칙 전문: `.claude/skills/nightwalk-conventions/SKILL.md`** — 이 파일은 메인 세션에
   자동 로드되지 않는다. 작업 전에 읽는다.
 - **현재 상태: [docs/STATUS.md](docs/STATUS.md)**

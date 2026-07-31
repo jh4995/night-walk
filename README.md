@@ -24,7 +24,8 @@
 
 | 문서 | 담는 것 |
 |---|---|
-| [RESEARCH_20260728_PIPELINE.md](docs/research/RESEARCH_20260728_PIPELINE.md) | **현행 최신 종합.** 지연 예산 · ② A/B/C 판정 · 미결질문 5개 (위 4개에 없는 내용) |
+| [RESEARCH_20260731_UPSTREAM.md](docs/research/RESEARCH_20260731_UPSTREAM.md) | **상류 원문 대조.** 기획서(공식 제출본) · 모델링 담당 레포를 직접 읽고 계약 문서와 맞춰 본 기록. **② A안이 재설계됐다는 사실이 여기 있다** |
+| [RESEARCH_20260728_PIPELINE.md](docs/research/RESEARCH_20260728_PIPELINE.md) | 지연 예산 · ② A/B/C 판정 · 미결질문 5개 (위 4개에 없는 내용). ⚠️ ② 관련 서술은 **위 7/31 문서가 갱신**한다 |
 | [SUBMIT_20260728_PIPELINE.md](docs/research/SUBMIT_20260728_PIPELINE.md) | 위 문서의 팀 배포 축약본 — **동결 스냅샷**, 갱신은 RESEARCH 쪽만 |
 
 ### 현황·내부 규격 (`docs/`)
@@ -34,6 +35,7 @@
 | [STATUS.md](docs/STATUS.md) | **현재 상태** — 어디까지 왔나 · 다음 한 수 · 알려진 이슈 · 막혀 있는 것 |
 | [FRAME_LOG_SCHEMA.md](docs/FRAME_LOG_SCHEMA.md) | 폰(PoC)이 뱉고 PC(하네스)가 읽는 프레임 로그 형식 — 팀 계약이 아니라 내 두 트랙 사이의 규격 |
 | [baselines/](docs/baselines/) | **기준 측정값.** `outputs/`는 git 추적을 안 하므로, 승격하지 않은 숫자는 그 머신에만 남는다 |
+| [아이디어기획서_밤마실_20260729.pdf](docs/아이디어기획서_밤마실_20260729.pdf) | **공식 제출본(7/29).** 목표 성능·MVP 범위·KPI·역할의 최종 출처. 수정 금지 — 대조 결과는 `research/RESEARCH_20260731_UPSTREAM.md` |
 
 ### 보관 (`docs/archive/`) — 역할이 끝남
 
