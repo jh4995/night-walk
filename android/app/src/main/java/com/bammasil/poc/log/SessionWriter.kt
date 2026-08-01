@@ -4,6 +4,7 @@ import com.bammasil.poc.gl.GlCapabilities
 import com.bammasil.poc.gl.GlCapabilitiesProbe
 import com.bammasil.poc.gl.GpuTimerReport
 import com.bammasil.poc.gl.GpuTimerRing
+import com.bammasil.poc.gl.LabGlsl
 import com.bammasil.poc.gl.RenderArm
 import com.bammasil.poc.source.FrameRequest
 import com.bammasil.poc.source.NegotiatedConfig
@@ -57,7 +58,9 @@ object SessionWriter {
      * `lib/frame_log.py`의 `SCHEMA_VERSION`. 열이 늘면 양쪽을 함께 올린다.
      *
      * v3에서 D 계열 하위 열(`stage_d_analyze_ms` / `stage_d_build_ms` / `stage_d_apply_ms` /
-     * `stage_d_denoise_ms`)이 들어왔고, 이 앱은 그중 앞의 셋을 `drago` arm에서 낸다.
+     * `stage_d_denoise_ms`)이 들어왔고, 이 앱은 그중 앞의 셋을 ② 컴퓨트 arm 세 개
+     * (`drago` · `clahe_gamma` · `agcwd`)에서 낸다. `stage_d_denoise_ms`는 아직 아무 arm도
+     * 내지 않는다 — bilateral(`+bf`)이 붙는 라운드에서 채운다.
      */
     const val SCHEMA_VERSION = 3
 
@@ -301,7 +304,7 @@ object SessionWriter {
         report.beginQueryError?.let { json.put("begin_query_error", it) }
         report.disabledReason?.let { json.put("disabled_reason", it) }
 
-        if (facts.arm == RenderArm.DRAGO) {
+        if (facts.arm.usesComputeStage2) {
             json.put(
                 "compute_pass_note",
                 "이 arm의 패스2·패스3은 glDispatchCompute다. 컴퓨트는 타일러를 거치지 않으므로 " +
@@ -326,7 +329,20 @@ object SessionWriter {
                 "gpu_present_ms 밖으로 떨어져 gpu_sum_ms가 과소가 된다**. " +
                 "**우리는 이 기기에서 둘 중 어느 쪽인지 판별하지 못했다.** 따라서 개별 열의 " +
                 "경계는 ±1패스만큼 흐리고 **합도 하한으로 읽어야 한다** — B·D 칸을 이 값으로 " +
-                "채울 때 이 단서를 함께 옮길 것"
+                "채울 때 이 단서를 함께 옮길 것. " +
+                // 아래는 정성적 서술이 아니라 **실측 정량 근거**다. 이 문단이 빠지면
+                // stage_d_apply_ms가 '적용 패스 비용'으로 인용되고, 그건 틀린 인용이다.
+                "🔴 **정량 근거(독립 검증 실측): gpu_present_ms는 present 패스를 재고 있지 " +
+                "않다.** 적용 패스 열과 바로 다음 present 열의 차(gpu_present_ms − 적용 열; " +
+                "3패스 arm은 stage_d_ms, 컴퓨트 arm은 stage_d_apply_ms)가 arm별로 " +
+                "blit_2pass 0.692 · gamma_only 0.717 · drago 1.430 · agcwd 1.400 · " +
+                "clahe_gamma 1.403 (ms)다. 컴퓨트 arm 셋에서 **적용 패스 값이 1.24ms 벌어지는 " +
+                "동안 이 차는 ±0.03ms 상수**다 — 적용 패스(FBO_B)의 프래그먼트 실행이 자기 " +
+                "query 창이 아니라 **다음 패스(present)의 창에 앉는다**는 뜻이다(타일러가 " +
+                "FBO_B 렌더패스를 pass5에서 해소한다). 그러므로 **stage_d_apply_ms를 '적용 " +
+                "패스의 비용'으로 인용하면 틀린다** — 개별 D 열은 약 한 패스 밀려 있고, " +
+                "**이 런에서 신뢰할 수 있는 것은 합(gpu_sum)뿐이다.** 그 합도 위 이유로 " +
+                "여전히 하한이다"
         )
         json.put(
             "instrumentation_overhead_note",
@@ -435,8 +451,12 @@ object SessionWriter {
                         "⚠ **그 6.36ms도 하한이다** — 패스3의 타일 해결이 eglSwapBuffers에서 " +
                         "일어나 세 query 전부의 바깥이다(gpu_timer.attribution_note). " +
                         "⚠ 그리고 상류 82.9ms는 PC CPU/NumPy 기준이라 조건이 다르다 — " +
-                        "나란히 놓을 때 그 사실을 함께 옮길 것"
+                        "나란히 놓을 때 그 사실을 함께 옮길 것. " +
+                        RenderArm.COLUMN_RANK_INVERSION_NOTE
                 )
+                // A1과 나란히 놓일 숫자라 drago 로그에도 같은 분해를 싣는다 —
+                // 한쪽에만 있으면 그 arm의 세션만 본 사람이 반대 결론을 낸다.
+                json.put("cost_split_note", RenderArm.COST_SPLIT_NOTE)
                 json.put(
                     "cost_breakdown_note",
                     "D 내부 분해를 '리덕션이 60%'로 읽지 말 것. analyze의 비용 중 약 1.13ms는 " +
@@ -447,8 +467,77 @@ object SessionWriter {
                         "경량화 레버를 고를 때 '리덕션만 반으로 줄이면 D가 30% 준다'는 읽기는 틀린다"
                 )
             }
+            RenderArm.CLAHE_GAMMA -> {
+                json.put("algorithm", "clahe_gamma")
+                json.put("upstream_reference", "scripts/lowlight.py A1 (OpenCV createCLAHE + 감마)")
+                json.put("clip_limit", RenderArm.CLAHE_CLIP_LIMIT.toDouble())
+                json.put("tile_grid", RenderArm.CLAHE_TILE_GRID)
+                json.put("gamma", RenderArm.CLAHE_GAMMA_VALUE.toDouble())
+                json.put("histogram_bins", LabGlsl.BIN_COUNT)
+                json.put(
+                    "uniforms",
+                    JSONArray()
+                        .put(RenderArm.CLAHE_CLIP_LIMIT_UNIFORM)
+                        .put(RenderArm.CLAHE_TILES_UNIFORM)
+                        .put(RenderArm.CLAHE_GAMMA_UNIFORM)
+                )
+                putLabCommon(json, facts)
+                json.put(
+                    "note",
+                    "타일별 히스토그램이 필요해 ② 자리가 3단(히스토그램 → 클립+재분배+CDF → " +
+                        "타일 이중선형 보간+감마)이다. 하위 패스를 합치지 않고 D 계열 슬롯 " +
+                        "3개에 그대로 낸다 (docs/FRAME_LOG_SCHEMA.md §2). " +
+                        "감마는 **타일 보간 뒤**에 씌운다 — LUT마다 미리 구우면 pow가 " +
+                        "비선형이라 보간 결과가 달라진다"
+                )
+            }
+            RenderArm.AGCWD -> {
+                json.put("algorithm", "agcwd")
+                json.put("upstream_reference", "scripts/lowlight.py A2 (AGCWD, Huang 2013)")
+                json.put("alpha", RenderArm.AGCWD_ALPHA.toDouble())
+                json.put("histogram_bins", LabGlsl.BIN_COUNT)
+                json.put("uniforms", JSONArray().put(RenderArm.AGCWD_ALPHA_UNIFORM))
+                putLabCommon(json, facts)
+                json.put(
+                    "formula",
+                    "pdf_w(l) = pdf_max * ((pdf(l) - pdf_min) / (pdf_max - pdf_min))^alpha ; " +
+                        "cdf_w = 누적(pdf_w) / 합(pdf_w) ; T(l) = 255 * (l/255)^(1 - cdf_w(l))"
+                )
+                json.put(
+                    "note",
+                    "전역 히스토그램 하나라 ② 자리가 3단(히스토그램 → 가중 분포 LUT → " +
+                        "LUT 적용)이다. 하위 패스를 합치지 않고 D 계열 슬롯 3개에 그대로 낸다 " +
+                        "(docs/FRAME_LOG_SCHEMA.md §2). LUT는 최근접 빈으로 읽는다 — " +
+                        "상류가 8비트 L에 256엔트리 LUT를 그대로 적용하기 때문이다"
+                )
+            }
         }
         return json
+    }
+
+    /**
+     * `clahe_gamma`·`agcwd` 공통 서술. **동작 채널이 계약서 제안값과 다르다는 사실**이
+     * 두 arm 모두에서 빠지지 않게 한 군데로 모았다 — 한쪽만 적으면 나중에 그 arm의 로그만
+     * 보고 "차이가 없었다"고 잘못 결론 낸다.
+     */
+    private fun putLabCommon(json: JSONObject, facts: SessionFacts) {
+        json.put(
+            "operates_on",
+            "CIE LAB의 L* 채널만 (a,b는 그대로 둔다). sRGB → 선형 → D65 XYZ → L*a*b* " +
+                "(OpenCV COLOR_BGR2Lab과 같은 계수)"
+        )
+        // 지어낸 계약값을 조용히 굳히지 않기 위한 문장이다. 지우지 말 것.
+        json.put("provenance", RenderArm.LAB_PROVENANCE)
+        json.put("upstream_deviation", RenderArm.LAB_DEVIATION)
+        json.put("desaturation_note", RenderArm.LAB_DESATURATION_NOTE)
+        json.put("glare_note", RenderArm.LAB_GLARE_NOTE)
+        json.put("flicker_note", RenderArm.LAB_FLICKER_NOTE)
+        json.put("how_to_compare", RenderArm.LAB_HOW_TO_COMPARE)
+        // 🔴 이 두 문장이 빠지면 팀이 "A1이 알고리즘 성질상 가장 비싸다"는 **반대 결론**을
+        //    낸다(실제로는 A1의 통계 부분이 셋 중 가장 싸다). 지우지 말 것.
+        json.put("cost_split_note", RenderArm.COST_SPLIT_NOTE)
+        json.put("levers_not_pulled", RenderArm.LAB_LEVERS_NOT_PULLED)
+        json.put("gpu_status", facts.stage2Status)
     }
 
     private fun buildRender(facts: SessionFacts): JSONObject {
@@ -460,7 +549,7 @@ object SessionWriter {
         json.put("render_mode", "RENDERMODE_WHEN_DIRTY (onFrameAvailable에서 requestRender)")
         json.put(
             "draw_call",
-            if (facts.arm == RenderArm.DRAGO) {
+            if (facts.arm.usesComputeStage2) {
                 "그리기 패스는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), " +
                     "통계 패스 2개는 glDispatchCompute"
             } else {
@@ -469,7 +558,7 @@ object SessionWriter {
         )
         json.put(
             "shader_language",
-            if (facts.arm == RenderArm.DRAGO) {
+            if (facts.arm.usesComputeStage2) {
                 "GLSL ES 1.00 (패스1·패스5) + GLSL ES 3.10 (패스2·3 컴퓨트, 패스4 적용). " +
                     "적용 패스가 SSBO를 읽어야 해서 310으로 올렸고, ESSL은 한 프로그램 안에서 " +
                     "버전을 섞지 못하므로 그 패스의 정점 셰이더도 310이다"
@@ -520,28 +609,75 @@ object SessionWriter {
             )
         } else {
             val names: List<Triple<String, String, String>> =
-                if (facts.arm == RenderArm.DRAGO) {
+                if (facts.arm.usesComputeStage2) {
+                    val middle = when (facts.arm) {
+                        RenderArm.CLAHE_GAMMA -> listOf(
+                            Triple(
+                                "stage2_clahe_analyze",
+                                "히스토그램 SSBO (glDispatchCompute)",
+                                "타일별 ${LabGlsl.BIN_COUNT}빈 히스토그램(LAB L). 워크그룹 " +
+                                    "하나가 타일 하나를 맡아 공유메모리 atomic만 쓴다 — " +
+                                    "타일이 서로 독립이라 전역 atomic이 없다",
+                            ),
+                            Triple(
+                                "stage2_clahe_build",
+                                "LUT SSBO (glDispatchCompute, 타일당 워크그룹 1개)",
+                                "클립 + 초과분 재분배 + CDF → 타일별 " +
+                                    "${LabGlsl.BIN_COUNT}엔트리 LUT (uClipLimit). " +
+                                    "CPU로 읽어오면 GPU 동기화가 걸리므로 GPU에서 계산한다",
+                            ),
+                            Triple(
+                                "stage2_clahe_apply",
+                                "FBO_B (처리 해상도)",
+                                "타일 간 이중선형 보간 + 감마 (uTiles / uClaheGamma). " +
+                                    "LAB의 L만 바꾸고 a,b는 그대로 둔다",
+                            ),
+                        )
+                        RenderArm.AGCWD -> listOf(
+                            Triple(
+                                "stage2_agcwd_analyze",
+                                "히스토그램 SSBO (glDispatchCompute)",
+                                "전역 ${LabGlsl.BIN_COUNT}빈 히스토그램(LAB L). 워크그룹 " +
+                                    "공유메모리 atomic + SSBO atomic으로 dispatch 1회",
+                            ),
+                            Triple(
+                                "stage2_agcwd_build",
+                                "LUT SSBO (glDispatchCompute, 워크그룹 1개)",
+                                "가중 분포(pdf_w) → 누적 → " +
+                                    "${LabGlsl.BIN_COUNT}엔트리 1D LUT (uAlpha). " +
+                                    "CPU로 읽어오면 GPU 동기화가 걸리므로 GPU에서 계산한다",
+                            ),
+                            Triple(
+                                "stage2_agcwd_apply",
+                                "FBO_B (처리 해상도)",
+                                "1D LUT 적용(최근접 빈). LAB의 L만 바꾸고 a,b는 그대로 둔다",
+                            ),
+                        )
+                        else -> listOf(
+                            Triple(
+                                "stage2_drago_analyze",
+                                "통계 SSBO (glDispatchCompute)",
+                                "전역 통계 리덕션 — 로그평균 휘도(Σlog)와 최대 휘도. " +
+                                    "워크그룹 공유메모리 리덕션 + SSBO atomic으로 dispatch 1회",
+                            ),
+                            Triple(
+                                "stage2_drago_build",
+                                "통계 SSBO (glDispatchCompute, 스레드 1개)",
+                                "통계 → 톤커브 계수(logAvg / Lmax / biasPow). " +
+                                    "CPU로 읽어오면 GPU 동기화가 걸리므로 GPU에서 계산한다",
+                            ),
+                            Triple(
+                                "stage2_drago_apply",
+                                "FBO_B (처리 해상도)",
+                                "Drago 톤맵 적용 + 감마 (uSrcGamma / uOutGamma / uSaturation)",
+                            ),
+                        )
+                    }
                     listOf(
                         Triple(
                             "oes_to_fbo_a", "FBO_A (처리 해상도)", "OES 패스스루 + uTexMatrix"
                         ),
-                        Triple(
-                            "stage2_drago_analyze",
-                            "통계 SSBO (glDispatchCompute)",
-                            "전역 통계 리덕션 — 로그평균 휘도(Σlog)와 최대 휘도. " +
-                                "워크그룹 공유메모리 리덕션 + SSBO atomic으로 dispatch 1회",
-                        ),
-                        Triple(
-                            "stage2_drago_build",
-                            "통계 SSBO (glDispatchCompute, 스레드 1개)",
-                            "통계 → 톤커브 계수(logAvg / Lmax / biasPow). " +
-                                "CPU로 읽어오면 GPU 동기화가 걸리므로 GPU에서 계산한다",
-                        ),
-                        Triple(
-                            "stage2_drago_apply",
-                            "FBO_B (처리 해상도)",
-                            "Drago 톤맵 적용 + 감마 (uSrcGamma / uOutGamma / uSaturation)",
-                        ),
+                    ) + middle + listOf(
                         Triple(
                             "present", "default framebuffer (surface 크기)", "단순 복사"
                         ),

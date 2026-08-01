@@ -69,6 +69,22 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
      */
     private var passCount = DEFAULT_PASS_COUNT
 
+    /**
+     * [setPassCount]가 [MAX_PASS_COUNT]를 넘는 요청을 **거부한 이유**. null이 아니면 이
+     * 링은 계측을 하지 않는다([beginFrame]이 곧바로 false를 준다).
+     *
+     * ⚠ 예전에는 초과 요청을 경고 로그만 남기고 무시했는데, 그러면 **직전 arm의 패스 수로
+     * 계속 재면서** CSV 열은 새 arm의 개수로 붙어 열과 query가 한 칸씩 어긋난 채 그럴듯한
+     * 숫자가 나온다. 그래서 '조용히 이전 값 유지'가 아니라 **이 arm에서는 아무 숫자도 내지
+     * 않는다**로 바꿨다: 계측 프레임이 0이면 `GpuTimerReport.instrumented`가 false이고,
+     * `writeCsv(includeGpuColumns=false)`라 CSV에 GPU 열 자체가 붙지 않는다(열이 없는 것과
+     * 전부 -1인 것은 하네스에서 다른 뜻이다 — `FrameLogRecorder.CSV_HEADER` 주석).
+     * 이유는 `session.json`의 `gpu_timer.disabled_reason`으로 그대로 나간다.
+     *
+     * 유효한 개수를 다시 받으면 해제된다 — 정상 arm으로 돌아온 런까지 벌줄 이유가 없다.
+     */
+    private var passCountRejection: String? = null
+
     /** [MAX_PASS_COUNT] × [RING_DEPTH]개를 **한 번에** 잡는다. 프레임당 할당 0. */
     private val queryIds = IntArray(MAX_PASS_COUNT * RING_DEPTH)
 
@@ -143,13 +159,24 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
      *
      * 아직 떠 있는 엔트리는 [entryPassCount]에 자기 개수를 들고 있으므로 여기서 건드리지
      * 않는다. 값 자체는 [RenderArm.gpuColumns]에서 오며 이 클래스가 정하지 않는다.
+     *
+     * ⚠ 범위 밖이면 **무시하지 않고 이 링을 계측 불가로 만든다**([passCountRejection]).
+     * 무시하면 이전 arm의 개수로 계속 재고 열은 새 arm 것이 붙어 조용히 어긋난다.
      */
     fun setPassCount(count: Int) {
         if (count <= 0 || count > MAX_PASS_COUNT) {
-            Log.w(TAG, "패스 수 $count 는 1..$MAX_PASS_COUNT 밖이다 — 무시한다")
+            passCountRejection =
+                "이 arm이 프레임당 $count 패스를 요구하는데 링은 최대 " +
+                    "$MAX_PASS_COUNT 패스분(GpuTimerRing.MAX_PASS_COUNT)만 잡아 둔다 — " +
+                    "이전 arm의 패스 수로 계속 재면 열과 query가 어긋난 채 그럴듯한 숫자가 " +
+                    "나오므로 이 arm에서는 GPU 패스 시간을 아예 내지 않는다. " +
+                    "MAX_PASS_COUNT를 올리고 다시 측정할 것"
+            Log.e(TAG, "패스 수 $count 거부: $passCountRejection")
             return
         }
         passCount = count
+        // 유효한 arm으로 돌아왔다. 이전 거부를 이 런까지 끌고 가지 않는다.
+        passCountRejection = null
     }
 
     /**
@@ -181,6 +208,9 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
      * 프로브 비용이 측정 첫 프레임에 얹힌다.
      */
     fun prepare() {
+        // 거부된 arm이면 query 객체도 만들지 않는다 — 쓰지 않을 자원이고, 만들어 두면
+        // 로그의 "이번 arm의 패스 수"가 실제와 다른 값으로 남는다.
+        if (passCountRejection != null) return
         if (state == State.UNINITIALIZED) initialize()
     }
 
@@ -253,7 +283,10 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
             skippedRingFullFrames = skippedRingFullFrames,
             malformedFrames = malformedFrames,
             beginQueryError = beginQueryError,
-            disabledReason = disabledReason,
+            // 패스 수 거부는 GL 실패보다 **먼저** 보고한다. 거부된 arm은 initialize조차
+            // 돌지 않아 disabledReason이 비어 있고, 그러면 "왜 GPU 열이 없는가"의 답이
+            // session.json에서 사라진다.
+            disabledReason = passCountRejection ?: disabledReason,
         )
     }
 
@@ -265,6 +298,8 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
      */
     fun beginFrame(): Boolean {
         if (state == State.DISABLED) return false
+        // 패스 수를 거부한 arm이다. 여기서 걸면 열과 query가 어긋난다([passCountRejection]).
+        if (passCountRejection != null) return false
         if (state == State.UNINITIALIZED) {
             initialize()
             if (state != State.READY) return false
@@ -536,11 +571,18 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
         const val TAG = "GpuTimerRing"
 
         /**
-         * query를 미리 잡아 두는 최대 패스 수. **현재 가장 긴 arm이 기준**이다
-         * ([RenderArm.DRAGO]의 5패스). 더 긴 arm이 생기면 여기를 올린다 — 올리지 않으면
-         * [setPassCount]가 거부하고 그 사실이 로그에 남는다(조용히 잘리지 않는다).
+         * query를 미리 잡아 두는 최대 패스 수.
+         *
+         * ⚠ **현재 가장 긴 arm에 딱 맞추지 않는다.** 컴퓨트 arm 3종이 정확히 5패스라
+         * 여유가 0이었는데, ② 후보에 붙을 수 있는 전처리 한 단(예: bilateral)이 6패스가
+         * 되고 그러면 [setPassCount]가 거부해 그 arm은 GPU 열을 통째로 잃는다. 링의 비용은
+         * query 객체 몇 개(= 이 값 × [RING_DEPTH])뿐이므로 **여유를 두는 쪽이 싸다** —
+         * 8은 5패스 + 분리형 필터 2패스 + ④ 오버레이 1패스까지 담는다.
+         *
+         * 그래도 넘는 arm이 생기면 [setPassCount]가 **거부하고 계측을 끈다**(무시하지
+         * 않는다). 그때 할 일은 여기를 올리고 다시 재는 것이다.
          */
-        const val MAX_PASS_COUNT = 5
+        const val MAX_PASS_COUNT = 8
 
         /** arm을 고르기 전의 기본값. 3패스 골격 arm의 패스 수다. */
         const val DEFAULT_PASS_COUNT = 3

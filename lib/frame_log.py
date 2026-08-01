@@ -192,6 +192,8 @@ LIGHTING_CONDITIONS = (
 STAGE_BLIT_2PASS = "blit_2pass"        # 3패스 골격(OES→오프스크린→②자리→표시). 앱 생산
 STAGE2_GAMMA = "stage2_gamma"          # ② 자리 감마 패스. 앱 생산
 STAGE2_DRAGO = "stage2_drago"          # ② Drago 톤매핑(리덕션+계수+적용 3패스). 앱 생산
+STAGE2_CLAHE = "stage2_clahe"          # ② CLAHE+감마, LAB L (타일 히스토그램+CDF+보간). 앱 생산
+STAGE2_AGCWD = "stage2_agcwd"          # ② AGCWD, LAB L (전역 히스토그램+가중 LUT). 앱 생산
 STAGE_DETECT = "detect"                # ③ 탐지. **앱 미구현** — 현재는 합성 로그만 낸다
 STAGE4_HIGHLIGHT = "stage4_highlight"  # ④ 강조. **앱 미구현** — 현재는 합성 로그만 낸다
 
@@ -202,6 +204,8 @@ PIPELINE_STAGES = (
     STAGE_BLIT_2PASS,
     STAGE2_GAMMA,
     STAGE2_DRAGO,
+    STAGE2_CLAHE,
+    STAGE2_AGCWD,
     STAGE_DETECT,
     STAGE4_HIGHLIGHT,
 )

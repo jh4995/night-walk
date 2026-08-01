@@ -40,14 +40,14 @@ import java.nio.ByteOrder
  *
  * **스레드 규약: 전부 GL 스레드에서만 부른다.**
  */
-class DragoStage {
+class DragoStage : Stage2ComputeStage {
 
     /** 프로그램·버퍼가 모두 준비됐는가. false면 이 arm은 그릴 수 없다. */
-    var ready = false
+    override var ready = false
         private set
 
     /** 왜 준비됐는지/왜 못 됐는지. `session.json`에 그대로 나간다. */
-    var status: String = "아직 준비하지 않았다 (arm != drago)"
+    override var status: String = "아직 준비하지 않았다 (arm != drago)"
         private set
 
     private var analyzeProgram = 0
@@ -76,7 +76,7 @@ class DragoStage {
      * `onSurfaceCreated`에서 GL 능력 프로브 직후에 부른다. 컴퓨트를 못 쓰거나 프래그먼트가
      * SSBO를 못 읽으면 **여기서 끈다** — 값을 지어내지 않고 arm이 폴백하게 둔다.
      */
-    fun onContextCreated(capabilities: GlCapabilities?) {
+    override fun onContextCreated(capabilities: GlCapabilities?) {
         releaseGl()
         val compute = capabilities?.computeShaderCapable ?: GlCapabilitiesProbe.UNKNOWN
         if (compute != GlCapabilitiesProbe.TRUE) {
@@ -152,12 +152,12 @@ class DragoStage {
      * 처리 해상도가 정해졌을 때(또는 바뀌었을 때) 부른다. GL 자원은 해상도에 의존하지 않고
      * **고정소수 스케일만** 다시 잡는다. 해상도를 하드코딩하지 않는 지점이다.
      */
-    fun onProcessSizeChanged(width: Int, height: Int) {
+    override fun onProcessSizeChanged(width: Int, height: Int) {
         pixelCount = width * height
         sumScale = computeSumScale(pixelCount)
     }
 
-    fun releaseGl() {
+    override fun releaseGl() {
         if (analyzeProgram != 0) GLES20.glDeleteProgram(analyzeProgram)
         if (buildProgram != 0) GLES20.glDeleteProgram(buildProgram)
         if (statsBuffer != 0) GLES20.glDeleteBuffers(1, intArrayOf(statsBuffer), 0)
@@ -180,7 +180,7 @@ class DragoStage {
      * ⚠ 소스 텍스처는 직전 패스가 FBO로 그린 것이다. **프레임버퍼 쓰기 → 텍스처 읽기는
      * GL이 자동으로 순서를 맞춰 주므로**(비일관 접근이 아니다) 그쪽에는 배리어를 걸지 않는다.
      */
-    fun analyze(textureId: Int, width: Int, height: Int) {
+    override fun analyze(textureId: Int, width: Int, height: Int) {
         GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
         GLES20.glUseProgram(analyzeProgram)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -194,7 +194,7 @@ class DragoStage {
     }
 
     /** 패스3 — 통계 → 톤커브 계수. `stage_d_build_ms`. 스레드 1개짜리 dispatch다. */
-    fun build() {
+    override fun build() {
         // analyze의 atomic 쓰기가 보이도록. 이게 없으면 계수가 이전 프레임 값일 수 있다.
         GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
         GLES20.glUseProgram(buildProgram)
@@ -206,7 +206,7 @@ class DragoStage {
     }
 
     /** 패스4 앞. build가 쓴 계수를 프래그먼트가 볼 수 있게 한다. */
-    fun beforeApply() {
+    override fun beforeApply() {
         GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
         GLES30.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, STATS_BINDING, statsBuffer)
     }
@@ -400,20 +400,10 @@ class DragoStage {
         """.trimIndent()
 
         /**
-         * 패스4 정점 — 적용 프래그먼트가 `#version 310 es`(SSBO를 읽어야 한다)라서 정점도
-         * 같은 버전이어야 한다. ESSL은 한 프로그램 안에서 버전을 섞지 못한다.
-         * 텍스처 좌표 변환은 패스1에서 끝났으므로 uTexMatrix가 없다(다른 2D 패스와 같다).
+         * 패스4 정점. ② 컴퓨트 arm 세 개가 **같은 문자열**을 쓴다 → [ES31_QUAD_VERTEX_SHADER].
+         * (이 이름은 `PassthroughRenderer`가 이미 쓰고 있어 그대로 둔다.)
          */
-        val VERTEX_SHADER_ES31 = """
-            #version 310 es
-            in vec4 aPosition;
-            in vec2 aTexCoord;
-            out vec2 vTexCoord;
-            void main() {
-                gl_Position = aPosition;
-                vTexCoord = aTexCoord;
-            }
-        """.trimIndent()
+        val VERTEX_SHADER_ES31 = ES31_QUAD_VERTEX_SHADER
 
         /**
          * 패스4 프래그먼트 — 톤맵 적용 + 감마. **선형 RGB 3채널 전부**에 작용한다
