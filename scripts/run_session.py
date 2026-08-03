@@ -119,7 +119,12 @@ DURATION_SHORT_TOLERANCE = 0.10
 #
 # 이건 **판정선이 아니다.** PASS/FAIL 임계값이 아니라 "그 런이 계획대로 측정됐는가"의
 # 무결성 검사이므로 `lib/targets.py`에 값이 생기지 않는다(임계도 없다 — 0이냐 아니냐다).
-FALLBACK_FIELD = "render.processing.frames_fell_back_to_passthrough"
+#
+# ⚠ **필드 이름은 여기 한 곳에만 적는다.** 읽는 코드(`fallback_facts`)와 사람에게 보이는
+#   메시지가 이름을 각자 갖고 있으면, 앱이 필드를 옮길 때 한쪽만 낡는다 — 값은 못 읽는데
+#   메시지는 옛 이름을 자신 있게 가리키는 상태가 가장 나쁘다. 점 표기는 경로에서 파생한다.
+FALLBACK_FIELD_PATH = ("render", "processing", "frames_fell_back_to_passthrough")
+FALLBACK_FIELD = ".".join(FALLBACK_FIELD_PATH)
 
 # 승격 베이스라인 (docs/baselines/README.md). 런3(passthrough 재현)이 여기에 비교된다.
 DEFAULT_PROMOTION_BASELINE = "docs/baselines/20260730_poc_empty_a34.json"
@@ -563,41 +568,71 @@ def _dirty_flag(session: dict):
     return str(raw).strip().lower() in {"true", "1", "yes", "on"}
 
 
+def _dig(obj, path: tuple[str, ...]) -> tuple[object, bool]:
+    """(값, 마지막 키가 실제로 있었는가). 경로는 [FALLBACK_FIELD_PATH] 하나에서 온다.
+
+    `key_present`를 함께 돌려주는 이유: **명시적 `null`과 "키가 없다"는 다른 사실이다.**
+    둘 다 "말할 수 없다"로 판정되지만, 사유 문장이 "필드가 없다"로 뭉개지면 사람이
+    엉뚱한 곳(스키마 버전)을 뒤진다.
+    """
+    cur = obj
+    for key in path:
+        if not isinstance(cur, dict) or key not in cur:
+            return None, False
+        cur = cur[key]
+    return cur, True
+
+
+def _frame_count(raw) -> int | float | None:
+    """프레임 수로 읽는다. **절삭하지 않는다.**
+
+    `int(137.9)`는 사유 문장에 137을 찍어 **로그 원문과 다른 숫자**를 남기고,
+    `int(0.4)`는 0이 되어 폴백을 없던 일로 만든다. 정수가 아닌 값이 오면 그대로 들고
+    간다 — 그 자체가 이상한 사실이므로 감추지 않는다.
+    """
+    if raw is None or isinstance(raw, bool):
+        # 불리언은 이 필드의 값이 아니다 — 프레임 수를 True/False로 읽지 않는다.
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw) if raw.is_integer() else raw
+    text = str(raw).strip()
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        num = float(text)
+    except ValueError:
+        return None  # 숫자로 읽을 수 없으면 판단하지 않는다 (참고 사항으로 나간다)
+    return int(num) if num.is_integer() else num
+
+
 def fallback_facts(session: dict) -> dict:
     """앱이 신고한 패스스루 폴백 사실. **해석하지 않고 그대로 옮긴다** ([FALLBACK_FIELD]).
 
-    `present=False`(필드가 없다)는 **`value=0`과 다르다.** 스키마가 낮은 옛 로그
+    `present=False`는 **`value=0`과 다르다.** 스키마가 낮은 옛 로그
     (`docs/baselines/20260730_poc_empty_a34.json`은 `schema_version=1`이고 이 필드가
     아예 없다)는 폴백이 없었다고도 있었다고도 말할 수 없다. 없는 것을 0으로 채우면
     없는 근거를 만드는 것이므로, 그때는 사실만 남기고 판단하지 않는다.
     """
-    render = session.get("render")
-    processing = render.get("processing") if isinstance(render, dict) else None
-    raw = (
-        processing.get("frames_fell_back_to_passthrough")
-        if isinstance(processing, dict) else None
-    )
+    raw, key_present = _dig(session, FALLBACK_FIELD_PATH)
     emitted = session.get("frames_emitted")
-    facts = {
+    return {
         "present": raw is not None,
+        # 키가 있는데 null인가 (판정은 같고 사유 문장이 다르다)
+        "key_present": key_present,
         "raw": raw,
-        "value": None,
+        "value": _frame_count(raw),
         # 폴백이 **전량인지 일부인지**를 사유 문장에서 드러내려면 분모가 필요하다.
         "frames_emitted": (
             emitted if isinstance(emitted, int) and not isinstance(emitted, bool) else None
         ),
     }
-    if raw is None or isinstance(raw, bool):
-        # 불리언은 이 필드의 값이 아니다 — 프레임 수를 True/False로 읽지 않는다.
-        return facts
-    try:
-        facts["value"] = int(raw)
-    except (TypeError, ValueError):
-        pass  # 숫자로 읽을 수 없으면 판단하지 않는다 (아래에서 참고 사항으로 나간다)
-    return facts
 
 
-def fallback_is_mismatch(arm, value: int | None) -> bool:
+def fallback_is_mismatch(arm, value: int | float | None) -> bool:
     """이 폴백을 어긋남으로 볼 것인가. (`value`는 [fallback_facts]의 `value`)
 
     🔴 **`passthrough` arm에는 걸지 않는다.** 확인한 사실 둘: (1) 렌더러는
@@ -609,6 +644,160 @@ def fallback_is_mismatch(arm, value: int | None) -> bool:
     나오면 그건 판단할 근거가 없는 새 사실이다 — 어긋남으로 단정하지 않고 참고로 남긴다.
     """
     return value is not None and value != 0 and arm != RENDER_ARM_PASSTHROUGH
+
+
+def _done_attempt(row: dict) -> dict | None:
+    for a in reversed(row.get("attempts") or []):
+        if a.get("conforms"):
+            return a
+    return None
+
+
+def fallback_for_report(attempt: dict) -> dict:
+    """리포트에 실을 폴백 사실. 저장된 attempt에 없으면 **회수해 둔 로그에서 다시 읽는다.**
+
+    이 검사가 생기기 전에 기록된 attempt에는 `observed`에 폴백 필드가 없다. 그 런은
+    `conforms=true`로 굳어 있으므로(실제로 `s4_combo` #5가 그렇다) 리포트가 그 사실을
+    말해 주지 않으면 무효 런이 계속 유효한 것처럼 인용된다.
+
+    🔴 **`status`/`conforms`를 사후에 고쳐 쓰지 않는다.** 기록을 다시 쓰면 어느 실행이
+    무엇을 판정했는지가 사라진다. attempt는 "그 실행이, 그때 있던 검사로 어긋남을 찾지
+    못했다"는 **참인 기록**이다. 여기서는 표시를 더할 뿐이고, 재분류는 사람이 다시 찍거나
+    세션을 새로 여는 일로 남긴다.
+    """
+    obs = attempt.get("observed") or {}
+    if "no_passthrough_fallback" in obs:
+        return {
+            "source": "attempt",
+            "value": obs.get("frames_fell_back_to_passthrough"),
+            "frames_emitted": obs.get("frames_emitted"),
+            "ok": obs.get("no_passthrough_fallback"),
+            "arm": obs.get("render_arm"),
+            # 통과한 attempt에도 이 키를 채운다 — passthrough arm은 0이 아니어도 통과하므로
+            # (참고 사항으로만 나간다) `mismatch` 없이 두면 리포트가 그 값을 "말할 수 없다"로
+            # 잘못 표시한다.
+            "mismatch": fallback_is_mismatch(
+                obs.get("render_arm"), obs.get("frames_fell_back_to_passthrough")
+            ),
+        }
+    path = attempt.get("session_json")
+    if not path or not Path(path).exists():
+        return {
+            "source": "unavailable",
+            "value": None, "frames_emitted": None, "ok": None,
+            "arm": obs.get("render_arm"),
+        }
+    try:
+        session = read_session(Path(path))
+    except (OSError, json.JSONDecodeError) as exc:
+        # 옛 런의 로그가 깨져 있다고 리포트 전체를 잃지 않는다. 사실만 남긴다.
+        return {
+            "source": "unreadable",
+            "value": None, "frames_emitted": None, "ok": None,
+            "arm": obs.get("render_arm"), "reason": str(exc),
+        }
+    facts = fallback_facts(session)
+    return {
+        "source": "session_json_recheck",
+        "value": facts["value"],
+        "frames_emitted": facts["frames_emitted"],
+        "ok": None if facts["value"] is None else facts["value"] == 0,
+        "arm": session.get("render_arm") or obs.get("render_arm"),
+        "mismatch": fallback_is_mismatch(session.get("render_arm"), facts["value"]),
+    }
+
+
+def run_fallback(row: dict) -> dict | None:
+    """계획 칸 하나의 폴백 사실 (통과한 attempt가 없으면 None).
+
+    `print_plan`과 `build_report`가 **같은 함수**를 쓴다 — 표시가 화면마다 다르면
+    어느 쪽이 맞는지 사람이 알 수 없다.
+    """
+    a = _done_attempt(row)
+    return fallback_for_report(a) if a else None
+
+
+def fallback_phrase(n: int, fb: dict | None) -> str:
+    """`#5(drago_clahe_fused) 폴백 20032/20032` — 블록 안에 넣을 짧은 사실."""
+    if not fb:
+        return f"#{n} 폴백 기록 없음(통과한 attempt가 없다)"
+    arm = fb.get("arm") or "?"
+    if fb.get("value") is None:
+        return f"#{n}({arm}) 폴백 확인 불가(source={fb.get('source')})"
+    return f"#{n}({arm}) 폴백 {fb['value']}/{fb.get('frames_emitted')}"
+
+
+def fallback_integrity(
+    fb_by_run: dict, run_ns: list[int], what: str, consequence: str
+) -> dict:
+    """이 블록의 숫자를 인용할 수 있는가. **근거는 앱이 신고한 폴백 사실뿐이다.**
+
+    🔴 **숫자가 인용되는 자리에 표시가 있어야 한다.** 런 표와 caveats에만 표시를 두면,
+    사람은 arm 차분 블록의 Δ 줄만 복사해 간다 — 이 검사가 막으려던 실패 양식이 정확히
+    거기 남는다(`s4_combo` #5가 그랬다). 그래서 블록마다 같은 사실을 다시 싣는다.
+
+    `quotable`: False=어긋남으로 잡힌 폴백 런이 섞였다 / None=폴백 사실을 확인할 수 없다 /
+    True=어긋남으로 잡힌 폴백이 없다(`runs_fallback_nonzero_not_flagged`가 비어 있지 않으면
+    0이 아닌 값이 있다는 뜻이므로 note를 함께 읽어야 한다).
+    (사람이 숫자를 보고 판단하게 두지 않는다 — 불리언으로 명시한다.)
+    """
+    flagged, unknown, nonzero_not_flagged = [], [], []
+    for n in run_ns:
+        fb = fb_by_run.get(n)
+        if fb and fb.get("mismatch"):
+            flagged.append(n)
+        elif not fb or fb.get("ok") is None:
+            unknown.append(n)
+        elif fb.get("value"):
+            # 0이 아니지만 어긋남은 아니다 (passthrough arm) — 숫자를 감추지 않는다.
+            nonzero_not_flagged.append(n)
+
+    if flagged:
+        quotable = False
+        note = (
+            f"🔴 {what}의 숫자를 인용하지 말 것 — "
+            + ", ".join(fallback_phrase(n, fb_by_run.get(n)) for n in flagged)
+            + ". 앱이 그 arm을 그리지 못해 패스스루로 대신 그렸다고 스스로 신고했다 — "
+            + consequence
+        )
+    elif unknown:
+        quotable = None
+        note = (
+            f"{what}을 인용할 수 있는지 **말할 수 없다** — "
+            + ", ".join(fallback_phrase(n, fb_by_run.get(n)) for n in unknown)
+            + ". 그 런이 선언한 arm으로 실제로 그려졌는지 확인할 수 없다"
+            "(**값이 없는 것은 0이 아니다**) — 확인하기 전에는 인용하지 말 것"
+            f" (폴백된 런이었다면 {consequence})"
+        )
+    elif nonzero_not_flagged:
+        # arm이 passthrough인데 카운터가 0이 아니다 — 그 arm에서 패스스루로 그리는 것은
+        # 정상이므로 숫자를 무효로 보지 않지만(`fallback_is_mismatch`), **"모두 0"이라고
+        # 말하면 거짓이 된다.** 사실 그대로 쓴다.
+        quotable = True
+        note = (
+            f"{what}: "
+            + ", ".join(fallback_phrase(n, fb_by_run.get(n)) for n in nonzero_not_flagged)
+            + f" — 0이 아니지만 arm이 {RENDER_ARM_PASSTHROUGH!r}라 어긋남으로 잡지 않았다"
+            "(그 arm에서는 패스스루로 그리는 것이 정상 동작이고, 카운터가 증가하는 경로는 "
+            "확인하지 못했다 = 판단할 근거가 없는 새 사실). 나머지 런 "
+            f"{[n for n in run_ns if n not in nonzero_not_flagged]}은 0이다 — 이 블록을 "
+            "인용할 때 이 사실을 함께 적을 것"
+        )
+    else:
+        quotable = True
+        note = (
+            f"{what}의 런 {list(run_ns)} 모두 {FALLBACK_FIELD}=0 — 폴백 사실만 보면 인용 "
+            "가능하다(봉투 점·바닥 폭 같은 다른 단서는 caveats를 볼 것)"
+        )
+    return {
+        "runs": list(run_ns),
+        "quotable": quotable,
+        "runs_with_fallback": flagged,
+        "runs_fallback_unknown": unknown,
+        "runs_fallback_nonzero_not_flagged": nonzero_not_flagged,
+        "per_run": {str(n): fb_by_run.get(n) for n in run_ns},
+        "note": note,
+    }
 
 
 def planned_window_sec(row: dict, warmup_sec: float) -> float:
@@ -661,10 +850,17 @@ def check_against_plan(
     # ── 앱이 그 arm을 실제로 그렸는가. **스피너가 맞아도 여기서 무효가 될 수 있다.**
     fb = fallback_facts(session)
     if not fb["present"]:
+        # 🔴 **명시적 null과 "키가 없다"를 같은 문장으로 말하지 않는다.** 판정은 둘 다
+        #    "말할 수 없다"지만, null인데 "필드가 없다"고 하면 사람이 스키마 버전을
+        #    뒤지느라 앱이 왜 null을 적었는지를 못 본다.
+        why = (
+            f"{FALLBACK_FIELD}가 명시적으로 null이다 (키는 있는데 값이 없다)"
+            if fb["key_present"]
+            else f"session.json에 {FALLBACK_FIELD}가 없다"
+        )
         notes.append(
-            f"session.json에 {FALLBACK_FIELD}가 없다 "
-            f"(schema_version={session.get('schema_version')!r}) — 앱이 선언한 arm으로 실제로 "
-            "그렸는지 이 로그만으로는 말할 수 없다. **값이 없는 것은 0이 아니다** "
+            f"{why} (schema_version={session.get('schema_version')!r}) — 앱이 선언한 arm으로 "
+            "실제로 그렸는지 이 로그만으로는 말할 수 없다. **값이 없는 것은 0이 아니다** "
             "(그래서 어긋남으로 잡지 않았다)"
         )
     elif fb["value"] is None:
@@ -682,18 +878,26 @@ def check_against_plan(
             scope = (
                 f"일부 폴백({fb['value']}/{emitted}) — 이 런의 분포에 두 경로가 섞였다"
             )
-        msg = (
-            f"{FALLBACK_FIELD}={fb['value']} (frames_emitted={emitted}) — 앱이 arm "
-            f"{arm!r}을 그리지 못해 패스스루로 대신 그렸다고 **스스로 신고했다**. "
+        head = f"{FALLBACK_FIELD}={fb['value']} (frames_emitted={emitted})"
+        tail = (
             f"{scope}. 프레임타임과 fps는 정상으로 보일 수 있다(그릴 것이 없으면 오히려 "
             "빠르다) — session.json의 gpu_status·offscreen_status·stage2_status에 실린 "
             "컴파일러 원문을 볼 것"
         )
         if fallback_is_mismatch(arm, fb["value"]):
-            mismatches.append(msg)
+            mismatches.append(
+                f"{head} — 앱이 arm {arm!r}을 그리지 못해 패스스루로 대신 그렸다고 "
+                f"**스스로 신고했다**. {tail}"
+            )
         else:
+            # 🔴 arm이 이미 passthrough인 런에 "패스스루로 대신 그렸다"고 쓰면 **자기모순**으로
+            #    읽힌다(대신 그릴 것이 없다). 여기서 말할 수 있는 사실은 "그 arm에서 증가할
+            #    경로를 확인하지 못한 카운터가 0이 아니다"뿐이다 — 그대로만 쓴다.
             notes.append(
-                msg + f" / arm이 {RENDER_ARM_PASSTHROUGH!r}라 어긋남으로 잡지 않았다"
+                f"{head} — arm이 {arm!r}인데 이 카운터가 0이 아니다. 이 arm에서는 패스스루로 "
+                "그리는 것이 정상 동작이고 카운터가 증가하는 경로를 확인하지 못했으므로 "
+                "(fallback_is_mismatch 주석) **판단할 근거가 없는 새 사실**이다 — 어긋남으로 "
+                f"잡지 않았고, 감추지도 않는다. {tail}"
             )
 
     planned = planned_window_sec(row, warmup_sec)
@@ -724,6 +928,9 @@ def check_against_plan(
         "pipeline_stages": session.get("pipeline_stages"),
         "schema_version": session.get("schema_version"),
         "frames_emitted": fb["frames_emitted"],
+        # ⚠ 이 키는 **진행 파일의 스키마**이지 앱의 필드 이름이 아니다 —
+        #   [FALLBACK_FIELD_PATH]에서 파생시키지 않는다. 앱이 필드를 옮겨도 이미 디스크에
+        #   기록된 attempt는 이 이름으로 남아 있어야 다시 읽힌다(둘은 다른 namespace다).
         "frames_fell_back_to_passthrough": fb["value"],
         # 사람이 숫자를 보고 판단하게 두지 않는다. None = 말할 수 없다(필드 없음/읽을 수 없음).
         "no_passthrough_fallback": None if fb["value"] is None else fb["value"] == 0,
@@ -796,15 +1003,47 @@ def print_plan(state: dict) -> None:
         state.get("plan_source"), state.get("plan_fingerprint"),
     )
     warmup = state["warmup_sec"]
+    fb_flagged: list[int] = []
+    fb_unknown: list[int] = []
     for r in state["runs"]:
         window = planned_window_sec(r, warmup)
         mark = {
             "done": "✔", "failed": "✘", "skipped": "→", "pending": " ",
         }.get(r["status"], "?")
+        # 🔴 **`[✔]`만 보이면 무효 런이 유효한 것처럼 읽힌다.** 이 목록은 사람이 가장 먼저
+        #    보는 화면이라, 폴백 사실이 여기 없으면 리포트 아래쪽 caveats까지 내려가지
+        #    않는다(`s4_combo` #5가 그렇게 '통과한 11분 런'으로 보였다). 진행 파일의
+        #    status는 그대로 두고 **표시만** 바꾼다.
+        fb = run_fallback(r)
+        if fb and fb.get("mismatch"):
+            mark = "🔴"
+            fb_flagged.append(r["n"])
+        elif r["status"] == "done" and (not fb or fb.get("ok") is None):
+            mark = "⚠"
+            fb_unknown.append(r["n"])
         LOG.info(
             "  [%s] #%-2d %-12s %-18s %5.3g분 (분석 창 %.0fs)  %s",
             mark, r["n"], r["arm"], r["lighting"], r["minutes"], window, r["purpose"],
         )
+        if fb and fb.get("mismatch"):
+            LOG.error(
+                "        ↳ 🔴 %s — 앱이 그 arm을 그리지 못해 패스스루로 대신 그렸다고 "
+                "신고했다. 통과로 기록됐지만(진행 파일 status=%s) **이 칸의 숫자는 그 arm의 "
+                "숫자가 아니다** (다시 찍어야 채워진다)",
+                fallback_phrase(r["n"], fb), r["status"],
+            )
+        elif r["status"] == "done" and (not fb or fb.get("ok") is None):
+            LOG.warning(
+                "        ↳ ⚠ %s — 선언한 arm으로 실제로 그려졌는지 말할 수 없다 "
+                "(**값이 없는 것은 0이 아니다**)",
+                fallback_phrase(r["n"], fb),
+            )
+        elif fb and fb.get("value"):
+            # 0이 아니지만 어긋남은 아니다 (passthrough arm). 숫자를 감추지 않는다.
+            LOG.warning(
+                "        ↳ %s — arm이 %r라 어긋남으로 잡지 않았다(참고)",
+                fallback_phrase(r["n"], fb), RENDER_ARM_PASSTHROUGH,
+            )
         if window < targets.SUSTAINED_SEC:
             LOG.info(
                 "        ↳ 봉투 점 — 분석 창 %.0fs < 지속 판정 창 %ss "
@@ -818,6 +1057,19 @@ def print_plan(state: dict) -> None:
                 LOG.warning("        ↳ 어긋남: %s", m)
         if r["status"] == "skipped":
             LOG.warning("        ↳ 건너뜀: %s", r.get("skip_reason"))
+    if fb_flagged:
+        LOG.error(
+            "🔴 앱이 폴백을 신고한 칸: %s — %s가 0이 아니다. 진행 파일의 status는 사후에 "
+            "고쳐 쓰지 않으므로(어느 실행이 무엇을 판정했는지를 지우지 않는다) done으로 "
+            "남아 있지만, **그 칸은 비어 있는 것과 같다**",
+            fb_flagged, FALLBACK_FIELD,
+        )
+    if fb_unknown:
+        LOG.warning(
+            "⚠ 폴백 사실을 확인할 수 없는 통과 칸: %s — %s를 읽을 수 없다(옛 스키마이거나 "
+            "회수 로그가 없다). 그 칸이 선언한 arm으로 그려졌는지 말할 수 없다",
+            fb_unknown, FALLBACK_FIELD,
+        )
     LOG.info("=" * 66)
 
 
@@ -1030,7 +1282,9 @@ def print_attempt_result(row: dict, attempt: dict) -> None:
         fb_text = (
             f"{obs['frames_fell_back_to_passthrough']}/{obs.get('frames_emitted')} 프레임"
             if obs.get("frames_fell_back_to_passthrough") is not None
-            else f"{FALLBACK_FIELD} 없음 — 말할 수 없다"
+            # ⚠ "필드가 없다"고 단정하지 않는다 — 명시적 null·숫자 아님도 여기로 온다.
+            #    정확한 사유는 바로 아래 참고 사항 줄에 있다.
+            else f"{FALLBACK_FIELD} 값을 읽지 못했다 — 말할 수 없다 (사유는 아래 ⚠)"
         )
         LOG.info(
             "✔ 계획 #%d 통과 — arm=%s 조명=%s 분석 창 %.0fs, 패스스루 폴백 %s",
@@ -1073,66 +1327,6 @@ def print_attempt_result(row: dict, attempt: dict) -> None:
 
 
 # ══ 세션 리포트 ════════════════════════════════════════════════════════════
-def _done_attempt(row: dict) -> dict | None:
-    for a in reversed(row.get("attempts") or []):
-        if a.get("conforms"):
-            return a
-    return None
-
-
-def fallback_for_report(attempt: dict) -> dict:
-    """리포트에 실을 폴백 사실. 저장된 attempt에 없으면 **회수해 둔 로그에서 다시 읽는다.**
-
-    이 검사가 생기기 전에 기록된 attempt에는 `observed`에 폴백 필드가 없다. 그 런은
-    `conforms=true`로 굳어 있으므로(실제로 `s4_combo` #5가 그렇다) 리포트가 그 사실을
-    말해 주지 않으면 무효 런이 계속 유효한 것처럼 인용된다.
-
-    🔴 **`status`/`conforms`를 사후에 고쳐 쓰지 않는다.** 기록을 다시 쓰면 어느 실행이
-    무엇을 판정했는지가 사라진다. 여기서는 단서(`caveats`)로만 내고, 재분류는 사람이
-    다시 찍거나 세션을 새로 여는 일로 남긴다.
-    """
-    obs = attempt.get("observed") or {}
-    if "no_passthrough_fallback" in obs:
-        return {
-            "source": "attempt",
-            "value": obs.get("frames_fell_back_to_passthrough"),
-            "frames_emitted": obs.get("frames_emitted"),
-            "ok": obs.get("no_passthrough_fallback"),
-            "arm": obs.get("render_arm"),
-            # 통과한 attempt에도 이 키를 채운다 — passthrough arm은 0이 아니어도 통과하므로
-            # (참고 사항으로만 나간다) `mismatch` 없이 두면 리포트가 그 값을 "말할 수 없다"로
-            # 잘못 표시한다.
-            "mismatch": fallback_is_mismatch(
-                obs.get("render_arm"), obs.get("frames_fell_back_to_passthrough")
-            ),
-        }
-    path = attempt.get("session_json")
-    if not path or not Path(path).exists():
-        return {
-            "source": "unavailable",
-            "value": None, "frames_emitted": None, "ok": None,
-            "arm": obs.get("render_arm"),
-        }
-    try:
-        session = read_session(Path(path))
-    except (OSError, json.JSONDecodeError) as exc:
-        # 옛 런의 로그가 깨져 있다고 리포트 전체를 잃지 않는다. 사실만 남긴다.
-        return {
-            "source": "unreadable",
-            "value": None, "frames_emitted": None, "ok": None,
-            "arm": obs.get("render_arm"), "reason": str(exc),
-        }
-    facts = fallback_facts(session)
-    return {
-        "source": "session_json_recheck",
-        "value": facts["value"],
-        "frames_emitted": facts["frames_emitted"],
-        "ok": None if facts["value"] is None else facts["value"] == 0,
-        "arm": session.get("render_arm") or obs.get("render_arm"),
-        "mismatch": fallback_is_mismatch(session.get("render_arm"), facts["value"]),
-    }
-
-
 def build_report(state: dict, args, run_ts: str) -> dict:
     rows = {r["n"]: r for r in state["runs"]}
     done = {n: _done_attempt(r) for n, r in rows.items()}
@@ -1161,11 +1355,15 @@ def build_report(state: dict, args, run_ts: str) -> dict:
 
     fallback_flagged: list[int] = []   # 앱이 폴백을 신고한 통과 런 (그 숫자는 무효다)
     fallback_unknown: list[int] = []   # 폴백 사실을 확인할 수 없는 통과 런
+    # 런별 폴백 사실을 **한 번 모아서** 아래 블록들(노이즈 바닥·arm 차분)이 같이 쓴다.
+    # 블록마다 따로 읽으면 같은 세션 안에서 표시가 달라질 수 있다.
+    fb_by_run: dict[int, dict | None] = {}
     for n in sorted(rows):
         r = rows[n]
         a = done.get(n)
         obs = (a or {}).get("observed") or {}
         fb = fallback_for_report(a) if a else None
+        fb_by_run[n] = fb
         if fb:
             if fb.get("mismatch"):
                 fallback_flagged.append(n)
@@ -1238,6 +1436,14 @@ def build_report(state: dict, args, run_ts: str) -> dict:
             "lighting": rows[n]["lighting"],
             "device_runs": [a["device_run"], b["device_run"]],
             "columns": d,
+            # 🔴 **폴백된 런으로 잡은 폭은 바닥이 아니다.** 그 런은 그 arm을 그리지 않았으므로
+            #    반복 쌍이 같은 코드 경로를 두 번 잰 것이 아니다 — 이 블록의 숫자와 그것을
+            #    쓰는 모든 '바닥 초과' 판단이 근거를 잃는다.
+            "passthrough_fallback": fallback_integrity(
+                fb_by_run, [n, pair], "이 노이즈 바닥",
+                "그 런은 그 arm을 그리지 않았으므로 이 폭은 같은 코드 경로를 두 번 잰 것이 "
+                "아니고, 이 바닥을 쓰는 '바닥 초과/이내' 판단 전체가 근거를 잃는다",
+            ),
             "note": (
                 f"같은 arm({rows[n]['arm']})·같은 조명({rows[n]['lighting']})을 두 번 찍은 "
                 "차이다. **이 폭 안의 arm 차분은 신호가 아니다.** 다만 반대는 성립하지 "
@@ -1249,6 +1455,16 @@ def build_report(state: dict, args, run_ts: str) -> dict:
         }
 
     # ── arm 간 차분. 노이즈 바닥과 **나란히** 낸다.
+    # 바닥을 잡은 런 자체가 폴백됐으면 아래 모든 블록의 '바닥 초과' 판단도 근거가 없다.
+    # 그 사실을 각 블록에 **함께 싣는다** — 바닥 블록에만 두면 여기 Δ만 인용된다.
+    floor_integrity = (
+        report["noise_floor"].get("passthrough_fallback")
+        if report["noise_floor"].get("available") else None
+    )
+    floor_integrity_brief = {
+        k: floor_integrity[k]
+        for k in ("runs", "quotable", "runs_with_fallback", "runs_fallback_unknown", "note")
+    } if floor_integrity else None
     for n in sorted(rows):
         ref_n = rows[n].get("compare_to")
         if ref_n is None:
@@ -1285,6 +1501,14 @@ def build_report(state: dict, args, run_ts: str) -> dict:
             "reference_arm": rows[ref_n]["arm"],
             "lighting": rows[n]["lighting"],
             "columns": cols,
+            # 🔴 **숫자가 인용되는 자리에 표시를 둔다.** 이 두 런 중 하나라도 폴백이 0이
+            #    아니면 아래 Δ는 arm 차이가 아니다. 런 표와 caveats에만 표시가 있으면
+            #    사람은 이 블록만 복사해 간다(그게 6c2ecab이 남긴 갭이다).
+            "passthrough_fallback": fallback_integrity(
+                fb_by_run, [n, ref_n], f"arm 차분 #{n} vs #{ref_n}",
+                "그 런의 분포는 그 arm의 분포가 아니므로 이 Δ는 arm 차이가 아니다",
+            ),
+            "noise_floor_fallback": floor_integrity_brief,
             "gpu_present_note": (
                 "gpu_present_ms는 arm이 달라도 **같은 코드**가 도는 최종 표시 패스인데 "
                 "실측에서 arm마다 움직인다. 그래서 arm 간 비교에 항상 함께 낸다 — 이 열의 "
@@ -1378,6 +1602,27 @@ def build_report(state: dict, args, run_ts: str) -> dict:
     return report
 
 
+def print_fallback_integrity(integrity: dict | None, indent: str = "  ") -> None:
+    """블록 안에 폴백 사실을 찍는다.
+
+    🔴 **숫자보다 먼저 찍는다.** 아래 Δ 줄만 복사해 가는 것을 막는 것이 이 표시의 목적이므로,
+    표시가 숫자 뒤에 있으면 없는 것과 비슷하다.
+
+    폴백 0일 때도 한 줄 남긴다 — 근거가 보이지 않으면 "0이었다"와 "이 검사가 아예 돌지
+    않았다"를 사람이 구별할 수 없다(통과 배너와 같은 이유).
+    """
+    if not integrity:
+        return
+    quotable = integrity.get("quotable")
+    if quotable is False:
+        LOG.error("%s%s", indent, integrity.get("note"))
+    elif quotable is None or integrity.get("runs_fallback_nonzero_not_flagged"):
+        # 0이 아닌 값은 어긋남이 아니어도 **경고 수준으로** 낸다 — 설명되지 않은 사실이다.
+        LOG.warning("%s⚠ %s", indent, integrity.get("note"))
+    else:
+        LOG.info("%s%s", indent, integrity.get("note"))
+
+
 def print_report(report: dict) -> None:
     LOG.info("")
     LOG.info("=" * 66)
@@ -1411,6 +1656,7 @@ def print_report(report: dict) -> None:
             "노이즈 바닥 — 런 %s 반복 [arm=%s, 조명=%s]. **이 폭 안은 신호가 아니다**",
             nf["pair"], nf["arm"], nf["lighting"],
         )
+        print_fallback_integrity(nf.get("passthrough_fallback"))
         for col, per_p in nf["columns"].items():
             for p in COMPARE_PERCENTILES:
                 v = per_p.get(p)
@@ -1436,6 +1682,12 @@ def print_report(report: dict) -> None:
             "arm 차분 — #%d(%s) − #%d(%s), 조명=%s. 노이즈 바닥과 나란히 본다",
             ad["run"], ad["arm"], ad["reference_run"], ad["reference_arm"], ad["lighting"],
         )
+        # 🔴 이 두 줄이 Δ보다 위에 있어야 한다 — 표·caveats의 표시는 여기까지 따라오지 않는다.
+        print_fallback_integrity(ad.get("passthrough_fallback"))
+        nf_fb = ad.get("noise_floor_fallback")
+        if nf_fb and nf_fb.get("quotable") is not True:
+            # 바닥이 무효면 아래 '바닥 초과/이내' 태그도 근거가 없다.
+            print_fallback_integrity(nf_fb, indent="  ↳ 바닥: ")
         for col, per_p in ad["columns"].items():
             for p in ("p50", "p95"):
                 v = per_p.get(p)
