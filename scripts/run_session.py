@@ -54,6 +54,7 @@ from lib.frame_log import (  # noqa: E402
     LIGHTING_CONDITIONS,
     LIGHTING_SYNTHETIC,
     LIGHTING_UNKNOWN,
+    RENDER_ARM_PASSTHROUGH,
     RENDER_ARM_SYNTHETIC,
     RENDER_ARMS,
     STAGE_D_TOTAL_COLUMN,
@@ -94,6 +95,31 @@ DIFF_STAGE = "baseline_diff"
 # 같은 계획 칸에 넣으면 안 된다. 계획보다 **긴** 것은 어긋남으로 보지 않는다(분석 창이
 # 넉넉해질 뿐이다).
 DURATION_SHORT_TOLERANCE = 0.10
+
+# ── 앱이 신고한 패스스루 폴백 ────────────────────────────────────────────────
+# `session.json`의 이 필드는 앱이 **스스로** "설정된 arm을 그리지 못해 패스스루로 대신
+# 그렸다"고 센 프레임 수다(`SessionWriter.kt`가 `offscreenFallbackDraws`를 그대로 적는다).
+#
+# 🔴 **왜 이 필드를 근거로 고르는가.** 2026-08-03 세션 `s4_combo` #5
+#    (`drago_clahe_fused`, 11분)에서 적용 프래그먼트가 A34에서 컴파일에 실패했고
+#    (`0:109: S0001: Function call discards 'readonly' access qualifier.`), 앱은 죽지 않고
+#    **모든 프레임(20032/20032)을 패스스루로 폴백**시켰다. 그 런은 arm·조명·빌드 타입·
+#    git_dirty·분석 창(639.5s)을 전부 통과했고 **프레임타임조차 정상으로 보였다**
+#    (fps_mean 29.92, meets_fps_target/meets_p95_target 모두 true — 그릴 것이 없으면
+#    오히려 빠르다). 즉 기존 계획 대조는 "스피너를 잘못 돌린 실수"는 잡지만 "앱이
+#    내부적으로 그 arm을 못 그린 것"은 잡지 못했고, 유일한 신호는 CSV에 GPU 열이 없다는
+#    것이어서 사람이 눈으로 봐야 보였다. 11분 런 하나가 무효인 채로 "계획 통과"로 기록됐다.
+#
+#    대안은 "arm이 패스스루가 아닌데 `stage_d_*` 열이 0개면 어긋남"이었는데, 그건 하네스가
+#    **arm→열 매핑을 해석하기 시작하는 것**이다. `lib/frame_log.py`가 명시한 "하네스는
+#    arm의 의미를 해석하지 않는다"와 충돌하고, 열 매핑의 주인은 앱의 `RenderArm.gpuColumns`
+#    이므로 여기 사본을 두면 arm이 늘어날 때 조용히 어긋난다. 이 필드는 **앱이 스스로
+#    신고한 사실**이라 해석이 전혀 필요 없다 — 0이 아니면 그 런은 선언한 arm으로 그려지지
+#    않았다.
+#
+# 이건 **판정선이 아니다.** PASS/FAIL 임계값이 아니라 "그 런이 계획대로 측정됐는가"의
+# 무결성 검사이므로 `lib/targets.py`에 값이 생기지 않는다(임계도 없다 — 0이냐 아니냐다).
+FALLBACK_FIELD = "render.processing.frames_fell_back_to_passthrough"
 
 # 승격 베이스라인 (docs/baselines/README.md). 런3(passthrough 재현)이 여기에 비교된다.
 DEFAULT_PROMOTION_BASELINE = "docs/baselines/20260730_poc_empty_a34.json"
@@ -537,6 +563,54 @@ def _dirty_flag(session: dict):
     return str(raw).strip().lower() in {"true", "1", "yes", "on"}
 
 
+def fallback_facts(session: dict) -> dict:
+    """앱이 신고한 패스스루 폴백 사실. **해석하지 않고 그대로 옮긴다** ([FALLBACK_FIELD]).
+
+    `present=False`(필드가 없다)는 **`value=0`과 다르다.** 스키마가 낮은 옛 로그
+    (`docs/baselines/20260730_poc_empty_a34.json`은 `schema_version=1`이고 이 필드가
+    아예 없다)는 폴백이 없었다고도 있었다고도 말할 수 없다. 없는 것을 0으로 채우면
+    없는 근거를 만드는 것이므로, 그때는 사실만 남기고 판단하지 않는다.
+    """
+    render = session.get("render")
+    processing = render.get("processing") if isinstance(render, dict) else None
+    raw = (
+        processing.get("frames_fell_back_to_passthrough")
+        if isinstance(processing, dict) else None
+    )
+    emitted = session.get("frames_emitted")
+    facts = {
+        "present": raw is not None,
+        "raw": raw,
+        "value": None,
+        # 폴백이 **전량인지 일부인지**를 사유 문장에서 드러내려면 분모가 필요하다.
+        "frames_emitted": (
+            emitted if isinstance(emitted, int) and not isinstance(emitted, bool) else None
+        ),
+    }
+    if raw is None or isinstance(raw, bool):
+        # 불리언은 이 필드의 값이 아니다 — 프레임 수를 True/False로 읽지 않는다.
+        return facts
+    try:
+        facts["value"] = int(raw)
+    except (TypeError, ValueError):
+        pass  # 숫자로 읽을 수 없으면 판단하지 않는다 (아래에서 참고 사항으로 나간다)
+    return facts
+
+
+def fallback_is_mismatch(arm, value: int | None) -> bool:
+    """이 폴백을 어긋남으로 볼 것인가. (`value`는 [fallback_facts]의 `value`)
+
+    🔴 **`passthrough` arm에는 걸지 않는다.** 확인한 사실 둘: (1) 렌더러는
+    `arm == PASSTHROUGH`면 `dispatchDraw`에서 카운터를 **증가시키기 전에 바로 반환**한다
+    (`PassthroughRenderer.kt` 552-555 — 증가 지점 4곳은 모두 그 아래다), (2) 승격본 중
+    passthrough 런 3개(`20260731_night_lit_passthrough_a34`,
+    `20260731_night_dark_passthrough_a34`, `20260801_indoor_passthrough_rebase_a34`)가
+    전부 `0`이다. 그 arm에서는 패스스루로 그리는 것이 정상 동작이므로, 만약 0이 아닌 값이
+    나오면 그건 판단할 근거가 없는 새 사실이다 — 어긋남으로 단정하지 않고 참고로 남긴다.
+    """
+    return value is not None and value != 0 and arm != RENDER_ARM_PASSTHROUGH
+
+
 def planned_window_sec(row: dict, warmup_sec: float) -> float:
     return max(0.0, row["minutes"] * 60.0 - warmup_sec)
 
@@ -584,6 +658,44 @@ def check_against_plan(
         else:
             mismatches.append(msg)
 
+    # ── 앱이 그 arm을 실제로 그렸는가. **스피너가 맞아도 여기서 무효가 될 수 있다.**
+    fb = fallback_facts(session)
+    if not fb["present"]:
+        notes.append(
+            f"session.json에 {FALLBACK_FIELD}가 없다 "
+            f"(schema_version={session.get('schema_version')!r}) — 앱이 선언한 arm으로 실제로 "
+            "그렸는지 이 로그만으로는 말할 수 없다. **값이 없는 것은 0이 아니다** "
+            "(그래서 어긋남으로 잡지 않았다)"
+        )
+    elif fb["value"] is None:
+        notes.append(
+            f"{FALLBACK_FIELD}를 숫자로 읽을 수 없다: {fb['raw']!r} — 폴백 여부를 "
+            "판단하지 않았다"
+        )
+    elif fb["value"] != 0:
+        emitted = fb["frames_emitted"]
+        if emitted is None:
+            scope = "frames_emitted를 읽지 못해 전량인지 일부인지 말할 수 없다"
+        elif fb["value"] >= emitted:
+            scope = "**전량 폴백** — 이 런에 그 arm으로 그린 프레임이 하나도 없다"
+        else:
+            scope = (
+                f"일부 폴백({fb['value']}/{emitted}) — 이 런의 분포에 두 경로가 섞였다"
+            )
+        msg = (
+            f"{FALLBACK_FIELD}={fb['value']} (frames_emitted={emitted}) — 앱이 arm "
+            f"{arm!r}을 그리지 못해 패스스루로 대신 그렸다고 **스스로 신고했다**. "
+            f"{scope}. 프레임타임과 fps는 정상으로 보일 수 있다(그릴 것이 없으면 오히려 "
+            "빠르다) — session.json의 gpu_status·offscreen_status·stage2_status에 실린 "
+            "컴파일러 원문을 볼 것"
+        )
+        if fallback_is_mismatch(arm, fb["value"]):
+            mismatches.append(msg)
+        else:
+            notes.append(
+                msg + f" / arm이 {RENDER_ARM_PASSTHROUGH!r}라 어긋남으로 잡지 않았다"
+            )
+
     planned = planned_window_sec(row, warmup_sec)
     if analysis_sec is None:
         mismatches.append("분석 창 길이를 재지 못했다 (frames.csv의 t_recv_ns를 읽을 수 없다)")
@@ -611,6 +723,10 @@ def check_against_plan(
         if isinstance(session.get("build"), dict) else None,
         "pipeline_stages": session.get("pipeline_stages"),
         "schema_version": session.get("schema_version"),
+        "frames_emitted": fb["frames_emitted"],
+        "frames_fell_back_to_passthrough": fb["value"],
+        # 사람이 숫자를 보고 판단하게 두지 않는다. None = 말할 수 없다(필드 없음/읽을 수 없음).
+        "no_passthrough_fallback": None if fb["value"] is None else fb["value"] == 0,
         "analysis_window_sec": analysis_sec,
         "planned_window_sec": round(planned, 1),
         "session_duration_sec": round(
@@ -908,11 +1024,18 @@ def execute_run(
 def print_attempt_result(row: dict, attempt: dict) -> None:
     if attempt["conforms"]:
         LOG.info("-" * 66)
+        obs = attempt.get("observed") or {}
+        # 통과 쪽에도 **근거를 찍는다** — 폴백이 0이었다는 사실이 보이지 않으면 이 검사가
+        # 돌았는지 사람이 알 수 없고, "말할 수 없다"(필드 없음)와도 구별되지 않는다.
+        fb_text = (
+            f"{obs['frames_fell_back_to_passthrough']}/{obs.get('frames_emitted')} 프레임"
+            if obs.get("frames_fell_back_to_passthrough") is not None
+            else f"{FALLBACK_FIELD} 없음 — 말할 수 없다"
+        )
         LOG.info(
-            "✔ 계획 #%d 통과 — arm=%s 조명=%s 분석 창 %.0fs",
-            row["n"], (attempt.get("observed") or {}).get("render_arm"),
-            (attempt.get("observed") or {}).get("lighting_condition"),
-            (attempt.get("observed") or {}).get("analysis_window_sec") or 0.0,
+            "✔ 계획 #%d 통과 — arm=%s 조명=%s 분석 창 %.0fs, 패스스루 폴백 %s",
+            row["n"], obs.get("render_arm"), obs.get("lighting_condition"),
+            obs.get("analysis_window_sec") or 0.0, fb_text,
         )
     else:
         LOG.error("!" * 66)
@@ -957,6 +1080,59 @@ def _done_attempt(row: dict) -> dict | None:
     return None
 
 
+def fallback_for_report(attempt: dict) -> dict:
+    """리포트에 실을 폴백 사실. 저장된 attempt에 없으면 **회수해 둔 로그에서 다시 읽는다.**
+
+    이 검사가 생기기 전에 기록된 attempt에는 `observed`에 폴백 필드가 없다. 그 런은
+    `conforms=true`로 굳어 있으므로(실제로 `s4_combo` #5가 그렇다) 리포트가 그 사실을
+    말해 주지 않으면 무효 런이 계속 유효한 것처럼 인용된다.
+
+    🔴 **`status`/`conforms`를 사후에 고쳐 쓰지 않는다.** 기록을 다시 쓰면 어느 실행이
+    무엇을 판정했는지가 사라진다. 여기서는 단서(`caveats`)로만 내고, 재분류는 사람이
+    다시 찍거나 세션을 새로 여는 일로 남긴다.
+    """
+    obs = attempt.get("observed") or {}
+    if "no_passthrough_fallback" in obs:
+        return {
+            "source": "attempt",
+            "value": obs.get("frames_fell_back_to_passthrough"),
+            "frames_emitted": obs.get("frames_emitted"),
+            "ok": obs.get("no_passthrough_fallback"),
+            "arm": obs.get("render_arm"),
+            # 통과한 attempt에도 이 키를 채운다 — passthrough arm은 0이 아니어도 통과하므로
+            # (참고 사항으로만 나간다) `mismatch` 없이 두면 리포트가 그 값을 "말할 수 없다"로
+            # 잘못 표시한다.
+            "mismatch": fallback_is_mismatch(
+                obs.get("render_arm"), obs.get("frames_fell_back_to_passthrough")
+            ),
+        }
+    path = attempt.get("session_json")
+    if not path or not Path(path).exists():
+        return {
+            "source": "unavailable",
+            "value": None, "frames_emitted": None, "ok": None,
+            "arm": obs.get("render_arm"),
+        }
+    try:
+        session = read_session(Path(path))
+    except (OSError, json.JSONDecodeError) as exc:
+        # 옛 런의 로그가 깨져 있다고 리포트 전체를 잃지 않는다. 사실만 남긴다.
+        return {
+            "source": "unreadable",
+            "value": None, "frames_emitted": None, "ok": None,
+            "arm": obs.get("render_arm"), "reason": str(exc),
+        }
+    facts = fallback_facts(session)
+    return {
+        "source": "session_json_recheck",
+        "value": facts["value"],
+        "frames_emitted": facts["frames_emitted"],
+        "ok": None if facts["value"] is None else facts["value"] == 0,
+        "arm": session.get("render_arm") or obs.get("render_arm"),
+        "mismatch": fallback_is_mismatch(session.get("render_arm"), facts["value"]),
+    }
+
+
 def build_report(state: dict, args, run_ts: str) -> dict:
     rows = {r["n"]: r for r in state["runs"]}
     done = {n: _done_attempt(r) for n, r in rows.items()}
@@ -983,10 +1159,18 @@ def build_report(state: dict, args, run_ts: str) -> dict:
         "caveats": [],
     }
 
+    fallback_flagged: list[int] = []   # 앱이 폴백을 신고한 통과 런 (그 숫자는 무효다)
+    fallback_unknown: list[int] = []   # 폴백 사실을 확인할 수 없는 통과 런
     for n in sorted(rows):
         r = rows[n]
         a = done.get(n)
         obs = (a or {}).get("observed") or {}
+        fb = fallback_for_report(a) if a else None
+        if fb:
+            if fb.get("mismatch"):
+                fallback_flagged.append(n)
+            elif fb["ok"] is None:
+                fallback_unknown.append(n)
         report["runs"].append({
             "n": n,
             "arm": r["arm"],
@@ -1003,6 +1187,9 @@ def build_report(state: dict, args, run_ts: str) -> dict:
                 None if obs.get("meets_sustained_window") is None
                 else not obs["meets_sustained_window"]
             ),
+            # 앱이 그 arm을 실제로 그렸는가. **분포보다 먼저 봐야 하는 값이다** —
+            # 폴백한 런의 프레임타임은 정상으로 보인다.
+            "passthrough_fallback": fb,
             "verdict": (a or {}).get("verdict"),
             "metrics": (a or {}).get("metrics"),
         })
@@ -1154,6 +1341,22 @@ def build_report(state: dict, args, run_ts: str) -> dict:
         report["caveats"].append(
             f"계획을 통과하지 못한 칸: {incomplete} — 이 세션은 완주가 아니다"
         )
+    if fallback_flagged:
+        # 진행 파일에는 통과로 남아 있지만 **앱이 그 arm을 못 그렸다고 신고한** 런이다.
+        # 이 검사가 생기기 전에 기록됐기 때문에 status는 done이다 — 그 사실을 함께 적는다.
+        report["caveats"].append(
+            f"🔴 통과로 기록됐지만 {FALLBACK_FIELD}가 0이 아닌 런: {fallback_flagged} — "
+            "앱이 그 arm을 그리지 못해 패스스루로 대신 그렸다고 신고했다. **이 런의 숫자는 "
+            "그 arm의 숫자가 아니다**(프레임타임은 정상으로 보인다). 이 폴백 검사가 생기기 "
+            "전에 기록된 attempt라 status는 done으로 남아 있다 — 리포트가 상태를 사후에 "
+            "고쳐 쓰지 않기 때문이다. 다시 찍고 새 세션으로 채울 것"
+        )
+    if fallback_unknown:
+        report["caveats"].append(
+            f"{FALLBACK_FIELD}를 확인할 수 없는 통과 런: {fallback_unknown} — 필드가 없는 "
+            "옛 스키마이거나 회수 로그가 남아 있지 않다. 그 런이 선언한 arm으로 실제로 "
+            "그려졌는지 이 리포트로는 말할 수 없다(**값이 없는 것은 0이 아니다**)"
+        )
     if not report["noise_floor"].get("available"):
         report["caveats"].append(
             "노이즈 바닥이 없다 — arm 차분이 실행 간 흔들림보다 큰지 판단할 수 없다"
@@ -1181,11 +1384,24 @@ def print_report(report: dict) -> None:
     LOG.info("세션 리포트 — %s (run_ts=%s)", report["session_id"], report["run_ts"])
     LOG.info("-" * 66)
     for r in report["runs"]:
+        fb = r.get("passthrough_fallback") or {}
+        # 폴백 사실을 **런 한 줄에 같이** 찍는다. 이걸 caveats에만 두면 표만 보고 인용된다.
+        if fb.get("mismatch"):
+            fb_text = f"폴백 {fb.get('value')}/{fb.get('frames_emitted')} ← 무효"
+        elif fb.get("value"):
+            # 0이 아니지만 어긋남은 아니다 (passthrough arm). 숫자를 감추지 않는다.
+            fb_text = f"폴백 {fb['value']} (arm 정상)"
+        elif fb.get("ok"):
+            fb_text = "폴백 0"
+        elif fb:
+            fb_text = "폴백 ?"
+        else:
+            fb_text = ""
         LOG.info(
-            "  #%-2d %-12s %-18s %-8s 분석 창 %-7s %s",
+            "  #%-2d %-12s %-18s %-8s 분석 창 %-7s %-12s %s",
             r["n"], r["arm"], r["lighting"], r["status"],
             f"{r['analysis_window_sec']}s" if r["analysis_window_sec"] else "-",
-            "봉투 점" if r.get("envelope_only") else "",
+            fb_text, "봉투 점" if r.get("envelope_only") else "",
         )
 
     nf = report["noise_floor"]
