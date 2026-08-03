@@ -17,6 +17,7 @@ import com.bammasil.poc.source.FrameTarget
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -141,14 +142,22 @@ class PassthroughRenderer(
             if (arm.usesChainedComputeStage2) {
                 // 적용 프래그먼트가 **둘**이라 한쪽만 없어도 이 arm은 그릴 수 없다.
                 return if (chainDragoApplyProgram == null || chainClaheApplyProgram == null) {
-                    "적용 패스(프래그먼트) 프로그램을 만들지 못했다 — " + chainStage.status
+                    applyProgramFailureStatus(
+                        chainStage.ready, chainStage.status,
+                        listOf(
+                            PROGRAM_LABEL_CHAIN_DRAGO_APPLY, PROGRAM_LABEL_CHAIN_CLAHE_APPLY
+                        )
+                    )
                 } else {
                     chainStage.status
                 }
             }
             if (arm.usesFusedComputeStage2) {
                 return if (fusedApplyProgram == null) {
-                    "적용 패스(프래그먼트) 프로그램을 만들지 못했다 — " + fusedStage.status
+                    applyProgramFailureStatus(
+                        fusedStage.ready, fusedStage.status,
+                        listOf(PROGRAM_LABEL_FUSED_APPLY)
+                    )
                 } else {
                     fusedStage.status
                 }
@@ -156,7 +165,9 @@ class PassthroughRenderer(
             val stage = computeStage(arm)
                 ?: return "② 자리에 통계 패스가 필요 없는 arm이다 (셰이더 1패스)"
             return if (computeApplyProgram(arm) == null) {
-                "적용 패스(프래그먼트) 프로그램을 만들지 못했다 — " + stage.status
+                applyProgramFailureStatus(
+                    stage.ready, stage.status, listOf(computeApplyProgramLabel(arm))
+                )
             } else {
                 stage.status
             }
@@ -212,6 +223,20 @@ class PassthroughRenderer(
      * 한 프래그먼트에서 하며 SSBO 블록을 **둘** 읽는다.
      */
     private var fusedApplyProgram: QuadProgram? = null
+
+    /**
+     * 프로그램을 만들지 못했을 때의 **컴파일러 원문**(`glGetShaderInfoLog` /
+     * `glGetProgramInfoLog`). 키는 [buildProgram]에 넘긴 라벨이다.
+     *
+     * 🔴 logcat에만 남기면 버퍼가 밀린 뒤에는 원인을 되물을 수 없다 — 융합 arm의 Mali
+     * 컴파일 거부를 logcat이 아직 살아 있던 덕에 겨우 찾았고, 그건 운이었다. 그래서
+     * 원문을 들고 있다가 [stage2Status]로 `session.json`에 함께 낸다.
+     *
+     * GL 스레드가 쓰고 상태 문자열을 읽는 스레드가 읽는다 → [java.util.Collections]의
+     * 동기화 래퍼 대신 `ConcurrentHashMap`을 쓴다(문자열 하나가 늦게 보이는 것은
+     * 괜찮지만 맵이 깨지는 것은 안 된다).
+     */
+    private val programFailureLogs = ConcurrentHashMap<String, String>()
 
     /** `drago` arm의 전역 통계(리덕션 + 계수). 자원과 상태를 통째로 소유한다. */
     private val dragoStage = DragoStage()
@@ -277,27 +302,33 @@ class PassthroughRenderer(
         gpuTimer.onContextCreated(
             capabilities?.disjointTimerQuery ?: GlCapabilitiesProbe.UNKNOWN
         )
-        oesProgram = buildProgram(VERTEX_SHADER_OES, FRAGMENT_SHADER_OES)
-        blitProgram = buildProgram(VERTEX_SHADER_2D, FRAGMENT_SHADER_BLIT)
-        gammaProgram = buildProgram(VERTEX_SHADER_2D, FRAGMENT_SHADER_GAMMA)
+        oesProgram = buildProgram(VERTEX_SHADER_OES, FRAGMENT_SHADER_OES, PROGRAM_LABEL_OES)
+        blitProgram = buildProgram(VERTEX_SHADER_2D, FRAGMENT_SHADER_BLIT, PROGRAM_LABEL_BLIT)
+        gammaProgram = buildProgram(VERTEX_SHADER_2D, FRAGMENT_SHADER_GAMMA, PROGRAM_LABEL_GAMMA)
         // ② 컴퓨트 arm 3종. 컴퓨트를 못 쓰는 컨텍스트면 각 Stage가 스스로 꺼지고 이유를 남긴다.
         // ⚠ 지금 고른 arm과 무관하게 셋 다 준비한다 — arm 전환이 GL 스레드 이벤트라
         //   전환 시점에 컴파일하면 그 비용이 전환 직후 첫 프레임에 얹힌다.
         dragoStage.onContextCreated(capabilities)
         dragoApplyProgram = if (dragoStage.ready) {
-            buildProgram(ES31_QUAD_VERTEX_SHADER, DragoStage.APPLY_SHADER)
+            buildProgram(
+                ES31_QUAD_VERTEX_SHADER, DragoStage.APPLY_SHADER, PROGRAM_LABEL_DRAGO_APPLY
+            )
         } else {
             null
         }
         claheStage.onContextCreated(capabilities)
         claheApplyProgram = if (claheStage.ready) {
-            buildProgram(ES31_QUAD_VERTEX_SHADER, ClaheStage.APPLY_SHADER)
+            buildProgram(
+                ES31_QUAD_VERTEX_SHADER, ClaheStage.APPLY_SHADER, PROGRAM_LABEL_CLAHE_APPLY
+            )
         } else {
             null
         }
         agcwdStage.onContextCreated(capabilities)
         agcwdApplyProgram = if (agcwdStage.ready) {
-            buildProgram(ES31_QUAD_VERTEX_SHADER, AgcwdStage.APPLY_SHADER)
+            buildProgram(
+                ES31_QUAD_VERTEX_SHADER, AgcwdStage.APPLY_SHADER, PROGRAM_LABEL_AGCWD_APPLY
+            )
         } else {
             null
         }
@@ -305,10 +336,12 @@ class PassthroughRenderer(
         chainStage.onContextCreated(capabilities)
         if (chainStage.ready) {
             chainDragoApplyProgram = buildProgram(
-                ES31_QUAD_VERTEX_SHADER, DragoClaheChainStage.DRAGO_APPLY_SHADER
+                ES31_QUAD_VERTEX_SHADER, DragoClaheChainStage.DRAGO_APPLY_SHADER,
+                PROGRAM_LABEL_CHAIN_DRAGO_APPLY
             )
             chainClaheApplyProgram = buildProgram(
-                ES31_QUAD_VERTEX_SHADER, DragoClaheChainStage.CLAHE_APPLY_SHADER
+                ES31_QUAD_VERTEX_SHADER, DragoClaheChainStage.CLAHE_APPLY_SHADER,
+                PROGRAM_LABEL_CHAIN_CLAHE_APPLY
             )
         } else {
             chainDragoApplyProgram = null
@@ -317,7 +350,10 @@ class PassthroughRenderer(
         // ② 융합 arm. 적용 프래그먼트가 **하나**이고 그 하나가 SSBO 블록을 둘 읽는다.
         fusedStage.onContextCreated(capabilities)
         fusedApplyProgram = if (fusedStage.ready) {
-            buildProgram(ES31_QUAD_VERTEX_SHADER, DragoClaheFusedStage.FUSED_APPLY_SHADER)
+            buildProgram(
+                ES31_QUAD_VERTEX_SHADER, DragoClaheFusedStage.FUSED_APPLY_SHADER,
+                PROGRAM_LABEL_FUSED_APPLY
+            )
         } else {
             null
         }
@@ -654,6 +690,53 @@ class PassthroughRenderer(
         RenderArm.CLAHE_GAMMA -> claheApplyProgram
         RenderArm.AGCWD -> agcwdApplyProgram
         else -> null
+    }
+
+    /** arm → 그 arm의 적용 패스가 [programFailureLogs]에 원문을 남기는 키. */
+    private fun computeApplyProgramLabel(target: RenderArm): String = when (target) {
+        RenderArm.DRAGO -> PROGRAM_LABEL_DRAGO_APPLY
+        RenderArm.CLAHE_GAMMA -> PROGRAM_LABEL_CLAHE_APPLY
+        RenderArm.AGCWD -> PROGRAM_LABEL_AGCWD_APPLY
+        else -> "(적용 패스가 없는 arm: ${target.id})"
+    }
+
+    /**
+     * 적용 프래그먼트를 못 만들었을 때 `gpu_status`로 나가는 문장.
+     *
+     * 🔴 **성공 서술을 붙이지 않는다.** 이전 판은 `"...만들지 못했다 — " + stage.status`였고,
+     * 통계 패스는 준비된 경우가 많아 그 뒤에 `"준비 완료 — ..."`가 그대로 이어졌다. 앞부분을
+     * 놓치면 정상으로 읽히고, 실제로 그렇게 융합 arm의 11분 런이 통째로 무효가 됐다
+     * (전 프레임이 패스스루로 폴백했는데 `gpu_status`에 "준비 완료"가 보였다).
+     * 그래서 스테이지가 준비된 경우에는 스테이지 문장을 **인용하지 않고**, 실패 사실과
+     * 컴파일러 원문만 낸다. 스테이지도 실패했을 때만 그 사유를 잇는다(그건 실패 서술이다).
+     *
+     * 컴파일러 원문을 함께 내는 이유는 [programFailureLogs].
+     */
+    private fun applyProgramFailureStatus(
+        stageReady: Boolean,
+        stageStatus: String,
+        labels: List<String>,
+    ): String {
+        val logs = labels.mapNotNull { label ->
+            programFailureLogs[label]?.let { "[$label] $it" }
+        }
+        val diagnostics = if (logs.isEmpty()) {
+            "컴파일러 원문을 잡지 못했다(대상 라벨=${labels.joinToString("/")})"
+        } else {
+            "컴파일러 원문 = " + logs.joinToString(" || ")
+        }
+        val stagePart = if (stageReady) {
+            // 통계 패스가 준비됐다는 사실은 **여기서는 위안이 아니다** — 적용이 없으면 이 arm은
+            // 그릴 수 없다. 그래서 스테이지의 "준비 완료 — ..." 문장을 옮기지 않는다.
+            "통계 패스(컴퓨트·SSBO)는 준비됐으나 적용 패스가 없어 arm 전체가 실패다"
+        } else {
+            "통계 패스도 준비되지 않았다 — $stageStatus"
+        }
+        // 원문을 **맨 뒤**에 둔다 — 드라이버 문장이 마침표로 끝나므로 가운데 끼우면 마침표가
+        // 겹치고, 무엇보다 "무슨 일이 났는가"를 먼저 읽게 해야 한다.
+        return "실패: 적용 패스(프래그먼트) 프로그램을 만들지 못했다. 이 arm은 그릴 수 없고 " +
+            "모든 프레임이 패스스루로 폴백한다(render.processing." +
+            "frames_fell_back_to_passthrough 확인). $stagePart. $diagnostics"
     }
 
     /**
@@ -1077,6 +1160,9 @@ class PassthroughRenderer(
         chainDragoApplyProgram = null
         chainClaheApplyProgram = null
         fusedApplyProgram = null
+        // 이전 컨텍스트의 실패 원문은 이 컨텍스트의 근거가 아니다. 남겨 두면 재생성 뒤에
+        // 만들지 **않은** 프로그램의 옛 원문이 `session.json`에 실려 나간다.
+        programFailureLogs.clear()
     }
 
     private fun deleteProgram(program: QuadProgram?) {
@@ -1097,9 +1183,18 @@ class PassthroughRenderer(
         return ids[0]
     }
 
-    private fun buildProgram(vertexSource: String, fragmentSource: String): QuadProgram? {
-        val vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, vertexSource)
-        val fragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, fragmentSource)
+    /**
+     * @param label [programFailureLogs]에 컴파일러 원문을 남길 키. 실패했을 때 어느 셰이더가
+     *   거부됐는지는 라벨 없이는 `session.json`에서 되물을 수 없다.
+     */
+    private fun buildProgram(
+        vertexSource: String,
+        fragmentSource: String,
+        label: String,
+    ): QuadProgram? {
+        programFailureLogs.remove(label)
+        val vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, vertexSource, label)
+        val fragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, fragmentSource, label)
         if (vertexShader == 0 || fragmentShader == 0) return null
         val handle = GLES20.glCreateProgram()
         GLES20.glAttachShader(handle, vertexShader)
@@ -1110,7 +1205,9 @@ class PassthroughRenderer(
         GLES20.glDeleteShader(vertexShader)
         GLES20.glDeleteShader(fragmentShader)
         if (status[0] != GLES20.GL_TRUE) {
-            Log.e(TAG, "프로그램 링크 실패: ${GLES20.glGetProgramInfoLog(handle)}")
+            val info = GLES20.glGetProgramInfoLog(handle)
+            Log.e(TAG, "프로그램 링크 실패($label): $info")
+            noteProgramFailure(label, "링크 실패: $info")
             GLES20.glDeleteProgram(handle)
             return null
         }
@@ -1133,18 +1230,38 @@ class PassthroughRenderer(
         )
     }
 
-    private fun compileShader(type: Int, source: String): Int {
+    private fun compileShader(type: Int, source: String, label: String): Int {
         val handle = GLES20.glCreateShader(type)
         GLES20.glShaderSource(handle, source)
         GLES20.glCompileShader(handle)
         val status = IntArray(1)
         GLES20.glGetShaderiv(handle, GLES20.GL_COMPILE_STATUS, status, 0)
         if (status[0] != GLES20.GL_TRUE) {
-            Log.e(TAG, "셰이더 컴파일 실패(type=$type): ${GLES20.glGetShaderInfoLog(handle)}")
+            val info = GLES20.glGetShaderInfoLog(handle)
+            Log.e(TAG, "셰이더 컴파일 실패(label=$label, type=$type): $info")
+            noteProgramFailure(label, "컴파일 실패(type=$type): $info")
             GLES20.glDeleteShader(handle)
             return 0
         }
         return handle
+    }
+
+    /**
+     * 실패 원문을 모아 둔다. 정점·프래그먼트가 **둘 다** 실패할 수 있어 덮어쓰지 않고 잇는다 —
+     * 먼저 난 것만 남기면 나중 것의 원인을 되물을 수 없다.
+     *
+     * ⚠ 드라이버 info log는 줄바꿈으로 끝나고 오류가 여러 개면 여러 줄이다. 그대로 담으면
+     * `gpu_status` 한 문장 가운데에서 줄이 끊겨 읽기 어렵고 줄 단위 grep도 어긋난다 →
+     * **줄바꿈만** `" / "`로 접는다(글자는 지우지 않는다. logcat에는 원문 그대로 남는다).
+     */
+    private fun noteProgramFailure(label: String, detail: String) {
+        val flattened = detail.lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString(" / ")
+        val previous = programFailureLogs[label]
+        programFailureLogs[label] =
+            if (previous == null) flattened else "$previous ; $flattened"
     }
 
     /** 링크된 프로그램 + 로케이션. 프레임당 조회를 하지 않기 위해 한 번만 담아 둔다. */
@@ -1180,6 +1297,18 @@ class PassthroughRenderer(
 
         /** FBO_A(패스1 출력) + FBO_B(패스2 출력). ②가 stateless라 2장이면 충분하다. */
         private const val FBO_COUNT = 2
+
+        // 프로그램 라벨. logcat 한 줄과 `session.json`의 실패 원문을 같은 이름으로 잇는다.
+        // 값은 `RenderArm`의 패스 이름 규약(`shaderSourcesByPass`의 키)과 같은 표기다.
+        private const val PROGRAM_LABEL_OES = "oes_to_fbo_a"
+        private const val PROGRAM_LABEL_BLIT = "blit_present"
+        private const val PROGRAM_LABEL_GAMMA = "gamma_only_apply"
+        private const val PROGRAM_LABEL_DRAGO_APPLY = "stage2_drago_apply"
+        private const val PROGRAM_LABEL_CLAHE_APPLY = "stage2_clahe_apply"
+        private const val PROGRAM_LABEL_AGCWD_APPLY = "stage2_agcwd_apply"
+        private const val PROGRAM_LABEL_CHAIN_DRAGO_APPLY = "stage2_chain_drago_apply"
+        private const val PROGRAM_LABEL_CHAIN_CLAHE_APPLY = "stage2_chain_clahe_apply"
+        private const val PROGRAM_LABEL_FUSED_APPLY = "stage2_fused_apply"
 
         /** x, y, u, v — 화면 전체를 덮는 triangle strip 4정점. */
         private val VERTEX_DATA = floatArrayOf(

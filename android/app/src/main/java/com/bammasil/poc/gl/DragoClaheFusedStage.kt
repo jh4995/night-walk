@@ -399,11 +399,11 @@ class DragoClaheFusedStage {
         /**
          * 패스4 — **톤맵 인라인** 타일 히스토그램.
          *
-         * [ClaheStage.analyzeShaderSource]와 타일 분할·공유메모리 구조가 같고 **한 줄만
-         * 다르다**: 텍셀을 `srgbToLabL`에 바로 넣는 대신
+         * [ClaheStage.analyzeShaderSource]와 타일 분할·공유메모리 구조가 같고 **텍셀을
+         * 무엇으로 바꿔 세는지만 다르다**: `srgbToLabL`에 바로 넣는 대신
          * `pow(→선형) → dragoToneLinear → linearToLabL`을 태운다.
          *
-         * 🔴 그 한 줄이 **상류와 다른 곡선**을 만든다 — 체인은 여기서 `pow(x, 1/uOutGamma)`로
+         * 🔴 그 차이가 **상류와 다른 곡선**을 만든다 — 체인은 여기서 `pow(x, 1/uOutGamma)`로
          * 인코드된 8비트 값을 sRGB piecewise(지수 2.4)로 디코드해서 넣는데, 두 곡선이 다르므로
          * 왕복을 없애는 것이 상쇄가 아니다([RenderArm.FUSED_DEVIATION]).
          *
@@ -442,8 +442,14 @@ class DragoClaheFusedStage {
                     for (int x = x0 + int(gl_LocalInvocationID.x); x < x1; x += ${ClaheStage.LOCAL_SIZE}) {
                         vec3 lin = pow(texelFetch(uTexture, ivec2(x, y), 0).rgb,
                                        vec3(${RenderArm.DRAGO_SRC_GAMMA_UNIFORM}));
-                        vec3 tone = dragoToneLinear(lin, gStats.logAvg, gStats.lmax,
-                                                    gStats.biasPow,
+                        // 여기 블록에는 `readonly`가 없어 이번 드라이버에서는 컴파일됐지만,
+                        // **호출 형태가 apply와 같다.** 한정자 판정이 다른 드라이버에서
+                        // 같은 거부가 나므로 apply와 같은 방식으로 미리 복사한다. 위치를
+                        // 루프 밖으로 올리지 않았다 — 올리면 이번에 재는 코드가 달라진다.
+                        float logAvg = gStats.logAvg;
+                        float lmax = gStats.lmax;
+                        float biasPow = gStats.biasPow;
+                        vec3 tone = dragoToneLinear(lin, logAvg, lmax, biasPow,
                                                     ${RenderArm.DRAGO_SATURATION_UNIFORM});
                         float l = ${LabGlsl.LINEAR_TO_L}(tone);
                         uint bin = uint(clamp(l * ${LabGlsl.L_TO_BIN} + 0.5, 0.0, 255.0));
@@ -462,7 +468,7 @@ class DragoClaheFusedStage {
          * 프래그먼트 **하나가 두 SSBO 블록**을 읽는다(그래서 이 arm만 프래그먼트 블록 2개가
          * 필요하다).
          *
-         * [ClaheStage.applyShaderSource]와 다른 곳은 앞의 두 줄뿐이다 —
+         * [ClaheStage.applyShaderSource]와 다른 곳은 맨 앞의 입력 변환뿐이다 —
          * `srgbToLabF(texture(...))` 대신 `pow(→선형) → dragoToneLinear → linearToLabF`.
          * 출력 인코딩은 체인의 마지막 패스와 **같다**(`labFToSrgb` 안의 `linearToSrgb`).
          *
@@ -492,7 +498,15 @@ class DragoClaheFusedStage {
             void main() {
                 vec3 lin = pow(texture(uTexture, vTexCoord).rgb,
                                vec3(${RenderArm.DRAGO_SRC_GAMMA_UNIFORM}));
-                vec3 tone = dragoToneLinear(lin, gStats.logAvg, gStats.lmax, gStats.biasPow,
+                // 🔴 SSBO 멤버를 함수 인자로 **직접 넘기지 않는다.** 넘기면 Mali가
+                //   "Function call discards 'readonly' access qualifier"로 컴파일을 거부한다
+                //   (A34/Mali-G68 실측). 지역 변수로 먼저 복사하면 한정자가 명시적으로
+                //   벗겨지고 **산식은 한 글자도 바뀌지 않는다.** readonly를 떼서 회피하지
+                //   않는 이유: 그건 "이 버퍼는 읽기 전용"이라는 의도를 지운다.
+                float logAvg = gStats.logAvg;
+                float lmax = gStats.lmax;
+                float biasPow = gStats.biasPow;
+                vec3 tone = dragoToneLinear(lin, logAvg, lmax, biasPow,
                                             ${RenderArm.DRAGO_SATURATION_UNIFORM});
                 vec3 f = ${LabGlsl.LINEAR_TO_LAB_F}(tone);
                 float l = 116.0 * f.y - 16.0;
