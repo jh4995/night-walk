@@ -33,7 +33,8 @@
 
 | 문서 | 담는 것 |
 |---|---|
-| [STATUS.md](docs/STATUS.md) | **현재 상태** — 어디까지 왔나 · 다음 한 수 · 알려진 이슈 · 막혀 있는 것 |
+| [PROGRESS.md](docs/PROGRESS.md) | **진행 현황판 — 훑어보는 용도.** 6단계 · 🟢지금 가능 / ⏸대기 구분 · 남이 풀어야 열리는 것. ⚠️ **ms 숫자를 담지 않는다**(측정 한 번에 썩는다) — 수치는 아래 두 문서 |
+| [STATUS.md](docs/STATUS.md) | **현재 상태 — 읽는 용도.** 어디까지 왔나 · 다음 한 수 · 알려진 이슈 · 막혀 있는 것 · 단서와 한계 |
 | [REPORT_20260803_TEAM.md](docs/REPORT_20260803_TEAM.md) | **팀 보고 (2026-08-03, 최초 공유).** 비전공자 기준으로 푼 중간 보고 — ②는 속도로 못 고른다 · 병목은 ②가 아니다 · 팀 요청 목록. ⚠️ **동결 스냅샷이다** — 숫자가 갱신되면 `FRAME_BUDGET.md`·`docs/baselines/` 쪽이 맞다 |
 | [FRAME_LOG_SCHEMA.md](docs/FRAME_LOG_SCHEMA.md) | 폰(PoC)이 뱉고 PC(하네스)가 읽는 프레임 로그 형식 — 팀 계약이 아니라 내 두 트랙 사이의 규격 |
 | [baselines/](docs/baselines/) | **기준 측정값.** `outputs/`는 git 추적을 안 하므로, 승격하지 않은 숫자는 그 머신에만 남는다 |
