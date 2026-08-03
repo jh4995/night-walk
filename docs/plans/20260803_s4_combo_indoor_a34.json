@@ -1,0 +1,162 @@
+{
+  "id": "s4_combo",
+  "title": "S4 ② 조합 arm GPU 비용 측정 세션 (7런, A34/release/indoor_bright)",
+  "build_type": "release",
+  "device": "SM-A346N (Galaxy A34) — MediaTek Dimensity 1080 / Mali-G68 MC4",
+  "authored": "2026-08-03",
+  "authored_by": "팀원2 (하네스). 구성은 사용자 승인 완료",
+
+  "question": [
+    "상류(모델링 담당)의 ② 배포 후보는 단품이 아니라 **조합**인데, 그 조합의 GPU 비용을",
+    "아무도 재지 않았다. 상류는 CPU에서 D1A1+bf 720p를 101.2ms로 재고(상류 실측), 그것이",
+    "게이트 밖이라 내부 처리 해상도를 640×360으로 깎는 것을 검토 중이다.",
+    "이 세션이 답하는 것: **A34 GPU에서 720p 조합 arm의 D칸 비용은 얼마인가.**",
+    "GPU에서 720p가 게이트 안이면 해상도를 깎을 이유가 사라진다(상류 실측상 글레어 지표가",
+    "해상도에 크게 의존하므로 품질 문제도 같이 사라진다).",
+    "🚫 이 파일에는 **사전 기대치를 적지 않는다.** 체인과 융합 중 어느 쪽이 싼지, 조합이",
+    "단품 합보다 싼지 비싼지는 **측정이 정하는 것**이고, 여기에 예상값을 적어 두면 나중에",
+    "그 문장이 근거처럼 인용된다."
+  ],
+
+  "arms_under_test": {
+    "drago_clahe_chain": "8패스. Drago apply가 중간 RGBA8로 materialize하고 CLAHE가 그것을 읽는다 — 상류 CPU 파이프라인과 같은 구조",
+    "drago_clahe_fused": "7패스. 중간 materialize를 없애고 Drago 톤맵을 인라인 — 상류에 없는 우리 변형",
+    "blit_2pass": "3패스 골격. arm 차분의 분모(기준선)",
+    "drago": "단품 D1",
+    "clahe_gamma": "단품 A1"
+  },
+
+  "why_this_order": [
+    "1) **노이즈 바닥을 맨 앞에 둔다.** drago에서 잰 바닥(같은 arm 반복 2런)을 새 조합 arm에",
+    "   물려 쓸 수 없다 — 패스 수와 SSBO 구성이 다르면 실행 간 변동 성질도 다르다.",
+    "   바닥이 없으면 나중에 나온 차분이 신호인지 잡음인지 말할 수 없다.",
+    "2) **분모(#3 blit_2pass)를 같은 세션에서 다시 잰다.** 같은 blit_2pass가 08-01 02시와",
+    "   08-03 13시 사이에 gpu_sum 노이즈 바닥의 3.9배만큼 움직인 전례가 있다",
+    "   (FRAME_BUDGET.md §3 주3). 세션이 다르면 차분이 오염된다.",
+    "3) **#3을 11분(지속 런)으로 잡는다.** 08-01 분모는 3분 런이라 지속 판정 창을 넘지 못했고,",
+    "   그것이 FRAME_BUDGET.md v0.5에 미완 작업으로 남아 있다(알려진 이슈 7). 이번에 지속",
+    "   런으로 재면 그 빚도 같이 닫힌다.",
+    "4) **#6·#7 단품 재측.** '조합이 단품 합보다 싸다/비싸다'를 쓰려면 단품 값이 **같은",
+    "   세션**에서 와야 한다. 현재 D1은 08-01 세션, A1은 08-03 13시 세션이라 서로 다른 분모를",
+    "   쓰고 있다."
+  ],
+
+  "analysis_window": [
+    "11분 런의 분석 창 = 11×60초 − warmup. warmup 기본값은 lib/targets.py의",
+    "DEFAULT_WARMUP_SEC이고, 지속 판정 창은 같은 파일의 SUSTAINED_SEC다.",
+    "🚫 **그 숫자를 여기에 적지 않는다** — 판정선·측정 조건 값의 사본을 만들면 조용히",
+    "어긋난다. 실제 창 길이와 지속 판정 창 통과 여부는",
+    "`python scripts/run_session.py --print_plan --plan <이 파일>`이 런마다 찍어 준다.",
+    "3분 런 2개(#1·#2)는 지속 판정 창에 못 미치는 **봉투 점**이며 그래도 된다 — 이 둘의",
+    "역할은 지속 성능 근거가 아니라 열별 노이즈 바닥이다.",
+    "실제 분석 창은 회수 후 t_recv_ns의 **실제 span**으로 다시 검사된다(계획값 유도가 아니다)."
+  ],
+
+  "how_to_run": {
+    "command": "python scripts/run_session.py --plan docs/plans/20260803_s4_combo_indoor_a34.json --promotion_baseline docs/baselines/20260803_indoor_blit2pass_a34.json",
+    "dry_check": "python scripts/run_session.py --print_plan --plan docs/plans/20260803_s4_combo_indoor_a34.json",
+    "promotion_baseline_note": [
+      "#3(blit_2pass)에 diff_baseline이 걸려 있다. 비교 대상은 **같은 arm·같은 조명의",
+      "08-03 승격본**이어야 하므로 --promotion_baseline을 반드시 준다. 안 주면 기본값",
+      "(passthrough 승격본)과 비교하게 되고, baseline_diff가 render_arm 조건 차이로",
+      "comparable=false를 낸다(조용히 틀리지는 않지만 그 diff는 쓸 수 없다)."
+    ],
+    "resume": "중간에 끊겨도 같은 명령을 다시 실행하면 진행 파일(outputs/measure_session/_sessions/s4_combo.json)의 남은 런부터 이어간다.",
+    "measurement_minutes_total": 61
+  },
+
+  "invariants": [
+    "조명은 7런 내내 indoor_bright로 **같은 자리·같은 밝기**를 유지한다. 조명이나 폰 위치가",
+    "바뀌면 그 세션 전체가 비교 불가가 된다(분모와 arm이 서로 다른 조건에서 나온 값이 된다).",
+    "폰은 삼각대·거치대로 고정한다. 손으로 들면 AE/모션이 흔들려 분포가 바뀐다.",
+    "release 빌드이고 git_dirty=false여야 한다. dirty면 그 숫자가 어느 커밋의 앱에서 나온",
+    "것인지 말할 수 없다.",
+    "측정 종료는 **정지 버튼**으로 한다 — 뒤로가기는 로그 flush를 버린다(알려진 이슈 10).",
+    "런 사이 간격을 일정하게 유지한다. 회수·집계가 도는 동안이 자연스러운 간격이며, 특정",
+    "런만 길게 쉬면 그 런만 차갑게 시작해 순서 효과가 그 칸에 몰린다."
+  ],
+
+  "limits": [
+    "열 순서 효과: 뒤 런일수록 누적 발열 상태가 다르다. 11분 안에서의 드리프트는 3등분",
+    "검사로 관측되지 않았지만, **세션 누적은 별개 문제**이며 이 계획은 그것을 분리하지 않는다.",
+    "노이즈 바닥은 반복 **1쌍**에서 나온 값이라 실행 간 변동의 하한이다. '바닥 초과'는 신호의",
+    "필요조건이지 충분조건이 아니다.",
+    "D칸은 하한이다 — 마지막 패스의 타일 해결이 eglSwapBuffers에서 일어나 GPU query 바깥이다",
+    "(알려진 이슈 2). 개별 D 하위 열은 한 패스 밀려 있어 **합(gpu_sum 차분)만 신뢰한다**(이슈 3).",
+    "안전 회귀는 evaluated=false다 — 탐지 미구현이라 위험물 강조 누락률을 아직 잴 수 없다.",
+    "성능만 있는 보고는 불완전한 보고이므로 이 사실을 리포트에서 빼지 않는다."
+  ],
+
+  "runs": [
+    {
+      "n": 1,
+      "arm": "drago_clahe_chain",
+      "lighting": "indoor_bright",
+      "minutes": 3,
+      "role": "noise_floor",
+      "noise_pair": 2,
+      "purpose": "노이즈 바닥 A — 조합 arm 반복 1/2. 이 arm의 열별 실행 간 변동 폭을 이 세션에서 새로 잡는다 (drago에서 잰 바닥을 물려 쓸 수 없다)",
+      "notes": "봉투 점(지속 근거 아님)이어도 된다 — 역할이 바닥 측정이다. #2와 arm·조명·길이가 같아야 쌍이 성립한다."
+    },
+    {
+      "n": 2,
+      "arm": "drago_clahe_chain",
+      "lighting": "indoor_bright",
+      "minutes": 3,
+      "role": "noise_floor",
+      "noise_pair": 1,
+      "purpose": "노이즈 바닥 B — 조합 arm 반복 2/2. 이 폭 안의 arm 차분은 신호가 아니다",
+      "notes": "#1과의 차이가 그대로 열별 바닥이 된다. 두 런 사이에 조명·거치를 건드리면 바닥이 부풀어 이후 모든 차분 판정이 무뎌진다."
+    },
+    {
+      "n": 3,
+      "arm": "blit_2pass",
+      "lighting": "indoor_bright",
+      "minutes": 11,
+      "role": "arm_reference",
+      "diff_baseline": true,
+      "purpose": "같은 세션 분모 — #4~#7 arm 차분의 기준선. 지속 런으로 재서 08-01 3분 분모의 미완(알려진 이슈 7)도 닫는다",
+      "notes": "08-03 승격본(docs/baselines/20260803_indoor_blit2pass_a34.json)과 diff해 세션 간 분모 이동폭도 같이 기록한다. --promotion_baseline을 그 파일로 줄 것."
+    },
+    {
+      "n": 4,
+      "arm": "drago_clahe_chain",
+      "lighting": "indoor_bright",
+      "minutes": 11,
+      "role": "combo_primary",
+      "compare_to": 3,
+      "purpose": "본 측정 — 상류 CPU 파이프라인과 같은 구조(8패스, 중간 RGBA8 materialize)의 720p GPU 비용",
+      "notes": "이 세션의 이유가 되는 런이다. 여기서 나온 gpu_sum 차분이 상류 CPU 101.2ms와 같은 자리를 재는 우리 쪽 숫자다(같은 값이 아니라 같은 대상이다)."
+    },
+    {
+      "n": 5,
+      "arm": "drago_clahe_fused",
+      "lighting": "indoor_bright",
+      "minutes": 11,
+      "role": "combo_variant",
+      "compare_to": 3,
+      "purpose": "융합 변형 — 7패스, 중간 materialize 없이 Drago 톤맵 인라인. 상류에 없는 우리 변형",
+      "notes": "#4와의 차이가 '중간 materialize를 없앤 값'이다. 그 차이는 노이즈 바닥(#1·#2)과 나란히 놓고서만 신호라고 부를 수 있다."
+    },
+    {
+      "n": 6,
+      "arm": "drago",
+      "lighting": "indoor_bright",
+      "minutes": 11,
+      "role": "component_recheck",
+      "compare_to": 3,
+      "purpose": "단품 D1 같은 세션 재측 — 조합과 단품을 비교하려면 단품이 같은 세션·같은 분모에서 와야 한다 (현재 D1 값은 08-01 세션)",
+      "notes": "여기서 나온 값은 08-01 D1 값을 대체하는 것이 아니라 **이 세션 안에서의 짝**이다. 두 값을 섞어 쓰지 말 것."
+    },
+    {
+      "n": 7,
+      "arm": "clahe_gamma",
+      "lighting": "indoor_bright",
+      "minutes": 11,
+      "role": "component_recheck",
+      "compare_to": 3,
+      "purpose": "단품 A1 같은 세션 재측 — #6과 같은 이유 (현재 A1 값은 08-03 13시 세션이라 분모가 다르다)",
+      "notes": "#4·#5의 조합 비용을 #6+#7과 나란히 놓을 때, 그 넷이 전부 #3이라는 **하나의 분모**에서 빠졌다는 점이 이 세션의 값이다."
+    }
+  ]
+}
