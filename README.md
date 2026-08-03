@@ -24,7 +24,8 @@
 
 | 문서 | 담는 것 |
 |---|---|
-| [RESEARCH_20260731_UPSTREAM.md](docs/research/RESEARCH_20260731_UPSTREAM.md) | **상류 원문 대조.** 기획서(공식 제출본) · 모델링 담당 레포를 직접 읽고 계약 문서와 맞춰 본 기록. **② A안이 재설계됐다는 사실이 여기 있다** |
+| [RESEARCH_20260803_UPSTREAM.md](docs/research/RESEARCH_20260803_UPSTREAM.md) | **상류 대조 2차 (최신, HEAD `c77e1d6`).** ③ 탐지가 동작하고, **②를 탐지 앞에 두면 안 된다**는 것이 실측으로 나왔고(경로 분리), ④ 명세가 확정됐다. **버짓표 직렬 전제가 흔들린 근거가 여기 있다** |
+| [RESEARCH_20260731_UPSTREAM.md](docs/research/RESEARCH_20260731_UPSTREAM.md) | 상류 원문 대조 1차 (HEAD `60bc2a6`). 기획서·모델링 레포를 처음 읽고 계약 문서와 맞춰 본 기록. **② A안이 재설계됐다는 사실이 여기 있다.** ⚠️ 충돌 U-1~U-9의 **해소 현황은 위 2차 문서 §8**이 갱신한다 |
 | [RESEARCH_20260728_PIPELINE.md](docs/research/RESEARCH_20260728_PIPELINE.md) | 지연 예산 · ② A/B/C 판정 · 미결질문 5개 (위 4개에 없는 내용). ⚠️ ② 관련 서술은 **위 7/31 문서가 갱신**한다 |
 | [SUBMIT_20260728_PIPELINE.md](docs/research/SUBMIT_20260728_PIPELINE.md) | 위 문서의 팀 배포 축약본 — **동결 스냅샷**, 갱신은 RESEARCH 쪽만 |
 
