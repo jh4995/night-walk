@@ -1,0 +1,563 @@
+{
+  "device": {
+    "adb_path": "C:\\Users\\jh521\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.EXE",
+    "available": true,
+    "props": {
+      "android_release": "16",
+      "android_sdk": "36",
+      "build_fingerprint": "samsung/a34xks/a34x:16/BP2A.250605.031.A3/A346NKSSEEZD4:user/release-keys",
+      "cpu_abi": "arm64-v8a",
+      "device": "a34x",
+      "manufacturer": "samsung",
+      "model": "SM-A346N",
+      "soc_manufacturer": "Mediatek",
+      "soc_model": "MT6877"
+    },
+    "reason": null,
+    "serial": "RFCW604KXFN"
+  },
+  "frametime": {
+    "capture_to_render_ms": {
+      "count": 19287,
+      "max": 162.1,
+      "mean": 76.452,
+      "min": 63.369,
+      "p50": 76.561,
+      "p95": 81.134,
+      "p99": 83.753
+    },
+    "output_interval_ms": {
+      "count": 19286,
+      "max": 76.781,
+      "mean": 33.426,
+      "min": 7.419,
+      "p50": 32.73,
+      "p95": 38.417,
+      "p99": 41.374
+    },
+    "pinned_to_camera_supply": {
+      "out_p50": 32.73,
+      "out_p95": 38.417,
+      "recv_p50": 32.35,
+      "recv_p95": 38.417,
+      "rel_diff_p50": 0.011746522411128143,
+      "rel_diff_p95": 0.0,
+      "tail_pinned": true
+    },
+    "primary": {
+      "count": 19286,
+      "max": 76.781,
+      "mean": 33.426,
+      "min": 7.419,
+      "p50": 32.73,
+      "p95": 38.417,
+      "p99": 41.374
+    },
+    "primary_source": "output_interval_ms (t_render_end_ns 간격)",
+    "recv_interval_ms": {
+      "count": 19286,
+      "max": 75.816,
+      "mean": 33.427,
+      "min": 10.715,
+      "p50": 32.35,
+      "p95": 38.417,
+      "p99": 41.229
+    },
+    "recv_to_render_ms": {
+      "count": 19287,
+      "max": 13.732,
+      "mean": 3.819,
+      "min": 1.056,
+      "p50": 3.829,
+      "p95": 4.753,
+      "p99": 5.281
+    },
+    "render_latency_ms": {
+      "count": 19287,
+      "max": 12.111,
+      "mean": 3.631,
+      "min": 0.962,
+      "p50": 3.64,
+      "p95": 4.534,
+      "p99": 5.028
+    }
+  },
+  "label": "",
+  "run_ts": "20260803_140526",
+  "safety_regression": {
+    "evaluated": false,
+    "reason": "탐지 단계 미구현 — 위험물 강조 누락률을 아직 잴 수 없다"
+  },
+  "schema_version": 3,
+  "session": {
+    "app_version_name": "0.1-poc",
+    "build": {
+      "git_commit": "55ebed0",
+      "git_dirty": "false",
+      "note": "gradle 구성 시점에 git rev-parse --short HEAD / git status --porcelain을 읽어 BuildConfig에 박은 값이다. 측정 시각이 아니라 **빌드 시각**의 저장소 상태이며, git_dirty=true면 이 APK의 소스는 어느 커밋에도 없다"
+    },
+    "build_type": "release",
+    "camera": {
+      "requested_fps": 30,
+      "resolution": "1280x720"
+    },
+    "camera_actual": {
+      "frame_rate_range": "30-30",
+      "resolution": "1280x720"
+    },
+    "camera_frames_offered": null,
+    "capture_clock_base": "boottime",
+    "capture_clock_base_reason": "취득~콜백 지연 중위값: monotonic 기준 -646682098577174ns / boottime 기준 72183772ns, 허용범위 [-5000000, 1000000000]ns, 두 시계 오프셋 646682170760946ns",
+    "capture_clock_probe": [
+      {
+        "boottime_ns": 1889170031384388,
+        "monotonic_ns": 1242487860623672,
+        "t_capture_ns": 1889169964727000
+      },
+      {
+        "boottime_ns": 1889170070481926,
+        "monotonic_ns": 1242487899720903,
+        "t_capture_ns": 1889169998059000
+      },
+      {
+        "boottime_ns": 1889170107557849,
+        "monotonic_ns": 1242487936797133,
+        "t_capture_ns": 1889170031391000
+      },
+      {
+        "boottime_ns": 1889170136906772,
+        "monotonic_ns": 1242487966145826,
+        "t_capture_ns": 1889170064723000
+      },
+      {
+        "boottime_ns": 1889170171104926,
+        "monotonic_ns": 1242488000344210,
+        "t_capture_ns": 1889170098502000
+      },
+      {
+        "boottime_ns": 1889170203012388,
+        "monotonic_ns": 1242488032251364,
+        "t_capture_ns": 1889170132281000
+      },
+      {
+        "boottime_ns": 1889170234408003,
+        "monotonic_ns": 1242488063647057,
+        "t_capture_ns": 1889170165613000
+      },
+      {
+        "boottime_ns": 1889170266120080,
+        "monotonic_ns": 1242488095359595,
+        "t_capture_ns": 1889170198945000
+      }
+    ],
+    "clock_offset_boottime_minus_monotonic_ns": 646682170760946,
+    "draws_without_new_frame": 0,
+    "drop_accounting_note": "표시 경로 2-C에는 ImageProxy가 없어 버려진 프레임 수를 셀 수 없다. frames.csv의 dropped_since_last는 전부 -1이며, camera_frames_offered/frames_dropped는 0이 아니라 null이다(0은 '드롭 없음'이라는 적극적 주장이다). 아래 surface_frames_available은 카메라 출력 수가 아니라 우리 SurfaceTexture 큐에 도착한 수이므로 드롭의 하한 단서일 뿐이다",
+    "frames_coalesced_lower_bound": 1,
+    "frames_dropped": null,
+    "frames_emitted": 20185,
+    "generated_by": "android/app (com.bammasil.poc)",
+    "gl": {
+      "context_version_actual": "3.2",
+      "egl_context_client_version_requested": 3,
+      "gl_extension_count": 110,
+      "gl_extensions": "GL_EXT_debug_marker GL_ARM_rgba8 GL_ARM_mali_shader_binary GL_ARM_debug_assert GL_OES_depth24 GL_OES_depth_texture GL_OES_depth_texture_cube_map GL_OES_packed_depth_stencil GL_OES_rgb8_rgba8 GL_EXT_read_format_bgra GL_OES_compressed_paletted_texture GL_OES_compressed_ETC1_RGB8_texture GL_OES_standard_derivatives GL_OES_EGL_image GL_OES_EGL_image_external GL_OES_EGL_image_external_essl3 GL_OES_EGL_sync GL_OES_texture_npot GL_OES_vertex_half_float GL_OES_required_internalformat GL_OES_vertex_array_object GL_OES_mapbuffer GL_EXT_texture_format_BGRA8888 GL_EXT_texture_rg GL_EXT_texture_type_2_10_10_10_REV GL_OES_fbo_render_mipmap GL_OES_element_index_uint GL_EXT_shadow_samplers GL_OES_texture_compression_astc GL_KHR_texture_compression_astc_ldr GL_KHR_texture_compression_astc_hdr GL_KHR_texture_compression_astc_sliced_3d GL_EXT_texture_compression_astc_decode_mode GL_EXT_texture_compression_astc_decode_mode_rgb9e5 GL_KHR_debug GL_EXT_occlusion_query_boolean GL_EXT_disjoint_timer_query GL_EXT_blend_minmax GL_EXT_discard_framebuffer GL_OES_get_program_binary GL_OES_texture_3D GL_EXT_texture_storage GL_EXT_multisampled_render_to_texture GL_EXT_multisampled_render_to_texture2 GL_OES_surfaceless_context GL_OES_texture_stencil8 GL_EXT_shader_pixel_local_storage GL_ARM_shader_framebuffer_fetch GL_ARM_shader_framebuffer_fetch_depth_stencil GL_ARM_mali_program_binary GL_EXT_sRGB GL_EXT_sRGB_write_control GL_EXT_texture_sRGB_decode GL_EXT_texture_sRGB_R8 GL_EXT_texture_sRGB_RG8 GL_KHR_blend_equation_advanced GL_KHR_blend_equation_advanced_coherent GL_OES_texture_storage_multisample_2d_array GL_OES_shader_image_atomic GL_EXT_robustness GL_EXT_draw_buffers_indexed GL_OES_draw_buffers_indexed GL_EXT_texture_border_clamp GL_OES_texture_border_clamp GL_EXT_texture_cube_map_array GL_OES_texture_cube_map_array GL_OES_sample_variables GL_OES_sample_shading GL_OES_shader_multisample_interpolation GL_EXT_shader_io_blocks GL_OES_shader_io_blocks GL_EXT_tessellation_shader GL_OES_tessellation_shader GL_EXT_primitive_bounding_box GL_OES_primitive_bounding_box GL_EXT_geometry_shader GL_OES_geometry_shader GL_ANDROID_extension_pack_es31a GL_EXT_gpu_shader5 GL_OES_gpu_shader5 GL_EXT_texture_buffer GL_OES_texture_buffer GL_EXT_copy_image GL_OES_copy_image GL_EXT_shader_non_constant_global_initializers GL_EXT_color_buffer_half_float GL_EXT_unpack_subimage GL_EXT_color_buffer_float GL_EXT_float_blend GL_EXT_YUV_target GL_OVR_multiview GL_OVR_multiview2 GL_OVR_multiview_multisampled_render_to_texture GL_KHR_robustness GL_KHR_robust_buffer_access_behavior GL_EXT_draw_elements_base_vertex GL_OES_draw_elements_base_vertex GL_EXT_protected_textures GL_EXT_buffer_storage GL_EXT_external_buffer GL_EXT_EGL_image_array GL_EXT_clear_texture GL_ARM_shader_core_properties GL_EXT_texture_filter_anisotropic GL_OES_texture_float_linear GL_ARM_texture_unnormalized_coordinates GL_EXT_shader_framebuffer_fetch GL_EXT_clip_control GL_EXT_polygon_offset_clamp GL_EXT_EGL_image_storage ",
+      "gl_renderer": "Mali-G68 MC4",
+      "gl_shading_language_version": "OpenGL ES GLSL ES 3.20",
+      "gl_vendor": "ARM",
+      "gl_version": "OpenGL ES 3.2 v1.r49p1-03bet0.3666fcaacb504f548df1f5efc729b42d.I3709bd948b52e72feea0b835da3d6ff20",
+      "has_ext_disjoint_timer_query": "true",
+      "has_oes_egl_image_external_essl3": "true",
+      "probe_note": "앱 EGL 컨텍스트에서 onSurfaceCreated 1회 실측. 확장 판별은 glGetString(GL_EXTENSIONS)를 공백으로 쪼갠 토큰 완전일치다(부분 문자열 검색이 아니다). 다른 프로세스(SurfaceFlinger 등)의 드라이버 문자열은 근거로 쓰지 않았다",
+      "supports_compute_shader_es31": "true"
+    },
+    "gpu_timer": {
+      "attribution_note": "query가 패스 시퀀스의 모든 GL **명령**을 빈틈없이 덮는다. 그러나 타일 기반 GPU(Mali-G68)에서 '명령을 덮는 것'은 '그 명령이 유발한 GPU 작업을 덮는 것'이 아니다 — 어느 작업이 어느 query 구간에 담기는지는 드라이버가 정한다. 확실한 것: 마지막 패스는 기본 프레임버퍼에 그리는데 그 타일 해결은 eglSwapBuffers에서 일어나고 GLSurfaceView는 그것을 onDrawFrame 반환 **후에** 부른다 — 모든 query의 바깥이다(GLSurfaceView를 쓰는 한 옮길 수 없다). 그래서 두 갈래이고 어느 쪽이든 '합은 정확하다'가 성립하지 않는다: (1) 드라이버가 glEndQuery에서 렌더패스를 쪼갠다 → **계측이 측정 대상 워크로드를 바꾸고 있다**, (2) 쪼개지 않는다 → **온스크린 해결 비용이 gpu_present_ms 밖으로 떨어져 gpu_sum_ms가 과소가 된다**. **우리는 이 기기에서 둘 중 어느 쪽인지 판별하지 못했다.** 따라서 개별 열의 경계는 ±1패스만큼 흐리고 **합도 하한으로 읽어야 한다** — B·D 칸을 이 값으로 채울 때 이 단서를 함께 옮길 것. 🔴 **정량 근거(독립 검증 실측): gpu_present_ms는 present 패스를 재고 있지 않다.** 적용 패스 열과 바로 다음 present 열의 차(gpu_present_ms − 적용 열; 3패스 arm은 stage_d_ms, 컴퓨트 arm은 stage_d_apply_ms)가 arm별로 blit_2pass 0.692 · gamma_only 0.717 · drago 1.430 · agcwd 1.400 · clahe_gamma 1.403 (ms)다. 컴퓨트 arm 셋에서 **적용 패스 값이 1.24ms 벌어지는 동안 이 차는 ±0.03ms 상수**다 — 적용 패스(FBO_B)의 프래그먼트 실행이 자기 query 창이 아니라 **다음 패스(present)의 창에 앉는다**는 뜻이다(타일러가 FBO_B 렌더패스를 pass5에서 해소한다). 그러므로 **stage_d_apply_ms를 '적용 패스의 비용'으로 인용하면 틀린다** — 개별 D 열은 약 한 패스 밀려 있고, **이 런에서 신뢰할 수 있는 것은 합(gpu_sum)뿐이다.** 그 합도 위 이유로 여전히 하한이다",
+      "columns_emitted": [
+        "stage_b_ms",
+        "stage_d_analyze_ms",
+        "stage_d_build_ms",
+        "stage_d_apply_ms",
+        "gpu_present_ms"
+      ],
+      "compute_pass_note": "이 arm의 패스2·패스3은 glDispatchCompute다. 컴퓨트는 타일러를 거치지 않으므로 아래 attribution_note의 '렌더패스 병합' 갈래가 그대로 적용되지는 않는다. 대신 SSBO 배리어(glMemoryBarrier)의 실제 대기가 어느 query에 담기는지는 드라이버가 정한다 — 배리어를 **소비하는 쪽 패스의 맨 앞**에 두었으므로 대기 비용은 소비자(패스3·패스4) 쪽으로 청구되도록 의도했다. 그것이 실제로 그렇게 되는지는 **이 기기에서 검증하지 못했다**",
+      "discard_note": "disjoint가 세워진 프레임의 in-flight query는 전량 버렸고, 정지 시점에 안 끝난 tail query도 버렸다(각각 discarded_disjoint_queries / unresolved_queries). 버린 자리는 CSV에 -1로 남는다 — 0으로 채우면 '그 패스가 0ms였다'는 거짓 주장이 된다. 하네스는 -1을 below_min 폐기로 세므로 개수가 조용히 사라지지 않는다. ⚠ skipped_ring_full_frames의 편향 방향: 링이 차는 것은 회수가 밀렸을 때, 즉 **GPU가 느린 구간**이므로 버려지는 쪽이 가장 비싼 프레임이다 — 0이 아니면 stage_* 분포의 p95/p99가 낙관 쪽으로 치우친다",
+      "discarded_disjoint_queries": 30,
+      "disjoint_accounting_note": "GL_GPU_DISJOINT_EXT는 '지난 읽기 이후 누적'이고 읽으면 리셋된다. 계측하지 않는 기간(프리뷰·arm 전환·앱 시작 직후)에 선 플래그가 이 런의 것으로 계상되지 않도록, 런의 **첫 읽기는 기준선으로만 쓰고 세지 않는다**. 런 도중의 읽기는 전부 센다 — 그 구간은 in-flight query가 실제로 걸쳐 있는 구간이다",
+      "disjoint_frames": 6,
+      "extension": "GL_EXT_disjoint_timer_query",
+      "extension_present": "true",
+      "instrumentation_overhead_note": "계측 on/off A/B는 이 빌드로 할 수 없다 — 패스스루가 아닌 arm은 항상 계측하고 패스스루 arm은 절대 계측하지 않으므로, 두 arm의 차이에서 '패스 비용'과 'query 비용'을 분리할 수단이 없다(구조적 한계이며 토글을 새로 만들지 않았다). 즉 여기 값에 query 자체의 오버헤드가 얼마나 섞였는지는 미측정이다",
+      "instrumented": true,
+      "instrumented_frames": 20186,
+      "malformed_frames": 0,
+      "max_passes_per_frame": 8,
+      "method": "GL_TIME_ELAPSED_EXT(0x88BF) via core glBeginQuery/glEndQuery + glGetQueryObjectuiv(GL_QUERY_RESULT_AVAILABLE) 비차단 폴링. android.opengl에 glQueryCounterEXT/glGetQueryObjectui64vEXT 진입점이 없어 타임스탬프 방식은 쓸 수 없다(JNI 필요). 결과는 32비트로만 받으므로 약 4.29초까지 담기고, 그보다 큰 결과가 어떻게 되는지는 **구현 정의**다",
+      "note": "패스스루 arm에는 query를 하나도 걸지 않는다 — query 자체가 GPU 동작과 드라이버 스케줄링을 바꾸므로, 승격 베이스라인을 재현하는 경로에 넣으면 그 기준이 기준이 아니게 된다. stage_i_ms는 ④ 오버레이 arm이 생길 때 붙는다",
+      "positive_samples": 100900,
+      "queries_per_frame": 5,
+      "resolved_frames": 20180,
+      "resolved_queries": 100900,
+      "ring_depth_frames": 4,
+      "skipped_ring_full_frames": 0,
+      "supported": true,
+      "target_enum": "GL_TIME_ELAPSED_EXT=0x88BF, GL_GPU_DISJOINT_EXT=0x8FBB",
+      "unresolved_queries": 0,
+      "zero_result_queries": 0
+    },
+    "lighting_condition": "indoor_bright",
+    "log_clock": "SystemClock.elapsedRealtimeNanos() (CLOCK_BOOTTIME)",
+    "measurement": {
+      "duration_ns": 674738166733,
+      "started_elapsed_realtime_ns": 1889170012373003,
+      "stopped_elapsed_realtime_ns": 1889844750539736
+    },
+    "pipeline_stages": [
+      "blit_2pass",
+      "stage2_clahe"
+    ],
+    "render": {
+      "arm": "clahe_gamma",
+      "display_path": "2-C: CameraX Preview -> 우리 SurfaceTexture(OES) -> GL",
+      "draw_call": "그리기 패스는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), 통계 패스 2개는 glDispatchCompute",
+      "egl_context_client_version": 3,
+      "gl_surface_size": "1080x2340",
+      "note": "표시 방향·화면비 보정을 하지 않는다. 센서 방향 그대로 GL 서피스 전체에 늘려 그리므로 세로 화면에서 프리뷰가 누워 보인다 — 픽셀 비용에는 영향이 없고 이번 측정 범위 밖이다",
+      "pass_boundary_note": "패스마다 glBindFramebuffer + glClear를 명시한다. 타일 기반 GPU(Mali)에서 드라이버가 렌더패스를 병합하면 timer query 귀속이 흐려진다 (gpu_timer.attribution_note 참고)",
+      "passes": [
+        {
+          "gpu_column": "stage_b_ms",
+          "index": 1,
+          "instrumented": true,
+          "name": "oes_to_fbo_a",
+          "shader": "OES 패스스루 + uTexMatrix",
+          "target": "FBO_A (처리 해상도)"
+        },
+        {
+          "gpu_column": "stage_d_analyze_ms",
+          "index": 2,
+          "instrumented": true,
+          "name": "stage2_clahe_analyze",
+          "shader": "타일별 256빈 히스토그램(LAB L). 워크그룹 하나가 타일 하나를 맡아 공유메모리 atomic만 쓴다 — 타일이 서로 독립이라 전역 atomic이 없다",
+          "target": "히스토그램 SSBO (glDispatchCompute)"
+        },
+        {
+          "gpu_column": "stage_d_build_ms",
+          "index": 3,
+          "instrumented": true,
+          "name": "stage2_clahe_build",
+          "shader": "클립 + 초과분 재분배 + CDF → 타일별 256엔트리 LUT (uClipLimit). CPU로 읽어오면 GPU 동기화가 걸리므로 GPU에서 계산한다",
+          "target": "LUT SSBO (glDispatchCompute, 타일당 워크그룹 1개)"
+        },
+        {
+          "gpu_column": "stage_d_apply_ms",
+          "index": 4,
+          "instrumented": true,
+          "name": "stage2_clahe_apply",
+          "shader": "타일 간 이중선형 보간 + 감마 (uTiles / uClaheGamma). LAB의 L만 바꾸고 a,b는 그대로 둔다",
+          "target": "FBO_B (처리 해상도)"
+        },
+        {
+          "gpu_column": "gpu_present_ms",
+          "index": 5,
+          "instrumented": true,
+          "name": "present",
+          "shader": "단순 복사",
+          "target": "default framebuffer (surface 크기)"
+        }
+      ],
+      "processing": {
+        "frames_fell_back_to_passthrough": 0,
+        "offscreen_status": "FBO 2장 준비 완료 1280x720 (RGBA8, 처리 해상도 = 협상된 카메라 해상도)",
+        "resolution": "1280x720",
+        "source": "SurfaceRequest.resolution (= camera_actual.resolution). 하드코딩이 아니다",
+        "stage2_status": "준비 완료 — 히스토그램 = 컴퓨트 dispatch 1회(워크그룹 하나가 타일 하나, 16x16 공유메모리 atomic, 전역 atomic 없음), LUT = 컴퓨트 dispatch 1회(빈 하나에 스레드 하나 + 공유메모리 prefix-scan), 적용 = 프래그먼트 1패스(타일 이중선형 보간 + 감마). 타일 격자 8x8, 빈 256, 테이블 65536B x2. GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS=35, GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS=512. 통계를 CPU로 읽지 않는다(읽으면 GPU 동기화로 측정이 오염된다)"
+      },
+      "render_mode": "RENDERMODE_WHEN_DIRTY (onFrameAvailable에서 requestRender)",
+      "shader_language": "GLSL ES 1.00 (패스1·패스5) + GLSL ES 3.10 (패스2·3 컴퓨트, 패스4 적용). 적용 패스가 SSBO를 읽어야 해서 310으로 올렸고, ESSL은 한 프로그램 안에서 버전을 섞지 못하므로 그 패스의 정점 셰이더도 310이다"
+    },
+    "render_arm": "clahe_gamma",
+    "render_latency_meaning": "render_latency_ms(t_render_end - t_render_start)는 glDrawArrays가 즉시 반환하므로 **CPU 제출 비용이고 GPU 실행 시간이 아니다.** '렌더가 사실상 무료'로 읽으면 틀린다 — 실제 GPU 비용은 stage_*_ms / gpu_present_ms 열에 따로 있고 그건 **다른 시계(GPU)**다. 반면 output_interval_ms는 swapBuffers가 다음 사이클 앞에서 블록하므로 실제 표시 주기(=프레임타임)가 된다",
+    "schema_version": 3,
+    "source_kind": "camera",
+    "stage2_params": {
+      "algorithm": "clahe_gamma",
+      "clip_limit": 2,
+      "cost_split_note": "🔴 **gpu_sum 차분을 통째로 '그 알고리즘의 비용'으로 읽지 말 것.** 독립 검증이 낸 분해(blit_2pass 대비 증분, ms): drago = 알고리즘 고유(analyze+build) 3.482(55%) + 적용·present 증분 2.860 ; agcwd = 2.797(46%) + 3.284 ; clahe_gamma = **1.877(26%)** + **5.315(74%)**. 즉 **알고리즘 고유 통계 부분은 세 arm 중 clahe가 가장 싸다.** clahe 초과분의 74%는 적용 패스이고 그 지배 항은 **A1·A2가 공유하는 LAB 변환(pow 9회)**이다 — 눈금으로 gamma_only의 적용 패스(pow 3회)가 +0.239ms다. 그러므로 'A1이 알고리즘 성질상 가장 비싸다'는 결론은 이 데이터에서 나오지 않으며, 경량화 레버도 통계 쪽이 아니라 **LAB 변환 쪽**을 봐야 한다",
+      "desaturation_note": "**L만 올리고 a,b를 그대로 두면 상대 채도가 떨어져 화면이 탈색돼 보인다** — 상류 문서가 A1·A2의 공통 결함으로 지목한 것과 같은 현상이고, 이 이식도 구조가 같으므로 그대로 재현된다(a,b는 절대 좌표라 L이 커질수록 채도비 C/L이 준다). 보정(예: L 증가분만큼 a,b 스케일)은 **상류에 없는 연산**이라 넣지 않았다 — 넣으면 상류 레퍼런스와 더 멀어지고, 색 왜곡은 INTERFACES.md §B-2가 '저시력 사용자에게 위험 신호를 흐릴 수 있다'고 규정한 항목이라 팀장 판단이다",
+      "flicker_note": "히스토그램을 **매 프레임 새로** 구한다(stateless). 장면이 바뀌면 LUT가 프레임마다 흔들려 화면이 출렁일 수 있고, **A1은 타일 단위로 A2는 화면 전체가** 흔들려 성질이 다르다. INTERFACES.md §B-4(프레임 간 상태)가 ☐라 시간축 평활을 임의로 넣지 않았다 — 상류 A3가 바로 그 IIR 평활인데 리셋 조건·수렴 시간이 미정의다. 이 라운드에서는 **관측 대상**이며, 관측 결과는 보고에 남긴다",
+      "gamma": 0.75,
+      "glare_note": "⚠ **이 arm은 눈부심을 누르지 못한다 — 속도로만 고르면 안 된다.** 상류 실측: A1(타일 국소 적응)은 포화 소폭 감소, A2(전역)는 **포화 15배 확대**. 톤커브가 단조 증가라 어떤 입력값도 낮출 수 없는 **구조적 한계**이며 튜닝으로 해결되지 않는다(RESEARCH_20260731_UPSTREAM.md §2-5). 대상 사용자가 광과민 야맹증이므로 이 arm의 GPU 비용이 싸게 나오더라도 그 사실이 채택 근거가 되지 않는다 — 같은 표에서 글레어를 실제로 누르는 것은 drago(D1) 하나다",
+      "gpu_status": "준비 완료 — 히스토그램 = 컴퓨트 dispatch 1회(워크그룹 하나가 타일 하나, 16x16 공유메모리 atomic, 전역 atomic 없음), LUT = 컴퓨트 dispatch 1회(빈 하나에 스레드 하나 + 공유메모리 prefix-scan), 적용 = 프래그먼트 1패스(타일 이중선형 보간 + 감마). 타일 격자 8x8, 빈 256, 테이블 65536B x2. GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS=35, GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS=512. 통계를 CPU로 읽지 않는다(읽으면 GPU 동기화로 측정이 오염된다)",
+      "histogram_bins": 256,
+      "how_to_compare": "🔴 **stage_d_total_ms만 인용하지 말 것 — ② 증분을 과소로 낸다.** 상류 CPU 실측(720p A1 5.3ms / A2 6.2ms)과 비교할 숫자는 **gpu_sum_ms의 arm 간 차분**이다(이 arm − blit_2pass). 근거: 세 arm에서 **글자 그대로 같은 코드인** gpu_present_ms가 blit_2pass 1.881 → drago 3.582ms로 움직였다 — ② 증분의 약 27%가 D 열이 아니라 present에 앉는다. ⚠ **그 차분도 하한이다** — 마지막 패스의 타일 해결이 eglSwapBuffers에서 일어나 모든 query의 바깥이다(gpu_timer.attribution_note). ⚠ 그리고 상류 5.3/6.2ms는 PC CPU/NumPy 기준이라 조건이 다르다 — 나란히 놓을 때 그 사실을 함께 옮길 것. 🔴 **열을 명시하지 않은 인용은 정반대 결론을 만든다.** 같은 런에서 순위가 실제로 뒤집혔다: stage_d_total_ms로 보면 clahe_gamma 5.398 < drago 5.760이라 **clahe가 싸고**, gpu_sum 차분(arm − blit_2pass)으로 보면 clahe +7.22 > drago +6.37이라 **clahe가 비싸다.** 둘 다 맞는 숫자이고 재는 대상이 다를 뿐이다(전자는 D 열 3개의 합, 후자는 present 번짐까지 포함한 프레임 전체 증분). 표·보고서로 옮길 때 **열 이름을 반드시 함께 옮길 것** — 숫자만 옮기면 읽는 사람이 반대 결론을 낸다",
+      "levers_not_pulled": "확인됐지만 **당기지 않은** 레버 3개(독립 검증 지목, 이번 라운드 미적용): (1) **sRGB 텍스처 포맷** — FBO를 sRGB로 두면 셰이더의 srgbToLinear/linearToSrgb를 샘플러·ROP가 대신한다(위 비용 분해의 지배 항이 그 pow다). (2) **타일 LUT를 SSBO 대신 텍스처로** — 적용 패스의 LUT 랜덤 읽기가 텍스처 캐시와 이중선형 보간 하드웨어를 탄다. (3) **mediump** — LAB 경로가 전부 highp다. 당기지 않은 이유: 게이트(FRAME_BUDGET.md §1)가 걸리지 않았고, 지금 건드리면 이번 라운드의 실측을 **전부 다시 재야 하며**, arm 판정은 속도가 아니라 눈부심으로 갈린다(glare_note). 예산이 급해지면 FRAME_BUDGET.md §5 레버 목록의 후보가 여기 있다",
+      "note": "타일별 히스토그램이 필요해 ② 자리가 3단(히스토그램 → 클립+재분배+CDF → 타일 이중선형 보간+감마)이다. 하위 패스를 합치지 않고 D 계열 슬롯 3개에 그대로 낸다 (docs/FRAME_LOG_SCHEMA.md §2). 감마는 **타일 보간 뒤**에 씌운다 — LUT마다 미리 구우면 pow가 비선형이라 보간 결과가 달라진다",
+      "operates_on": "CIE LAB의 L* 채널만 (a,b는 그대로 둔다). sRGB → 선형 → D65 XYZ → L*a*b* (OpenCV COLOR_BGR2Lab과 같은 계수)",
+      "provenance": "상류(모델링 담당 kty2001/KDT_Hackathon) scripts/lowlight.py의 A1/A2 탐색 구현값이며 **계약 확정값이 아니다** — INTERFACES.md §B-5는 여전히 전부 ☐다. 출처는 docs/research/RESEARCH_20260731_UPSTREAM.md §2-2의 파라미터 표다. 전부 uniform으로 노출했으므로 팀장이 값을 확정하면 셰이더를 고치지 않고 교체한다",
+      "temporal_state": "none (stateless) — INTERFACES.md §B-4 미확정(☐)이라 상태를 두지 않는다",
+      "tile_grid": 8,
+      "uniforms": [
+        "uClipLimit",
+        "uTiles",
+        "uClaheGamma"
+      ],
+      "upstream_deviation": "🔴 **동작 채널이 INTERFACES.md §B-2 제안값과 다르다.** 계약서 제안값은 **YUV의 Y**(그리고 그 칸은 여전히 ☐)인데 이 이식은 상류 구현을 따라 **CIE LAB의 L***에서 돈다. **둘은 다른 값이다** — Y는 감마 인코딩된 신호의 선형 가중합이고 L*은 선형 휘도의 세제곱근 척도라, 같은 픽셀에서 서로 다른 히스토그램과 서로 다른 LUT가 나온다. 상류를 따른 이유는 A1·A2의 CPU 레퍼런스가 cv2.cvtColor(BGR2LAB)의 L에서 돌기 때문이며(RESEARCH_20260731_UPSTREAM.md §2-2), **계약 확정이 아니라 레퍼런스 일치를 택한 것**이다. §B-2가 Y로 확정되면 LabGlsl의 변환 하나만 바꾸면 된다(팀에 올린 항목 U-4). 그 밖에 상류와 다른 곳: (1) **a,b를 8비트로 양자화하지 않는다** — a,b를 그대로 두는 것은 f(X/Xn)-f(Y/Yn)와 f(Y/Yn)-f(Z/Zn)를 보존하는 것과 같아 ×500/÷500 왕복을 생략했다(대수적으로 동일, 양자화가 없어 상류보다 정밀하다). (2) **LUT 출력을 uchar로 반올림하지 않는다**(float 그대로 보간한다). (3) CLAHE에서 해상도가 타일 격자로 나눠떨어지지 않을 때 **OpenCV의 BORDER_REFLECT_101 패딩 대신 실재 픽셀만 균등 분할**한다 — 720p(1280x720)는 8로 나눠떨어져 이번 측정 프레임에서는 차이가 없다. (4) **CLAHE 타일 보간 좌표의 원점이 반 픽셀 다르다.** 셰이더는 p = vTexCoord*uTiles - 0.5 라 **픽셀 중심**((x+0.5)/size) 기준인데 OpenCV CLAHE_Interpolation_Body는 x/tileSize - 0.5 라 **픽셀 좌상단** 기준이다. 독립 검증 실측 이탈: **max 1.86 LSB, 픽셀의 1.03%가 >1 LSB**(원점을 OpenCV와 맞추면 max 0.993 LSB로 떨어진다 — 즉 나머지 이탈은 여기서 나온다). 고치지 않은 이유: 픽셀 중심이 표본 위치의 표준 정의라 **이쪽이 오히려 옳고**, 이번 라운드에서 검증이 끝난 산식을 건드리지 않는다. §B-6 골든 대조에서 1~2 LSB급 차이가 보이면 **먼저 이 항목을 의심할 것**. (5) **clipLimit <= 0의 의미가 정반대다.** OpenCV는 그 값을 '클립 없음'으로 처리하는데 이 이식은 clip = max(clipI, 1)이라 **빈당 1픽셀 극단 클립**이 된다. 지금 값이 2.0이라 이번 측정에서는 걸리지 않지만 uClipLimit은 uniform이라 값만 바꿔도 그 경로에 들어간다 — 값을 바꾸는 사람이 알아야 한다. ⚠ 골든 이미지(§B-6)가 아직 없어 **픽셀 단위 대조는 미수행**이다. 다만 독립 검증이 opencv-python 5.0.0 재구현과 대조해 CLAHE 0.993 LSB · AGCWD 1.7e-13 · LAB L 1 LSB까지 맞췄다((4)의 원점을 맞춘 조건에서다)",
+      "upstream_reference": "scripts/lowlight.py A1 (OpenCV createCLAHE + 감마)"
+    },
+    "surface_frames_available": 20186,
+    "timestamp_sites": {
+      "t_capture_ns": "SurfaceTexture.getTimestamp() 원본. 앱이 보정하지 않는다",
+      "t_recv_ns": "SurfaceTexture.OnFrameAvailableListener.onFrameAvailable 진입 직후 (전용 신호 스레드). 2-C에는 분석 콜백이 없어 이것이 프레임 도착 신호다",
+      "t_render_end_ns": "onDrawFrame 반환 직전(드로우콜 제출 완료). swapBuffers는 프레임워크가 onDrawFrame 반환 후에 하므로 우리가 잴 수 없다",
+      "t_render_start_ns": "GLSurfaceView.Renderer.onDrawFrame 진입 직후, updateTexImage 전 (도착 시각 AtomicLong을 먼저 소비한 뒤 찍는다 — 순서를 뒤집으면 t_recv > t_render_start 가 되어 하네스 교차검사 A가 거짓 위반을 낸다)"
+    }
+  },
+  "source": {
+    "capture_clock_base_contradicted": false,
+    "capture_clock_base_declared": "boottime",
+    "clock_check": {
+      "consistent": true,
+      "dwell_vs_interval": {
+        "consistent": true,
+        "ratio": 0.117,
+        "ratio_limit": 20.0,
+        "recv_to_render_p50_ms": 3.829,
+        "reference_p50_ms": 32.73,
+        "reference_series": "output_interval_ms",
+        "rule": "p50(recv_to_render_ms) <= 20x p50(output_interval_ms) — 진단용 임계이며 판정선(lib/targets.py)이 아니다"
+      },
+      "render_start_after_recv": {
+        "checked": 19287,
+        "consistent": true,
+        "rule": "render_latency_ms <= recv_to_render_ms (t_render_start_ns >= t_recv_ns)",
+        "violations": 0
+      },
+      "suspect_columns": []
+    },
+    "discarded_samples": {
+      "gpu_present_ms": {
+        "below_min": 6
+      },
+      "stage_b_ms": {
+        "below_min": 6
+      },
+      "stage_d_analyze_ms": {
+        "below_min": 6
+      },
+      "stage_d_apply_ms": {
+        "below_min": 6
+      },
+      "stage_d_build_ms": {
+        "below_min": 6
+      }
+    },
+    "discarded_total": 30,
+    "dropped_total": 0,
+    "frames_csv": "C:\\dev\\side\\night-walk\\outputs\\poc_pull\\20260803_140448\\20260803_134018\\frames.csv",
+    "gpu_timer_contradicted": false,
+    "gpu_timer_supported_declared": true,
+    "lighting_condition": "indoor_bright",
+    "lighting_condition_comparable": true,
+    "pipeline_stages_contradicted": false,
+    "pipeline_stages_measured_columns": [
+      "stage_b_ms",
+      "stage_d_analyze_ms",
+      "stage_d_build_ms",
+      "stage_d_apply_ms",
+      "gpu_present_ms"
+    ],
+    "pipeline_stages_unknown_tokens": [],
+    "pipeline_stages_vocab_ok": true,
+    "rows_accounted": true,
+    "rows_read": 20185,
+    "rows_skipped": {
+      "before_t0": 0,
+      "unparsable_t_recv": 0,
+      "warmup": 898
+    },
+    "rows_skipped_anomalous": 0,
+    "rows_skipped_total": 898,
+    "rows_used": 19287,
+    "schema_version_declared": 3,
+    "schema_version_harness": 3,
+    "schema_version_matches_harness": true,
+    "session_json": "C:\\dev\\side\\night-walk\\outputs\\poc_pull\\20260803_140448\\20260803_134018\\session.json",
+    "unknown_columns": [],
+    "warmup_sec": 30.0
+  },
+  "stages": {
+    "budget_cell": {
+      "gpu_present_ms": null,
+      "stage_b_ms": "B",
+      "stage_d_analyze_ms": "D",
+      "stage_d_apply_ms": "D",
+      "stage_d_build_ms": "D",
+      "stage_d_denoise_ms": "D",
+      "stage_d_ms": "D",
+      "stage_d_total_ms": "D",
+      "stage_i_ms": "I"
+    },
+    "clock": "GPU 시계 (GL_EXT_disjoint_timer_query). t_*_ns(CLOCK_BOOTTIME)와 다른 시계이므로 frametime 값과 더하거나 빼지 않으며, 시계 교차검사(A/B) 대상도 아니다",
+    "columns_present": [
+      "stage_b_ms",
+      "stage_d_analyze_ms",
+      "stage_d_build_ms",
+      "stage_d_apply_ms",
+      "gpu_present_ms"
+    ],
+    "gpu_present_ms": {
+      "count": 19281,
+      "max": 11.77,
+      "mean": 4.923,
+      "min": 4.559,
+      "p50": 4.808,
+      "p95": 5.508,
+      "p99": 6.815
+    },
+    "gpu_sum_columns": [
+      "stage_b_ms",
+      "stage_d_analyze_ms",
+      "stage_d_build_ms",
+      "stage_d_apply_ms",
+      "gpu_present_ms"
+    ],
+    "gpu_sum_columns_defined": [
+      "stage_b_ms",
+      "stage_d_ms",
+      "stage_d_analyze_ms",
+      "stage_d_build_ms",
+      "stage_d_apply_ms",
+      "stage_d_denoise_ms",
+      "stage_i_ms",
+      "gpu_present_ms"
+    ],
+    "gpu_sum_ms": {
+      "count": 19281,
+      "max": 23.526,
+      "mean": 11.052,
+      "min": 10.148,
+      "p50": 10.851,
+      "p95": 12.285,
+      "p99": 14.43
+    },
+    "gpu_sum_note": "gpu_sum_columns는 이 런에서 실제로 더해진 열이다(헤더에 있는 것만). 행별로 유효한 값을 먼저 더한 뒤 백분위를 냈다(p50(B)+p50(D) != p50(B+D)). 유효한 열이 하나도 없는 행은 기여하지 않는다",
+    "gpu_sum_partial_rows": 0,
+    "has_gpu_timings": true,
+    "render_arm": "clahe_gamma",
+    "render_arm_known": true,
+    "render_arm_note": "budget_cell은 '이 열이 어느 칸을 채울 열인가'라는 스키마 사실이지, 이 arm이 그 단계를 실제로 돌렸다는 주장이 아니다. 어느 패스에 무엇이 들어갔는지는 render_arm이 정한다 — 아래 분포를 FRAME_BUDGET.md의 칸에 옮길 때 arm을 함께 옮길 것. render_arm_known=false면 그 숫자는 인용 대상이 아니다",
+    "skipped_ring_full_frames": 0,
+    "stage_b_ms": {
+      "count": 19281,
+      "max": 6.221,
+      "mean": 0.664,
+      "min": 0.455,
+      "p50": 0.615,
+      "p95": 0.96,
+      "p99": 1.357
+    },
+    "stage_d_ambiguous": false,
+    "stage_d_analyze_ms": {
+      "count": 19281,
+      "max": 7.323,
+      "mean": 1.773,
+      "min": 1.556,
+      "p50": 1.723,
+      "p95": 2.077,
+      "p99": 2.474
+    },
+    "stage_d_apply_ms": {
+      "count": 19281,
+      "max": 9.919,
+      "mean": 3.547,
+      "min": 3.36,
+      "p50": 3.461,
+      "p95": 3.919,
+      "p99": 4.984
+    },
+    "stage_d_build_ms": {
+      "count": 19281,
+      "max": 0.325,
+      "mean": 0.145,
+      "min": 0.141,
+      "p50": 0.144,
+      "p95": 0.152,
+      "p99": 0.169
+    },
+    "stage_d_columns": [
+      "stage_d_analyze_ms",
+      "stage_d_build_ms",
+      "stage_d_apply_ms"
+    ],
+    "stage_d_columns_defined": [
+      "stage_d_ms",
+      "stage_d_analyze_ms",
+      "stage_d_build_ms",
+      "stage_d_apply_ms",
+      "stage_d_denoise_ms"
+    ],
+    "stage_d_denoise_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_total_ms": {
+      "count": 19281,
+      "max": 11.777,
+      "mean": 5.465,
+      "min": 5.082,
+      "p50": 5.369,
+      "p95": 6.002,
+      "p99": 7.081
+    },
+    "stage_d_total_note": "stage_d_total_ms = stage_d_columns의 **행별 합**이며 이 런의 D칸이다(감마 arm은 stage_d_ms 하나, 다패스 arm은 하위 슬롯들 — 어느 쪽이든 이 키가 D다). 백분위의 합이 아니다: p50(hist)+p50(cdf) != p50(hist+cdf). ⚠ gpu_sum_ms와 다르다 — gpu_sum_ms는 모든 GPU 열(B + D계열 + I + present)의 합이고 이 값은 D 계열만의 합이다. stage_d_ambiguous=true면 stage_d_ms가 합계일 가능성이 남아 있어 이 값이 D를 두 번 셌을 수 있다(warnings 참고)",
+    "stage_d_total_partial_rows": 0,
+    "stage_i_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    }
+  },
+  "targets": {
+    "frame_budget_ms": 66.7,
+    "p95_budget_ms": 80.0,
+    "target_fps": 15.0
+  },
+  "verdict": {
+    "clock_consistent": true,
+    "data_complete": false,
+    "fps_mean": 29.92,
+    "meets_fps_target": true,
+    "meets_p95_target": true,
+    "primary_samples_discarded": 0,
+    "rows_skipped_anomalous": 0,
+    "samples_discarded": 30
+  },
+  "warnings": [
+    "gpu_present_ms: 샘플 6개를 폐기했다 (-1 또는 0 이하 — disjoint로 버려졌거나 query가 해소되지 않았다 (시계 역행이 아니다) 6개). 폐기된 샘플이 그 측정의 최악 프레임일 수 있으므로 분포는 낙관적으로 치우친다",
+    "stage_b_ms: 샘플 6개를 폐기했다 (-1 또는 0 이하 — disjoint로 버려졌거나 query가 해소되지 않았다 (시계 역행이 아니다) 6개). 폐기된 샘플이 그 측정의 최악 프레임일 수 있으므로 분포는 낙관적으로 치우친다",
+    "stage_d_analyze_ms: 샘플 6개를 폐기했다 (-1 또는 0 이하 — disjoint로 버려졌거나 query가 해소되지 않았다 (시계 역행이 아니다) 6개). 폐기된 샘플이 그 측정의 최악 프레임일 수 있으므로 분포는 낙관적으로 치우친다",
+    "stage_d_apply_ms: 샘플 6개를 폐기했다 (-1 또는 0 이하 — disjoint로 버려졌거나 query가 해소되지 않았다 (시계 역행이 아니다) 6개). 폐기된 샘플이 그 측정의 최악 프레임일 수 있으므로 분포는 낙관적으로 치우친다",
+    "stage_d_build_ms: 샘플 6개를 폐기했다 (-1 또는 0 이하 — disjoint로 버려졌거나 query가 해소되지 않았다 (시계 역행이 아니다) 6개). 폐기된 샘플이 그 측정의 최악 프레임일 수 있으므로 분포는 낙관적으로 치우친다",
+    "프레임타임이 카메라 공급에 묶여 있다 — p50(output_interval_ms)=32.73ms가 p50(recv_interval_ms)=32.35ms와 사실상 같다(차이 1.17%, 진단 임계 5%) [참고: 카메라 요청 주기 33.3ms]. 처리 단계 ['blit_2pass', 'stage2_clahe']가 붙어 있는데도 그렇다. tail도 마찬가지다(p95: 38.417 vs 38.417ms, 차이 0.00%). 이는 단계 비용의 합이 공급 주기보다 **작다**는 뜻일 뿐, 그 비용이 0이라는 뜻이 아니다. 이 런에서 프레임타임은 단계 비용의 **미터가 아니라 임계 검출기**다 — '단계를 얹었는데 프레임타임 회귀가 없다'는 관측은 'D=0'이 아니라 'D < 공급 주기'로만 읽어야 한다. 단계 비용은 stages 블록(GPU timer)으로만 말할 것. ⚠ 이 임계는 진단용이며 판정선(lib/targets.py)이 아니다",
+    "capture_to_render_ms는 t_render_end_ns 기준인데, 이 시각은 드로우콜 **제출** 시점이지 GPU가 그 프레임을 다 그린 시점이 아니다(glDrawArrays는 즉시 반환한다). 즉 이 지연에는 GPU 실행 시간이 **들어 있지 않다** — ② 저조도 패스를 얹은 뒤 '지연이 그대로다'라고 읽으면 틀린다. 셰이더를 얹어 늘어난 GPU 비용은 여기가 아니라 stages 블록(GL_EXT_disjoint_timer_query)에 나타난다. render_latency_ms에도 같은 한계가 있다"
+  ]
+}
