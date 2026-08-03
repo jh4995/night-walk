@@ -36,6 +36,12 @@ object LabGlsl {
     /** f 삼중항 + 새 L\* → sRGB. 적용 패스가 쓴다. */
     const val LAB_F_TO_SRGB = "labFToSrgb"
 
+    /** **선형** RGB → L\*(0..100). 융합 arm이 쓴다([LINEAR_INPUT_FUNCTIONS]). */
+    const val LINEAR_TO_L = "linearToLabL"
+
+    /** **선형** RGB → f 삼중항. 융합 arm이 쓴다([LINEAR_INPUT_FUNCTIONS]). */
+    const val LINEAR_TO_LAB_F = "linearToLabF"
+
     /**
      * `L*`(0..100) → OpenCV 8비트 LAB의 `L` 인덱스(0..255) 스케일. `255/100`이다.
      * 상류가 `cv2.cvtColor`의 8비트 경로에서 히스토그램·LUT를 만들므로 **빈 정의가
@@ -107,6 +113,39 @@ object LabGlsl {
                 dot(xyz, vec3(0.055648, -0.204043, 1.057311))
             );
             return linearToSrgb(lin);
+        }
+    """.trimIndent()
+
+    /**
+     * **선형 RGB를 입력으로 받는** 변형 둘. 융합 arm(`drago_clahe_fused`) 전용이며
+     * [FUNCTIONS] **뒤에** 함께 삽입해야 한다(`labF`와 `LAB_XN_YN_ZN`을 쓴다).
+     *
+     * 융합에서는 Drago 톤맵 결과가 이미 **선형**이라 [SRGB_TO_L]·[SRGB_TO_LAB_F]를 쓰면
+     * `srgbToLinear`를 한 번 더 태우게 된다(그리고 그 앞에 인코드를 한 번 넣어야 한다).
+     * 그 왕복을 없애는 것이 융합의 정의 중 하나다.
+     *
+     * 🔴 **계수가 [FUNCTIONS]와 글자까지 같아야 한다.** XYZ 행렬과 휘도 가중치가 여기
+     * **복사돼 있다** — 한쪽만 고치면 융합 arm과 단품/체인 arm이 다른 색으로 조용히 갈린다.
+     * 합치지 않은 이유는 하나뿐이다: [FUNCTIONS]를 `linToLabF(srgbToLinear(c))` 꼴로
+     * 리팩터링하면 **이미 승격된 `clahe_gamma`·`agcwd`·체인 arm의 셰이더 생성 문자열이
+     * 바뀐다**(GLSL로는 같은 뜻이지만 재현 경로가 달라진다). 그래서 두 벌을 **같은 파일
+     * 바로 옆에** 두는 쪽을 택했다.
+     */
+    val LINEAR_INPUT_FUNCTIONS = """
+        // 선형 RGB -> L*(0..100). $SRGB_TO_L 에서 srgbToLinear 한 번만 뺀 것이다.
+        float $LINEAR_TO_L(vec3 lin) {
+            float y = dot(lin, vec3(0.212671, 0.715160, 0.072169));
+            return 116.0 * labF(y) - 16.0;
+        }
+
+        // 선형 RGB -> (f(X/Xn), f(Y/Yn), f(Z/Zn)). $SRGB_TO_LAB_F 에서 srgbToLinear만 뺐다.
+        vec3 $LINEAR_TO_LAB_F(vec3 lin) {
+            vec3 xyz = vec3(
+                dot(lin, vec3(0.412453, 0.357580, 0.180423)),
+                dot(lin, vec3(0.212671, 0.715160, 0.072169)),
+                dot(lin, vec3(0.019334, 0.119193, 0.950227))
+            ) / LAB_XN_YN_ZN;
+            return vec3(labF(xyz.x), labF(xyz.y), labF(xyz.z));
         }
     """.trimIndent()
 }

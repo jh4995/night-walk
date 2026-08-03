@@ -1,5 +1,8 @@
 package com.bammasil.poc.log
 
+import com.bammasil.poc.gl.ColorTransformCensus
+import com.bammasil.poc.gl.DragoClaheChainStage
+import com.bammasil.poc.gl.DragoClaheFusedStage
 import com.bammasil.poc.gl.GlCapabilities
 import com.bammasil.poc.gl.GlCapabilitiesProbe
 import com.bammasil.poc.gl.GpuTimerReport
@@ -48,11 +51,51 @@ class SessionFacts(
     val offscreenFallbackDraws: Int,
     /** ② 자리 자원의 상태(사람이 읽는 문장). arm에 따라 뜻이 다르다. */
     val stage2Status: String,
+    /**
+     * 조합 arm의 셰이더에서 **기계가 센** 색공간 변환 호출 지점.
+     * `arm id → (패스 이름 → 토큰 → 개수)`이며 체인·융합 둘을 담는다.
+     *
+     * `session.json`에는 **이 런의 arm 것이 `color_transform_sites`로** 나가고, 나머지
+     * 조합 arm 것은 `color_transform_sites_peer`로 나간다 — 한 파일에서 두 arm의 차이를
+     * 계산할 수 있어야 `gpu_sum` 차분을 "변환 몇 회를 줄였는가"에 귀속시킬 수 있다.
+     */
+    val colorTransformSites: Map<String, List<Pair<String, Map<String, Int>>>>,
     /** 이 런의 GPU timer 실적. 계측 arm이 아니면 전부 0이고 `instrumented=false`다. */
     val gpuTimer: GpuTimerReport,
 )
 
 object SessionWriter {
+
+    /**
+     * `drago`의 ② 3단 패스 서술. **조합 arm(`drago_clahe_chain`)의 앞 3패스가 글자 그대로
+     * 같은 것**이라 상수로 뽑았다 — 복붙하면 한쪽만 고쳐진다.
+     */
+    private val DRAGO_STATS_PASSES: List<Triple<String, String, String>> = listOf(
+        Triple(
+            "stage2_drago_analyze",
+            "통계 SSBO (glDispatchCompute)",
+            "전역 통계 리덕션 — 로그평균 휘도(Σlog)와 최대 휘도. " +
+                "워크그룹 공유메모리 리덕션 + SSBO atomic으로 dispatch 1회",
+        ),
+        Triple(
+            "stage2_drago_build",
+            "통계 SSBO (glDispatchCompute, 스레드 1개)",
+            "통계 → 톤커브 계수(logAvg / Lmax / biasPow). " +
+                "CPU로 읽어오면 GPU 동기화가 걸리므로 GPU에서 계산한다",
+        ),
+    )
+
+    /**
+     * `drago` 3단 전체. **융합 arm은 세 번째(적용)가 없어** [DRAGO_STATS_PASSES]만 쓴다 —
+     * 그래서 둘로 쪼개 두었다.
+     */
+    private val DRAGO_PASSES: List<Triple<String, String, String>> = DRAGO_STATS_PASSES + listOf(
+        Triple(
+            "stage2_drago_apply",
+            "FBO_B (처리 해상도)",
+            "Drago 톤맵 적용 + 감마 (uSrcGamma / uOutGamma / uSaturation)",
+        ),
+    )
 
     /**
      * `lib/frame_log.py`의 `SCHEMA_VERSION`. 열이 늘면 양쪽을 함께 올린다.
@@ -61,8 +104,14 @@ object SessionWriter {
      * `stage_d_denoise_ms`)이 들어왔고, 이 앱은 그중 앞의 셋을 ② 컴퓨트 arm 세 개
      * (`drago` · `clahe_gamma` · `agcwd`)에서 낸다. `stage_d_denoise_ms`는 아직 아무 arm도
      * 내지 않는다 — bilateral(`+bf`)이 붙는 라운드에서 채운다.
+     *
+     * v4에서 **서수 2** 열(`stage_d_analyze2_ms` / `stage_d_build2_ms` / `stage_d_apply2_ms`)이
+     * 들어왔다. 뜻은 "**그 arm의 두 번째 톤커브 스테이지**의 같은 역할 슬롯"이며 알고리즘
+     * 이름이 아니다. 이 앱에서는 조합 arm `drago_clahe_chain`이 낸다 — ② 자리에서 3단을
+     * 두 벌 돌기 때문이다. **두 스테이지를 합쳐 한 슬롯에 넣지 않는다**(합치면 유도값이고
+     * 어느 스테이지가 비싼지가 사라진다 — `docs/FRAME_LOG_SCHEMA.md` §2).
      */
-    const val SCHEMA_VERSION = 3
+    const val SCHEMA_VERSION = 4
 
     fun write(file: File, facts: SessionFacts) {
         file.writeText(build(facts).toString(2) + "\n")
@@ -305,13 +354,23 @@ object SessionWriter {
         report.disabledReason?.let { json.put("disabled_reason", it) }
 
         if (facts.arm.usesComputeStage2) {
+            val computePasses = when {
+                facts.arm.usesChainedComputeStage2 -> "패스2·3·5·6"
+                facts.arm.usesFusedComputeStage2 -> "패스2·3·4·5"
+                else -> "패스2·패스3"
+            }
+            val consumers = when {
+                facts.arm.usesChainedComputeStage2 -> "패스3·4·6·7"
+                facts.arm.usesFusedComputeStage2 -> "패스3·4·5·6"
+                else -> "패스3·패스4"
+            }
             json.put(
                 "compute_pass_note",
-                "이 arm의 패스2·패스3은 glDispatchCompute다. 컴퓨트는 타일러를 거치지 않으므로 " +
+                "이 arm의 ${computePasses}은 glDispatchCompute다. 컴퓨트는 타일러를 거치지 않으므로 " +
                     "아래 attribution_note의 '렌더패스 병합' 갈래가 그대로 적용되지는 않는다. " +
                     "대신 SSBO 배리어(glMemoryBarrier)의 실제 대기가 어느 query에 담기는지는 " +
                     "드라이버가 정한다 — 배리어를 **소비하는 쪽 패스의 맨 앞**에 두었으므로 " +
-                    "대기 비용은 소비자(패스3·패스4) 쪽으로 청구되도록 의도했다. 그것이 " +
+                    "대기 비용은 소비자($consumers) 쪽으로 청구되도록 의도했다. 그것이 " +
                     "실제로 그렇게 되는지는 **이 기기에서 검증하지 못했다**"
             )
         }
@@ -511,8 +570,392 @@ object SessionWriter {
                         "상류가 8비트 L에 256엔트리 LUT를 그대로 적용하기 때문이다"
                 )
             }
+            RenderArm.DRAGO_CLAHE_CHAIN -> putChain(json, facts)
+            RenderArm.DRAGO_CLAHE_FUSED -> putFused(json, facts)
         }
         return json
+    }
+
+    /**
+     * ② 조합 arm(`drago_clahe_chain`)의 서술.
+     *
+     * 🔴 **[putLabCommon]을 부르지 않는다.** 그 함수는 `glare_note`로
+     * [RenderArm.LAB_GLARE_NOTE]("이 arm은 눈부심을 누르지 못한다")를 싣는데, 이 조합은 D1을
+     * 포함해 글레어를 누르므로 **거짓 문장이 로그로 나간다.** 대신
+     * [RenderArm.CHAIN_GLARE_NOTE]가 이 arm의 진짜 위험(표시 경로 전용 후보)을 담는다.
+     * 나머지 공통 문장은 같은 상수를 그대로 재사용한다 — 사본을 만들면 갈라진다.
+     */
+    private fun putChain(json: JSONObject, facts: SessionFacts) {
+        json.put("algorithm", "drago_clahe_chain")
+        json.put(
+            "upstream_reference",
+            "scripts/lowlight.py의 D1 → A1 **직렬**(상류 조합 D1A1). 상류 잠정 1위는 " +
+                "D1A1+bf(+ts)이고 이 arm은 D1A1까지다 — bf·ts는 이번 범위가 아니다"
+        )
+        json.put("composition", "chain (중간 표현을 RGBA8 FBO로 materialize한다)")
+        json.put(
+            "composition_note",
+            "**체인이지 융합이 아니다.** 상류 cv2 파이프라인이 Drago 출력을 8비트 이미지로 " +
+                "내고 그것을 cvtColor(BGR2LAB)에 넣는 구조를 그대로 옮겼다. 중간 " +
+                "materialize를 없애는 융합(drago_clahe_fused)은 **알고리즘 변경이라 팀장 " +
+                "판단 영역**이고 이번 라운드에서 만들지 않았다"
+        )
+        json.put("stage_order", JSONArray().put("drago_tonemap").put("clahe_gamma"))
+
+        // 두 스테이지의 파라미터 전부. **단품 arm과 같은 상수**를 쓴다 — 조합용으로 따로
+        // 잡으면 값이 갈라지는 순간 "단품과 같은 설정으로 이었다"는 전제가 조용히 깨진다.
+        val stages = JSONArray()
+        stages.put(
+            JSONObject()
+                .put("index", 1)
+                .put("algorithm", "drago_tonemap")
+                .put("upstream_reference", "scripts/lowlight.py D1 (OpenCV TonemapDrago)")
+                .put("gamma", RenderArm.DRAGO_GAMMA.toDouble())
+                .put("saturation", RenderArm.DRAGO_SATURATION.toDouble())
+                .put("bias", RenderArm.DRAGO_BIAS.toDouble())
+                .put("src_gamma", RenderArm.DRAGO_SRC_GAMMA.toDouble())
+                .put("luma_weights", RenderArm.DRAGO_LUMA_WEIGHTS)
+                .put(
+                    "uniforms",
+                    JSONArray()
+                        .put(RenderArm.DRAGO_SRC_GAMMA_UNIFORM)
+                        .put(RenderArm.DRAGO_OUT_GAMMA_UNIFORM)
+                        .put(RenderArm.DRAGO_SATURATION_UNIFORM)
+                        .put(RenderArm.DRAGO_BIAS_UNIFORM)
+                )
+                .put(
+                    "operates_on",
+                    "선형 RGB 3채널 전부. sRGB를 pow(x, src_gamma)로 선형화한 뒤 오퍼레이터에 " +
+                        "넣고 pow(x, 1/gamma)로 되씌운다. **LabGlsl을 쓰지 않는다**"
+                )
+                .put("ssbo_binding", "stats=${DragoClaheChainStage.DRAGO_STATS_BINDING}")
+        )
+        stages.put(
+            JSONObject()
+                .put("index", 2)
+                .put("algorithm", "clahe_gamma")
+                .put(
+                    "upstream_reference",
+                    "scripts/lowlight.py A1 (OpenCV createCLAHE + 감마)"
+                )
+                .put("clip_limit", RenderArm.CLAHE_CLIP_LIMIT.toDouble())
+                .put("tile_grid", RenderArm.CLAHE_TILE_GRID)
+                .put("gamma", RenderArm.CLAHE_GAMMA_VALUE.toDouble())
+                .put("histogram_bins", LabGlsl.BIN_COUNT)
+                .put(
+                    "uniforms",
+                    JSONArray()
+                        .put(RenderArm.CLAHE_CLIP_LIMIT_UNIFORM)
+                        .put(RenderArm.CLAHE_TILES_UNIFORM)
+                        .put(RenderArm.CLAHE_GAMMA_UNIFORM)
+                )
+                .put(
+                    "operates_on",
+                    "CIE LAB의 L* 채널만 (a,b는 그대로 둔다). 입력은 **drago가 적용된 " +
+                        "RGBA8 중간 이미지**이지 카메라 원본이 아니다"
+                )
+                .put(
+                    "ssbo_binding",
+                    "hist=${DragoClaheChainStage.CLAHE_HIST_BINDING}, " +
+                        "lut=${DragoClaheChainStage.CLAHE_LUT_BINDING}"
+                )
+        )
+        json.put("stages", stages)
+        json.put(
+            "ssbo_binding_note",
+            "단품 arm은 drago stats=0 / clahe hist=0 / clahe lut=1이라 **조합에서는 첫 둘이 " +
+                "충돌한다.** 그래서 조합만 clahe를 1·2로 밀었다. 셰이더 텍스트를 복사하지 " +
+                "않고 binding을 인자로 받는 소스 함수를 공유하므로 산식은 여전히 한 곳에만 " +
+                "있고, 단품 arm의 셰이더 생성 문자열은 바이트 단위로 그대로다"
+        )
+
+        // 지어낸 계약값을 조용히 굳히지 않기 위한 문장이다. 지우지 말 것.
+        json.put("provenance", RenderArm.CHAIN_PROVENANCE)
+        // 조합 고유 이탈. 단품 두 arm의 이탈은 **그대로 성립하므로** 함께 싣는다.
+        json.put("upstream_deviation", RenderArm.CHAIN_DEVIATION)
+        json.put("upstream_deviation_drago", RenderArm.DRAGO_DEVIATION)
+        json.put("upstream_deviation_lab", RenderArm.LAB_DEVIATION)
+        // 🔴 LAB_GLARE_NOTE가 아니다. 이 arm에서 그 문장은 거짓이다.
+        json.put("glare_note", RenderArm.CHAIN_GLARE_NOTE)
+        json.put("desaturation_note", RenderArm.LAB_DESATURATION_NOTE)
+        json.put("flicker_note", RenderArm.CHAIN_FLICKER_NOTE)
+        json.put("how_to_compare", RenderArm.CHAIN_HOW_TO_COMPARE)
+        json.put("cost_split_note", RenderArm.COST_SPLIT_NOTE)
+        json.put("levers_not_pulled", RenderArm.CHAIN_LEVERS_NOT_PULLED)
+        putColorTransform(json, facts, RenderArm.DRAGO_CLAHE_CHAIN)
+        json.put("gpu_status", facts.stage2Status)
+        json.put(
+            "note",
+            "② 자리가 **6패스**(3단 × 2벌)이고 전체 8패스다 — GpuTimerRing.MAX_PASS_COUNT와 " +
+                "정확히 같아 여유가 0이다. 하위 패스를 합치지 않고 D 계열 슬롯 6개에 그대로 " +
+                "낸다(docs/FRAME_LOG_SCHEMA.md §2). 서수 2 열은 **두 번째 스테이지의 같은 역할 " +
+                "슬롯**이며 알고리즘 이름이 아니다 — 이 arm에서 그것이 무엇이었는지는 " +
+                "render.passes[]가 선언한다"
+        )
+    }
+
+    /**
+     * ② 융합 arm(`drago_clahe_fused`)의 서술.
+     *
+     * 🔴 [putChain]과 마찬가지로 [putLabCommon]을 부르지 않는다(같은 이유 — `glare_note`가
+     * 거짓이 된다). 그리고 **이 arm은 상류에 없는 구성**이므로 `upstream_deviation`에
+     * 신규 이탈 3건이 더 붙고, `how_to_compare`가 "상류 옆에 놓지 말라"로 바뀐다.
+     */
+    private fun putFused(json: JSONObject, facts: SessionFacts) {
+        json.put("algorithm", "drago_clahe_fused")
+        json.put(
+            "upstream_reference",
+            "scripts/lowlight.py의 D1 · A1 파라미터를 쓰지만 **구성은 상류에 없다** — " +
+                "상류가 기록한 것은 순서(Drago → CLAHE → bilateral)뿐이고 중간 표현을 " +
+                "어떻게 다뤘는지는 없다. 상류 구조를 그대로 옮긴 것은 " +
+                "`drago_clahe_chain`이고 이 arm은 그 변형이다"
+        )
+        json.put("composition", "fused (중간 표현 없음 — 톤맵을 CLAHE 두 패스에 인라인)")
+        json.put(
+            "composition_note",
+            "🔴 **이식 최적화가 아니라 알고리즘 변경이다.** 없앤 것: 패스 하나 · FBO 왕복 " +
+                "하나 · pow 인코드/디코드 왕복. 대신 치른 것: **Drago 톤맵을 픽셀당 2회 " +
+                "평가**(융합 analyze + 융합 apply). 어느 쪽이 이기는지는 **측정 대상**이며 " +
+                "여기에 예상치를 적지 않는다"
+        )
+        json.put("stage_order", JSONArray().put("drago_tonemap").put("clahe_gamma"))
+
+        val stages = JSONArray()
+        stages.put(
+            JSONObject()
+                .put("index", 1)
+                .put("algorithm", "drago_tonemap")
+                .put("upstream_reference", "scripts/lowlight.py D1 (OpenCV TonemapDrago)")
+                // ⚠ 값은 체인·단품과 **같은 상수**다. 갈라지면 두 arm의 차이가 "융합했기
+                //   때문"인지 "설정이 달라서"인지 구분할 수 없게 된다.
+                .put("saturation", RenderArm.DRAGO_SATURATION.toDouble())
+                .put("bias", RenderArm.DRAGO_BIAS.toDouble())
+                .put("src_gamma", RenderArm.DRAGO_SRC_GAMMA.toDouble())
+                .put("gamma", RenderArm.DRAGO_GAMMA.toDouble())
+                // 🔴 지우지 말 것. 값만 보고 "체인과 같은 설정"이라 읽으면 틀린다.
+                .put(
+                    "gamma_applied",
+                    false
+                )
+                .put(
+                    "gamma_note",
+                    "🔴 **이 arm에서 gamma(uOutGamma)는 적용되지 않는다.** 체인에서 그 값은 " +
+                        "중간 이미지를 pow(x, 1/gamma)로 인코드하는 데만 쓰였고, 융합은 그 " +
+                        "중간을 없앴다. 값을 지우지 않고 남기는 이유는 두 arm의 설정을 " +
+                        "나중에 대조할 수 있어야 하기 때문이다(upstream_deviation (b))"
+                )
+                .put("luma_weights", RenderArm.DRAGO_LUMA_WEIGHTS)
+                .put(
+                    "uniforms",
+                    JSONArray()
+                        .put(RenderArm.DRAGO_SRC_GAMMA_UNIFORM)
+                        .put(RenderArm.DRAGO_SATURATION_UNIFORM)
+                        .put(RenderArm.DRAGO_BIAS_UNIFORM)
+                )
+                .put(
+                    "operates_on",
+                    "선형 RGB 3채널 전부. **결과를 선형인 채로** CLAHE에 넘긴다 — " +
+                        "인코드/디코드 왕복이 없다"
+                )
+                .put("ssbo_binding", "stats=${DragoClaheFusedStage.DRAGO_STATS_BINDING}")
+        )
+        stages.put(
+            JSONObject()
+                .put("index", 2)
+                .put("algorithm", "clahe_gamma")
+                .put(
+                    "upstream_reference",
+                    "scripts/lowlight.py A1 (OpenCV createCLAHE + 감마)"
+                )
+                .put("clip_limit", RenderArm.CLAHE_CLIP_LIMIT.toDouble())
+                .put("tile_grid", RenderArm.CLAHE_TILE_GRID)
+                .put("gamma", RenderArm.CLAHE_GAMMA_VALUE.toDouble())
+                .put("histogram_bins", LabGlsl.BIN_COUNT)
+                .put(
+                    "uniforms",
+                    JSONArray()
+                        .put(RenderArm.CLAHE_CLIP_LIMIT_UNIFORM)
+                        .put(RenderArm.CLAHE_TILES_UNIFORM)
+                        .put(RenderArm.CLAHE_GAMMA_UNIFORM)
+                )
+                .put(
+                    "operates_on",
+                    "CIE LAB의 L* 채널만 (a,b는 그대로 둔다). 입력은 **선형 톤맵 결과**라 " +
+                        "LabGlsl의 piecewise srgbToLinear를 타지 않고 " +
+                        "${LabGlsl.LINEAR_TO_L} / ${LabGlsl.LINEAR_TO_LAB_F}로 바로 들어간다"
+                )
+                .put(
+                    "ssbo_binding",
+                    "hist=${DragoClaheFusedStage.CLAHE_HIST_BINDING}, " +
+                        "lut=${DragoClaheFusedStage.CLAHE_LUT_BINDING}"
+                )
+        )
+        json.put("stages", stages)
+        json.put(
+            "ssbo_binding_note",
+            "체인과 같은 배치(0/1/2)지만 **버퍼는 따로 소유한다** — 체인 arm의 자원 수명이 " +
+                "이 arm의 동작에 따라 바뀌면 체인 실측의 조건이 흔들린다. 🔴 그리고 이 arm의 " +
+                "적용 프래그먼트는 **하나가 두 블록**(DragoStats + ClaheLut)을 선언하므로 " +
+                "GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS 필요값이 " +
+                "${DragoClaheFusedStage.REQUIRED_FRAGMENT_SSBO_BLOCKS}이다(체인은 프래그먼트마다 " +
+                "1개씩이라 ${DragoClaheChainStage.REQUIRED_FRAGMENT_SSBO_BLOCKS}였다). " +
+                "실측 프로브해서 모자라면 값을 지어내지 않고 arm을 끈다"
+        )
+
+        // 지어낸 계약값을 조용히 굳히지 않기 위한 문장이다. 지우지 말 것.
+        json.put("provenance", RenderArm.FUSED_PROVENANCE)
+        // 🔴 신규 이탈 3건. 체인·단품의 이탈은 그 위에 **그대로 성립하므로** 함께 싣는다.
+        json.put("upstream_deviation", RenderArm.FUSED_DEVIATION)
+        json.put("upstream_deviation_chain", RenderArm.CHAIN_DEVIATION)
+        json.put("upstream_deviation_drago", RenderArm.DRAGO_DEVIATION)
+        json.put("upstream_deviation_lab", RenderArm.LAB_DEVIATION)
+        json.put("glare_note", RenderArm.FUSED_GLARE_NOTE)
+        json.put("desaturation_note", RenderArm.LAB_DESATURATION_NOTE)
+        json.put("flicker_note", RenderArm.FUSED_FLICKER_NOTE)
+        // 🔴 상류 CPU 숫자 옆에 놓을 것은 체인이지 융합이 아니다.
+        json.put("how_to_compare", RenderArm.FUSED_HOW_TO_COMPARE)
+        json.put("cost_split_note", RenderArm.COST_SPLIT_NOTE)
+        json.put("levers_not_pulled", RenderArm.FUSED_LEVERS_NOT_PULLED)
+        putColorTransform(json, facts, RenderArm.DRAGO_CLAHE_FUSED)
+        json.put("gpu_status", facts.stage2Status)
+        json.put(
+            "note",
+            "② 자리가 **5패스**(통계 2벌 + 적용 1벌)이고 전체 7패스다. " +
+                "**stage_d_apply2_ms를 쓰지 않는다** — 적용이 하나로 접혔고 재지 않은 열은 " +
+                "싣지 않는다(docs/FRAME_LOG_SCHEMA.md §2). 그래서 열 순서가 " +
+                "…analyze2, build2, apply, present가 된다(gpuColumns는 **패스 순서 그대로**다). " +
+                "⚠ 같은 이름의 열이라도 체인과 담기는 패스가 다르다 — 특히 stage_d_apply_ms는 " +
+                "체인에서 drago 적용, 융합에서 융합 적용이다"
+        )
+    }
+
+    /**
+     * 색공간 변환 계수 두 층을 함께 싣는다.
+     *
+     * - `color_transform_sites` — **이 런의 arm**을 기계가 센 값.
+     * - `color_transform_sites_peer` — **다른 조합 arm**의 같은 값. 이 런에서 돌지 않았지만,
+     *   두 arm의 차이를 한 파일에서 계산할 수 있어야 `gpu_sum` 차분을 "변환 몇 회를
+     *   줄였는가"에 귀속시킬 수 있다.
+     * - `color_transform_declared` — 사람이 픽셀당·프레임당으로 환산한 선언값.
+     */
+    private fun putColorTransform(json: JSONObject, facts: SessionFacts, arm: RenderArm) {
+        val peer =
+            if (arm == RenderArm.DRAGO_CLAHE_CHAIN) RenderArm.DRAGO_CLAHE_FUSED
+            else RenderArm.DRAGO_CLAHE_CHAIN
+        json.put("color_transform_sites", buildColorTransformSites(facts, arm))
+        json.put(
+            "color_transform_sites_peer",
+            buildColorTransformSites(facts, peer).put(
+                "peer_note",
+                "**이 런에서 돌지 않은 arm의 계수다.** 두 조합 arm의 변환 횟수 차이를 한 " +
+                    "파일에서 계산할 수 있게 함께 싣는다 — 이 런의 값은 위 " +
+                    "color_transform_sites다"
+            )
+        )
+        json.put("color_transform_declared", buildColorTransformDeclared(arm))
+    }
+
+    /**
+     * 색공간 변환 **자동 계수**. 값의 출처는 `glShaderSource`에 넘긴 문자열 자체이므로
+     * 셰이더 텍스트와 어긋날 수 없다([ColorTransformCensus]).
+     */
+    private fun buildColorTransformSites(facts: SessionFacts, arm: RenderArm): JSONObject {
+        val json = JSONObject()
+        json.put("arm", arm.id)
+        json.put("counted_at", "onSurfaceCreated 1회 (hot path 아님)")
+        json.put("method", "glShaderSource에 넘긴 String에서 토큰별 정적 호출 지점 수")
+        json.put("tokens", JSONArray().apply { ColorTransformCensus.TOKENS.forEach { put(it) } })
+        // 🔴 두 부류를 갈라 싣는다. 진입점 계수는 살아 있는 호출 수지만 내부 헬퍼 계수는
+        //    죽은 본문까지 포함한 **상한**이다 — 갈라 두지 않으면 정반대로 읽힌다.
+        json.put(
+            "entry_point_tokens",
+            JSONArray().apply { ColorTransformCensus.ENTRY_POINT_TOKENS.forEach { put(it) } }
+        )
+        json.put(
+            "inner_tokens",
+            JSONArray().apply { ColorTransformCensus.INNER_TOKENS.forEach { put(it) } }
+        )
+        json.put("note", ColorTransformCensus.NOTE)
+        val sites = facts.colorTransformSites[arm.id].orEmpty()
+        val passes = JSONArray()
+        for ((pass, counts) in sites) {
+            val entry = JSONObject().put("pass", pass)
+            for ((token, count) in counts) {
+                entry.put(token, count)
+            }
+            passes.put(entry)
+        }
+        json.put("by_pass", passes)
+        if (sites.isEmpty()) {
+            // 값을 지어내지 않는다. 왜 비었는지만 남긴다.
+            json.put(
+                "empty_reason",
+                "onSurfaceCreated가 돌기 전에 세션이 끝나 셰이더 소스를 세지 못했다"
+            )
+        }
+        return json
+    }
+
+    /**
+     * 색공간 변환 **선언값**. 자동 계수와 **다른 층**이다 — 사람이 셰이더를 읽고 픽셀당·
+     * 프레임당으로 환산한 값이며 측정이 아니다. 어긋나면 자동 계수가 맞다.
+     *
+     * 체인과 융합의 같은 칸을 나란히 놓으면 이탈 (a)(b)(c)가 그대로 숫자로 보인다.
+     */
+    private fun buildColorTransformDeclared(arm: RenderArm): JSONObject {
+        val fused = arm == RenderArm.DRAGO_CLAHE_FUSED
+        return JSONObject()
+            .put("arm", arm.id)
+            .put(
+                "passes_total",
+                if (fused) RenderArm.FUSED_PASSES_TOTAL else RenderArm.CHAIN_PASSES_TOTAL
+            )
+            .put(
+                "fullscreen_passes",
+                if (fused) RenderArm.FUSED_FULLSCREEN_PASSES
+                else RenderArm.CHAIN_FULLSCREEN_PASSES
+            )
+            .put(
+                "srgb_to_linear_per_pixel",
+                if (fused) RenderArm.FUSED_SRGB_TO_LINEAR_PER_PIXEL
+                else RenderArm.CHAIN_SRGB_TO_LINEAR_PER_PIXEL
+            )
+            .put(
+                "lab_f_forward_per_pixel",
+                if (fused) RenderArm.FUSED_LAB_F_FORWARD_PER_PIXEL
+                else RenderArm.CHAIN_LAB_F_FORWARD_PER_PIXEL
+            )
+            .put(
+                "lab_f_inverse_per_pixel",
+                if (fused) RenderArm.FUSED_LAB_F_INVERSE_PER_PIXEL
+                else RenderArm.CHAIN_LAB_F_INVERSE_PER_PIXEL
+            )
+            .put(
+                "linear_to_srgb_per_pixel",
+                if (fused) RenderArm.FUSED_LINEAR_TO_SRGB_PER_PIXEL
+                else RenderArm.CHAIN_LINEAR_TO_SRGB_PER_PIXEL
+            )
+            .put(
+                "drago_tonemap_evals_per_pixel",
+                if (fused) RenderArm.FUSED_DRAGO_TONEMAP_EVALS_PER_PIXEL
+                else RenderArm.CHAIN_DRAGO_TONEMAP_EVALS_PER_PIXEL
+            )
+            .put(
+                "drago_pow_linearize_per_pixel",
+                if (fused) RenderArm.FUSED_DRAGO_POW_LINEARIZE_PER_PIXEL
+                else RenderArm.CHAIN_DRAGO_POW_LINEARIZE_PER_PIXEL
+            )
+            .put(
+                "drago_out_gamma_encode_per_pixel",
+                if (fused) RenderArm.FUSED_DRAGO_OUT_GAMMA_ENCODE_PER_PIXEL
+                else RenderArm.CHAIN_DRAGO_OUT_GAMMA_ENCODE_PER_PIXEL
+            )
+            .put(
+                "intermediate_rgba8_materializations",
+                if (fused) RenderArm.FUSED_INTERMEDIATE_RGBA8_MATERIALIZATIONS
+                else RenderArm.CHAIN_INTERMEDIATE_RGBA8_MATERIALIZATIONS
+            )
+            .put("provenance", RenderArm.CHAIN_COLOR_TRANSFORM_DECLARED_PROVENANCE)
     }
 
     /**
@@ -549,21 +992,36 @@ object SessionWriter {
         json.put("render_mode", "RENDERMODE_WHEN_DIRTY (onFrameAvailable에서 requestRender)")
         json.put(
             "draw_call",
-            if (facts.arm.usesComputeStage2) {
-                "그리기 패스는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), " +
-                    "통계 패스 2개는 glDispatchCompute"
-            } else {
-                "패스당 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)"
+            when {
+                facts.arm.usesChainedComputeStage2 ->
+                    "그리기 패스는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), " +
+                        "통계 패스 4개(3단 × 2벌)는 glDispatchCompute"
+                facts.arm.usesFusedComputeStage2 ->
+                    "그리기 패스는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), " +
+                        "통계 패스 4개는 glDispatchCompute (적용은 1패스로 접혔다)"
+                facts.arm.usesComputeStage2 ->
+                    "그리기 패스는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), " +
+                        "통계 패스 2개는 glDispatchCompute"
+                else -> "패스당 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)"
             }
         )
         json.put(
             "shader_language",
-            if (facts.arm.usesComputeStage2) {
-                "GLSL ES 1.00 (패스1·패스5) + GLSL ES 3.10 (패스2·3 컴퓨트, 패스4 적용). " +
-                    "적용 패스가 SSBO를 읽어야 해서 310으로 올렸고, ESSL은 한 프로그램 안에서 " +
-                    "버전을 섞지 못하므로 그 패스의 정점 셰이더도 310이다"
-            } else {
-                "GLSL ES 1.00 (전 패스 공통)"
+            when {
+                facts.arm.usesChainedComputeStage2 ->
+                    "GLSL ES 1.00 (패스1·패스8) + GLSL ES 3.10 (패스2·3·5·6 컴퓨트, " +
+                        "패스4·7 적용). 적용 패스가 SSBO를 읽어야 해서 310으로 올렸고, ESSL은 " +
+                        "한 프로그램 안에서 버전을 섞지 못하므로 그 패스의 정점 셰이더도 310이다"
+                facts.arm.usesFusedComputeStage2 ->
+                    "GLSL ES 1.00 (패스1·패스7) + GLSL ES 3.10 (패스2·3·4·5 컴퓨트, " +
+                        "패스6 적용). 적용 패스가 SSBO를 **둘** 읽어야 해서 310으로 올렸고, " +
+                        "ESSL은 한 프로그램 안에서 버전을 섞지 못하므로 그 패스의 정점 " +
+                        "셰이더도 310이다"
+                facts.arm.usesComputeStage2 ->
+                    "GLSL ES 1.00 (패스1·패스5) + GLSL ES 3.10 (패스2·3 컴퓨트, 패스4 적용). " +
+                        "적용 패스가 SSBO를 읽어야 해서 310으로 올렸고, ESSL은 한 프로그램 " +
+                        "안에서 버전을 섞지 못하므로 그 패스의 정점 셰이더도 310이다"
+                else -> "GLSL ES 1.00 (전 패스 공통)"
             }
         )
 
@@ -653,25 +1111,62 @@ object SessionWriter {
                                 "1D LUT 적용(최근접 빈). LAB의 L만 바꾸고 a,b는 그대로 둔다",
                             ),
                         )
-                        else -> listOf(
+                        // 🔴 예전에는 이 자리가 `else -> drago 패스 이름`이었다. 그대로 두면
+                        //    새 arm이 **drago 패스 서술을 달고** session.json에 나간다 —
+                        //    조합 arm이 들어오면서 실제로 그렇게 될 뻔했다. 명시 분기다.
+                        RenderArm.DRAGO -> DRAGO_PASSES
+                        RenderArm.DRAGO_CLAHE_CHAIN -> DRAGO_PASSES + listOf(
                             Triple(
-                                "stage2_drago_analyze",
-                                "통계 SSBO (glDispatchCompute)",
-                                "전역 통계 리덕션 — 로그평균 휘도(Σlog)와 최대 휘도. " +
-                                    "워크그룹 공유메모리 리덕션 + SSBO atomic으로 dispatch 1회",
+                                "stage2_clahe_analyze",
+                                "히스토그램 SSBO (glDispatchCompute)",
+                                "타일별 ${LabGlsl.BIN_COUNT}빈 히스토그램(LAB L). " +
+                                    "입력은 **drago가 적용된 FBO_B**이지 카메라 원본이 아니다. " +
+                                    "binding=${DragoClaheChainStage.CLAHE_HIST_BINDING} " +
+                                    "(drago 통계와 겹치지 않게 민 값)",
                             ),
                             Triple(
-                                "stage2_drago_build",
-                                "통계 SSBO (glDispatchCompute, 스레드 1개)",
-                                "통계 → 톤커브 계수(logAvg / Lmax / biasPow). " +
-                                    "CPU로 읽어오면 GPU 동기화가 걸리므로 GPU에서 계산한다",
+                                "stage2_clahe_build",
+                                "LUT SSBO (glDispatchCompute, 타일당 워크그룹 1개)",
+                                "클립 + 초과분 재분배 + CDF → 타일별 " +
+                                    "${LabGlsl.BIN_COUNT}엔트리 LUT (uClipLimit). " +
+                                    "binding=${DragoClaheChainStage.CLAHE_LUT_BINDING}",
                             ),
                             Triple(
-                                "stage2_drago_apply",
-                                "FBO_B (처리 해상도)",
-                                "Drago 톤맵 적용 + 감마 (uSrcGamma / uOutGamma / uSaturation)",
+                                "stage2_clahe_apply",
+                                "FBO_A (처리 해상도. 핑퐁으로 되돌아온다)",
+                                "타일 간 이중선형 보간 + 감마 (uTiles / uClaheGamma). " +
+                                    "LAB의 L만 바꾸고 a,b는 그대로 둔다",
                             ),
                         )
+                        RenderArm.DRAGO_CLAHE_FUSED -> DRAGO_STATS_PASSES + listOf(
+                            Triple(
+                                "stage2_fused_analyze",
+                                "히스토그램 SSBO (glDispatchCompute)",
+                                "타일별 ${LabGlsl.BIN_COUNT}빈 히스토그램(LAB L). " +
+                                    "🔴 **Drago 톤맵을 인라인**해 선형 상태로 L*을 낸다 — " +
+                                    "입력이 **FBO_A(원본)**이지 톤맵된 중간 이미지가 아니다" +
+                                    "(중간을 만들지 않으므로 여기서 다시 계산한다). " +
+                                    "통계 SSBO를 읽으면서 히스토그램을 쓴다. " +
+                                    "hist binding=${DragoClaheFusedStage.CLAHE_HIST_BINDING}",
+                            ),
+                            Triple(
+                                "stage2_clahe_build",
+                                "LUT SSBO (glDispatchCompute, 타일당 워크그룹 1개)",
+                                "클립 + 초과분 재분배 + CDF → 타일별 " +
+                                    "${LabGlsl.BIN_COUNT}엔트리 LUT (uClipLimit). " +
+                                    "binding=${DragoClaheFusedStage.CLAHE_LUT_BINDING}",
+                            ),
+                            Triple(
+                                "stage2_fused_apply",
+                                "FBO_B (처리 해상도)",
+                                "🔴 **톤맵 + 타일 LUT 이중선형 보간 + 감마를 한 패스에서** " +
+                                    "한다(uSrcGamma / uSaturation / uTiles / uClaheGamma). " +
+                                    "프래그먼트 **하나가 SSBO 블록 둘**(DragoStats + " +
+                                    "ClaheLut)을 읽는다 — 이 arm만 그렇다. " +
+                                    "uOutGamma는 쓰지 않는다(중간 인코딩이 없다)",
+                            ),
+                        )
+                        else -> emptyList()
                     }
                     listOf(
                         Triple(

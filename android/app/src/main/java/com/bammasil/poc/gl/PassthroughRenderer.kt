@@ -34,7 +34,7 @@ import javax.microedition.khronos.opengles.GL10
  *   ```
  *   **패스마다 `glBindFramebuffer` + `glClear`를 명시**한다. 타일 기반 GPU(Mali-G68)에서
  *   드라이버가 렌더패스를 병합하면 timer query 귀속이 흐려진다.
- * - **② 컴퓨트 arm**([RenderArm.usesComputeStage2] — `drago` · `clahe_gamma` · `agcwd`) —
+ * - **② 컴퓨트 arm**([RenderArm.usesSingleComputeStage2] — `drago` · `clahe_gamma` · `agcwd`) —
  *   위 골격의 **패스2 자리가 3단으로 벌어진 5패스**:
  *   ```
  *   패스1  OES   → FBO_A                  → stage_b_ms
@@ -48,6 +48,20 @@ import javax.microedition.khronos.opengles.GL10
  *   시퀀스**([drawComputeStage2])를 타는 것도 같은 이유다 — 시퀀스가 arm마다 다르면 패스
  *   비용을 arm끼리 비교하는 근거가 흔들린다. 각 arm의 내용은 [DragoStage] · [ClaheStage] ·
  *   [AgcwdStage].
+ * - **② 조합 arm**([RenderArm.usesChainedComputeStage2] — `drago_clahe_chain`) — 위 3단이
+ *   **두 벌 직렬로** 벌어진 8패스([drawChainedComputeStage2], [DragoClaheChainStage]):
+ *   ```
+ *   패스1  OES   → FBO_A                  → stage_b_ms
+ *   패스2~4 drago 3단  FBO_A → FBO_B      → stage_d_analyze/build/apply_ms
+ *   패스5~7 clahe 3단  FBO_B → FBO_A      → stage_d_analyze2/build2/apply2_ms
+ *   패스8  FBO_A → 화면                    → gpu_present_ms
+ *   ```
+ *   ⚠ **8 = [GpuTimerRing.MAX_PASS_COUNT] 정확히다.** FBO는 2장 핑퐁으로 충분하므로
+ *   [FBO_COUNT]를 늘리지 않는다.
+ * - **② 융합 arm**([RenderArm.usesFusedComputeStage2] — `drago_clahe_fused`) — 위 조합에서
+ *   **중간 materialize와 적용 패스 하나를 뺀** 7패스([drawFusedComputeStage2],
+ *   [DragoClaheFusedStage]). Drago 톤맵이 CLAHE의 두 패스에 인라인된다.
+ *   🔴 이식 최적화가 아니라 **알고리즘 변경**이다([RenderArm.FUSED_DEVIATION]).
  *
  * 패스스루가 아닌 arm은 [GpuTimerRing]으로 패스별 GPU 시간을 잰다. **패스스루 arm에는
  * query를 하나도 걸지 않는다** — query 자체가 GPU 동작과 드라이버 스케줄링을 바꾸므로,
@@ -124,6 +138,21 @@ class PassthroughRenderer(
     /** ② 자리 자원의 현재 상태(사람이 읽는 문장). `session.json`의 `stage2_params`로 나간다. */
     val stage2Status: String
         get() {
+            if (arm.usesChainedComputeStage2) {
+                // 적용 프래그먼트가 **둘**이라 한쪽만 없어도 이 arm은 그릴 수 없다.
+                return if (chainDragoApplyProgram == null || chainClaheApplyProgram == null) {
+                    "적용 패스(프래그먼트) 프로그램을 만들지 못했다 — " + chainStage.status
+                } else {
+                    chainStage.status
+                }
+            }
+            if (arm.usesFusedComputeStage2) {
+                return if (fusedApplyProgram == null) {
+                    "적용 패스(프래그먼트) 프로그램을 만들지 못했다 — " + fusedStage.status
+                } else {
+                    fusedStage.status
+                }
+            }
             val stage = computeStage(arm)
                 ?: return "② 자리에 통계 패스가 필요 없는 arm이다 (셰이더 1패스)"
             return if (computeApplyProgram(arm) == null) {
@@ -132,6 +161,17 @@ class PassthroughRenderer(
                 stage.status
             }
         }
+
+    /**
+     * 조합 arm의 셰이더 소스에서 **기계가 센** 색공간 변환 호출 지점. 키는 arm id다.
+     * `onSurfaceCreated`에서 1회 채운다(hot path가 아니다).
+     *
+     * **체인과 융합을 둘 다 담는다.** 그래야 한 세션 파일만으로 "변환 몇 회를 줄여 얼마를
+     * 아꼈는가"를 계산할 수 있다 — 두 파일을 대조하다가 짝을 잘못 고르는 실패 모드를 없앤다.
+     */
+    @Volatile
+    var colorTransformSites: Map<String, List<Pair<String, Map<String, Int>>>> = emptyMap()
+        private set
 
     @Volatile
     private var arm: RenderArm = RenderArm.DEFAULT
@@ -161,6 +201,18 @@ class PassthroughRenderer(
     /** `agcwd` arm의 적용 패스(패스4). 1D LUT 적용. */
     private var agcwdApplyProgram: QuadProgram? = null
 
+    /** `drago_clahe_chain` arm의 **첫** 적용 패스(패스4). SSBO binding만 단품과 다르다. */
+    private var chainDragoApplyProgram: QuadProgram? = null
+
+    /** `drago_clahe_chain` arm의 **둘째** 적용 패스(패스7). SSBO binding만 단품과 다르다. */
+    private var chainClaheApplyProgram: QuadProgram? = null
+
+    /**
+     * `drago_clahe_fused` arm의 **유일한** 적용 패스(패스6). 톤맵 + LUT 보간 + 감마를
+     * 한 프래그먼트에서 하며 SSBO 블록을 **둘** 읽는다.
+     */
+    private var fusedApplyProgram: QuadProgram? = null
+
     /** `drago` arm의 전역 통계(리덕션 + 계수). 자원과 상태를 통째로 소유한다. */
     private val dragoStage = DragoStage()
 
@@ -169,6 +221,12 @@ class PassthroughRenderer(
 
     /** `agcwd` arm의 전역 통계(히스토그램 + LUT). */
     private val agcwdStage = AgcwdStage()
+
+    /** `drago_clahe_chain` arm의 통계 **두 벌**(drago 전역 + clahe 타일). 자원을 따로 소유한다. */
+    private val chainStage = DragoClaheChainStage()
+
+    /** `drago_clahe_fused` arm. 체인과도 자원을 공유하지 않는다(체인 실측 조건을 고정한다). */
+    private val fusedStage = DragoClaheFusedStage()
 
     /** [0]=FBO_A, [1]=FBO_B. 0이면 미생성. GL 스레드 전용. */
     private val fbos = IntArray(FBO_COUNT)
@@ -243,6 +301,47 @@ class PassthroughRenderer(
         } else {
             null
         }
+        // ② 조합 arm. 적용 프래그먼트가 **둘**이라는 것만 위 셋과 다르다.
+        chainStage.onContextCreated(capabilities)
+        if (chainStage.ready) {
+            chainDragoApplyProgram = buildProgram(
+                ES31_QUAD_VERTEX_SHADER, DragoClaheChainStage.DRAGO_APPLY_SHADER
+            )
+            chainClaheApplyProgram = buildProgram(
+                ES31_QUAD_VERTEX_SHADER, DragoClaheChainStage.CLAHE_APPLY_SHADER
+            )
+        } else {
+            chainDragoApplyProgram = null
+            chainClaheApplyProgram = null
+        }
+        // ② 융합 arm. 적용 프래그먼트가 **하나**이고 그 하나가 SSBO 블록을 둘 읽는다.
+        fusedStage.onContextCreated(capabilities)
+        fusedApplyProgram = if (fusedStage.ready) {
+            buildProgram(ES31_QUAD_VERTEX_SHADER, DragoClaheFusedStage.FUSED_APPLY_SHADER)
+        } else {
+            null
+        }
+        // 색공간 변환 호출 지점을 **셰이더 문자열에서** 센다. 1회이고 hot path가 아니다.
+        // 위에서 실제로 컴파일한 것과 **같은 String 객체**를 세므로 텍스트와 어긋날 수 없다.
+        // 조합 arm 둘을 **함께** 센다 — 한 세션 파일에서 둘의 차이를 계산할 수 있게.
+        colorTransformSites = mapOf(
+            RenderArm.DRAGO_CLAHE_CHAIN.id to ColorTransformCensus.countByPass(
+                DragoClaheChainStage.shaderSourcesByPass(
+                    oesVertex = VERTEX_SHADER_OES,
+                    oesFragment = FRAGMENT_SHADER_OES,
+                    blitVertex = VERTEX_SHADER_2D,
+                    blitFragment = FRAGMENT_SHADER_BLIT,
+                )
+            ),
+            RenderArm.DRAGO_CLAHE_FUSED.id to ColorTransformCensus.countByPass(
+                DragoClaheFusedStage.shaderSourcesByPass(
+                    oesVertex = VERTEX_SHADER_OES,
+                    oesFragment = FRAGMENT_SHADER_OES,
+                    blitVertex = VERTEX_SHADER_2D,
+                    blitFragment = FRAGMENT_SHADER_BLIT,
+                )
+            ),
+        )
         oesTextureId = createOesTexture()
         Matrix.setIdentityM(texMatrix, 0)
         pendingRecvNs.set(NO_FRAME)
@@ -419,7 +518,32 @@ class PassthroughRenderer(
             return
         }
         val present = blitProgram
-        if (arm.usesComputeStage2) {
+        if (arm.usesChainedComputeStage2) {
+            val dragoApply = chainDragoApplyProgram
+            val claheApply = chainClaheApplyProgram
+            if (dragoApply == null || claheApply == null || present == null ||
+                !chainStage.ready || !ensureOffscreen()
+            ) {
+                offscreenFallbackDraws++
+                drawPassthrough(oes)
+                return
+            }
+            drawChainedComputeStage2(oes, dragoApply, claheApply, present, instrument)
+            return
+        }
+        if (arm.usesFusedComputeStage2) {
+            val fusedApply = fusedApplyProgram
+            if (fusedApply == null || present == null ||
+                !fusedStage.ready || !ensureOffscreen()
+            ) {
+                offscreenFallbackDraws++
+                drawPassthrough(oes)
+                return
+            }
+            drawFusedComputeStage2(oes, fusedApply, present, instrument)
+            return
+        }
+        if (arm.usesSingleComputeStage2) {
             val stage = computeStage(arm)
             val apply = computeApplyProgram(arm)
             if (stage == null || apply == null || present == null ||
@@ -512,7 +636,11 @@ class PassthroughRenderer(
         if (timing) gpuTimer.endPass()
     }
 
-    /** arm → 그 arm의 통계 단계. 컴퓨트 arm이 아니면 null. **프레임당 할당 0**이다. */
+    /**
+     * arm → 그 arm의 통계 단계. **3단 한 벌**([RenderArm.usesSingleComputeStage2]) arm이
+     * 아니면 null이다 — 조합 arm은 3단이 두 벌이라 이 인터페이스에 담기지 않고
+     * [chainStage]가 따로 받는다. **프레임당 할당 0**이다.
+     */
     private fun computeStage(target: RenderArm): Stage2ComputeStage? = when (target) {
         RenderArm.DRAGO -> dragoStage
         RenderArm.CLAHE_GAMMA -> claheStage
@@ -535,6 +663,9 @@ class PassthroughRenderer(
      * **세 arm(`drago`·`clahe_gamma`·`agcwd`)이 이 함수 하나를 공유한다.** arm마다 복붙하면
      * GL 호출 시퀀스가 조용히 갈라져 패스 비용을 arm끼리 비교하는 근거가 흔들린다 —
      * 그 비교가 이 라운드의 목적이다.
+     *
+     * 🔴 **조합 arm은 여기 넣지 않는다.** 이 함수는 이미 승격된 세 arm의 재현 경로이므로
+     * 분기를 더하면 그 숫자의 근거가 바뀐다 → [drawChainedComputeStage2]로 따로 뒀다.
      *
      * ### 왜 하위 3단을 한 query로 묶지 않는가
      * `docs/FRAME_LOG_SCHEMA.md` §2가 금지한다 — 앱이 합치면 그건 유도값이고, **어느 패스가
@@ -588,6 +719,184 @@ class PassthroughRenderer(
         if (timing) gpuTimer.endPass()
 
         // 패스5: FBO_B → 화면 (surface 크기). gpu_present_ms.
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
+        if (timing) gpuTimer.endPass()
+    }
+
+    /**
+     * ② **조합** arm(`drago_clahe_chain`)의 8패스. [drawComputeStage2]의 3단이 **두 벌
+     * 직렬로** 벌어지고 FBO를 핑퐁한다:
+     * ```
+     * 패스1  OES   → FBO_A                     stage_b_ms
+     * 패스2  drago analyze (FBO_A)             stage_d_analyze_ms
+     * 패스3  drago build                       stage_d_build_ms
+     * 패스4  drago apply   FBO_A → FBO_B       stage_d_apply_ms
+     * 패스5  clahe analyze (FBO_B)             stage_d_analyze2_ms
+     * 패스6  clahe build                       stage_d_build2_ms
+     * 패스7  clahe apply   FBO_B → FBO_A       stage_d_apply2_ms
+     * 패스8  present       FBO_A → 화면        gpu_present_ms
+     * ```
+     *
+     * ### 왜 [drawComputeStage2]를 고쳐 쓰지 않고 함수를 따로 만드는가
+     * 그 함수는 **이미 승격된 `drago`·`clahe_gamma`·`agcwd` 숫자의 재현 경로**다. 조합을
+     * 담으려고 그 안에 분기를 넣으면 세 arm의 GL 호출 시퀀스가 바뀌고, 그러면 `docs/baselines/`
+     * 의 기존 숫자와 비교할 근거가 사라진다. 같은 판단의 선례가 [Stage2ComputeStage]의
+     * `compileComputeProgram` 주석에 있다("drago는 실측이 끝난 arm이라 그 파일의 동작 경로를
+     * 건드리지 않는다"). **중복은 알면서 감수한 비용이고, 그 대가로 기존 arm이 고정된다.**
+     *
+     * ### 패스 수에 여유가 없다
+     * 8 = [GpuTimerRing.MAX_PASS_COUNT]다. [GpuTimerRing.beginPass]/[GpuTimerRing.endPass]
+     * 호출 수가 [RenderArm.gpuColumns]의 개수와 다르면 `commitFrame`이 그 프레임을 통째로
+     * 버린다(`malformedFrames`) — 여기서 패스를 더하거나 빼면 그렇게 된다.
+     *
+     * 패스 경계·배리어·query 귀속의 주의사항은 [drawThreePass]·[drawComputeStage2]와 같다.
+     */
+    private fun drawChainedComputeStage2(
+        oes: QuadProgram,
+        dragoApply: QuadProgram,
+        claheApply: QuadProgram,
+        present: QuadProgram,
+        instrument: Boolean,
+    ) {
+        val timing = instrument && gpuTimer.beginFrame()
+
+        // 패스1: OES → FBO_A (처리 해상도). stage_b_ms.
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[0])
+        GLES20.glViewport(0, 0, fboWidth, fboHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(oes, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+        if (timing) gpuTimer.endPass()
+
+        // 패스2: drago 전역 통계. stage_d_analyze_ms.
+        // ⚠ FBO_A를 어태치먼트에서 떼고 나서 텍스처로 읽는다(피드백 루프 방지).
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        chainStage.dragoAnalyze(fboTextures[0], fboWidth, fboHeight)
+        if (timing) gpuTimer.endPass()
+
+        // 패스3: drago 통계 → 톤커브 계수. stage_d_build_ms.
+        if (timing) gpuTimer.beginPass()
+        chainStage.dragoBuild()
+        if (timing) gpuTimer.endPass()
+
+        // 패스4: FBO_A → FBO_B. drago 톤맵 적용. stage_d_apply_ms.
+        if (timing) gpuTimer.beginPass()
+        chainStage.beforeDragoApply()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[1])
+        GLES20.glViewport(0, 0, fboWidth, fboHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(dragoApply, GLES20.GL_TEXTURE_2D, fboTextures[0])
+        if (timing) gpuTimer.endPass()
+
+        // 패스5: clahe 타일 히스토그램. 입력은 **drago 출력(FBO_B)**이다. stage_d_analyze2_ms.
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        chainStage.claheAnalyze(fboTextures[1], fboWidth, fboHeight)
+        if (timing) gpuTimer.endPass()
+
+        // 패스6: clahe 클립 + 재분배 + CDF → 타일 LUT. stage_d_build2_ms.
+        if (timing) gpuTimer.beginPass()
+        chainStage.claheBuild()
+        if (timing) gpuTimer.endPass()
+
+        // 패스7: FBO_B → FBO_A. clahe 적용(핑퐁으로 되돌아온다). stage_d_apply2_ms.
+        if (timing) gpuTimer.beginPass()
+        chainStage.beforeClaheApply()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[0])
+        GLES20.glViewport(0, 0, fboWidth, fboHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(claheApply, GLES20.GL_TEXTURE_2D, fboTextures[1])
+        if (timing) gpuTimer.endPass()
+
+        // 패스8: FBO_A → 화면 (surface 크기). gpu_present_ms.
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[0])
+        if (timing) gpuTimer.endPass()
+    }
+
+    /**
+     * ② **융합** arm(`drago_clahe_fused`)의 7패스. [drawChainedComputeStage2]에서 **중간
+     * materialize와 적용 패스 하나를 뺀** 것이다:
+     * ```
+     * 패스1  OES   → FBO_A                        stage_b_ms
+     * 패스2  drago analyze (FBO_A)                stage_d_analyze_ms
+     * 패스3  drago build                          stage_d_build_ms
+     * 패스4  fused analyze (FBO_A, 톤맵 인라인)    stage_d_analyze2_ms
+     * 패스5  clahe build                          stage_d_build2_ms
+     * 패스6  fused apply   FBO_A → FBO_B          stage_d_apply_ms
+     * 패스7  present       FBO_B → 화면            gpu_present_ms
+     * ```
+     * ⚠ **패스4의 입력이 FBO_A(원본)다.** 체인은 여기서 drago가 적용된 FBO_B를 읽었다 —
+     * 융합은 그 중간 이미지를 만들지 않으므로 톤맵을 **다시 계산**한다
+     * ([RenderArm.FUSED_DEVIATION]의 (c)).
+     *
+     * ⚠ **`stage_d_apply2_ms`를 쓰지 않는다.** 적용이 하나로 접혔고, 재지 않은 열은 싣지
+     * 않는다. 그래서 열 순서가 `…analyze2, build2, apply, present`가 된다 —
+     * [RenderArm.gpuColumns]가 **패스 순서 그대로**라는 규약을 따른 결과다.
+     *
+     * ### 왜 또 함수를 따로 만드는가
+     * [drawComputeStage2]도 [drawChainedComputeStage2]도 **이미 잰 arm의 재현 경로**다.
+     * 어느 쪽에 분기를 넣어도 그 arm들의 GL 호출 시퀀스가 바뀐다. 중복은 알면서 감수한
+     * 비용이고, 그 대가로 앞선 측정이 고정된다.
+     */
+    private fun drawFusedComputeStage2(
+        oes: QuadProgram,
+        fusedApply: QuadProgram,
+        present: QuadProgram,
+        instrument: Boolean,
+    ) {
+        val timing = instrument && gpuTimer.beginFrame()
+
+        // 패스1: OES → FBO_A (처리 해상도). stage_b_ms.
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[0])
+        GLES20.glViewport(0, 0, fboWidth, fboHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(oes, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+        if (timing) gpuTimer.endPass()
+
+        // 패스2: drago 전역 통계. stage_d_analyze_ms.
+        // ⚠ FBO_A를 어태치먼트에서 떼고 나서 텍스처로 읽는다(피드백 루프 방지).
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        fusedStage.dragoAnalyze(fboTextures[0], fboWidth, fboHeight)
+        if (timing) gpuTimer.endPass()
+
+        // 패스3: drago 통계 → 톤커브 계수. stage_d_build_ms.
+        if (timing) gpuTimer.beginPass()
+        fusedStage.dragoBuild()
+        if (timing) gpuTimer.endPass()
+
+        // 패스4: 톤맵을 인라인한 타일 히스토그램. 입력은 **FBO_A(원본)**. stage_d_analyze2_ms.
+        if (timing) gpuTimer.beginPass()
+        fusedStage.fusedAnalyze(fboTextures[0], fboWidth, fboHeight)
+        if (timing) gpuTimer.endPass()
+
+        // 패스5: 클립 + 재분배 + CDF → 타일 LUT. stage_d_build2_ms.
+        if (timing) gpuTimer.beginPass()
+        fusedStage.claheBuild()
+        if (timing) gpuTimer.endPass()
+
+        // 패스6: FBO_A → FBO_B. 톤맵 + LUT 보간 + 감마를 한 패스에서. stage_d_apply_ms.
+        if (timing) gpuTimer.beginPass()
+        fusedStage.beforeFusedApply()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[1])
+        GLES20.glViewport(0, 0, fboWidth, fboHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(fusedApply, GLES20.GL_TEXTURE_2D, fboTextures[0])
+        if (timing) gpuTimer.endPass()
+
+        // 패스7: FBO_B → 화면 (surface 크기). gpu_present_ms.
         if (timing) gpuTimer.beginPass()
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
@@ -664,6 +973,8 @@ class PassthroughRenderer(
         dragoStage.onProcessSizeChanged(w, h)
         claheStage.onProcessSizeChanged(w, h)
         agcwdStage.onProcessSizeChanged(w, h)
+        chainStage.onProcessSizeChanged(w, h)
+        fusedStage.onProcessSizeChanged(w, h)
 
         releaseOffscreen()
         GLES20.glGenTextures(FBO_COUNT, fboTextures, 0)
@@ -742,6 +1053,8 @@ class PassthroughRenderer(
         dragoStage.releaseGl()
         claheStage.releaseGl()
         agcwdStage.releaseGl()
+        chainStage.releaseGl()
+        fusedStage.releaseGl()
         if (oesTextureId != 0) {
             GLES20.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
             oesTextureId = 0
@@ -752,12 +1065,18 @@ class PassthroughRenderer(
         deleteProgram(dragoApplyProgram)
         deleteProgram(claheApplyProgram)
         deleteProgram(agcwdApplyProgram)
+        deleteProgram(chainDragoApplyProgram)
+        deleteProgram(chainClaheApplyProgram)
+        deleteProgram(fusedApplyProgram)
         oesProgram = null
         blitProgram = null
         gammaProgram = null
         dragoApplyProgram = null
         claheApplyProgram = null
         agcwdApplyProgram = null
+        chainDragoApplyProgram = null
+        chainClaheApplyProgram = null
+        fusedApplyProgram = null
     }
 
     private fun deleteProgram(program: QuadProgram?) {

@@ -297,9 +297,18 @@ class DragoStage : Stage2ComputeStage {
          *
          * - `sumLogQ` / `maxGrayBits` : analyze가 atomic으로 채우고 build가 0으로 되돌린다.
          * - `logAvg` / `lmax` / `biasPow` : build가 쓰고 apply가 읽는다.
+         *
+         * ⚠ **binding과 한정자를 인자로 받는다.** 조합 arm(`drago_clahe_chain` ·
+         * `drago_clahe_fused`)은 drago·clahe의 SSBO 셋을 동시에 살려 두므로 번호가 겹치면
+         * 안 되는데, 그렇다고 블록 선언을 복붙하면 한쪽만 고쳤을 때 조용히 다른 오프셋을
+         * 읽는다([LabGlsl]이 경고한 바로 그 경로다). 융합 arm의 적용 프래그먼트는 이것을
+         * `"readonly "`로 부른다.
+         *
+         * 단품 `drago` arm은 지금까지처럼 [STATS_BINDING] + 빈 한정자로 부르므로 **생성
+         * 문자열이 바뀌지 않는다**(`${'$'}{qualifier}` 자리가 빈 문자열로 접힌다).
          */
-        private val STATS_BLOCK = """
-            layout(std430, binding = $STATS_BINDING) buffer DragoStats {
+        internal fun statsBlock(binding: Int, qualifier: String = ""): String = """
+            layout(std430, binding = $binding) ${qualifier}buffer DragoStats {
                 uint sumLogQ;
                 uint maxGrayBits;
                 uint reserved0;
@@ -321,13 +330,38 @@ class DragoStage : Stage2ComputeStage {
         const val LOG_FLOOR_GLSL = "1e-4"
 
         /**
+         * Drago 톤맵의 **선형 결과**(출력 감마를 씌우기 전)를 내는 GLSL 함수. 융합 arm
+         * (`drago_clahe_fused`)의 두 셰이더가 이것을 공유한다.
+         *
+         * 🔴 **[applyShaderSource] 본문의 식과 글자까지 같아야 하는 사본이다.** 한쪽을
+         * 고치면 반드시 다른 쪽도 고칠 것 — [statsBlock]과 같은 부류의 중복이고, 합치지
+         * 않은 이유도 같다: 합치면 `trimIndent`가 잡는 최소 들여쓰기가 바뀌어 **이미 승격된
+         * `drago` arm의 셰이더 생성 문자열이 달라진다.**
+         *
+         * ⚠ 통계를 SSBO에서 직접 읽지 않고 **인자로 받는다.** 그래야 컴퓨트 셰이더(융합
+         * analyze)와 프래그먼트(융합 apply)가 블록 이름에 상관없이 같은 함수를 쓴다.
+         */
+        internal val TONEMAP_FUNCTION_GLSL = """
+            // Drago 톤맵의 선형 결과. 출력 감마 pow(x, 1/uOutGamma)는 여기 포함되지 않는다.
+            vec3 dragoToneLinear(vec3 lin, float logAvg, float lmax, float biasPow,
+                                 float saturation) {
+                float lum = dot(lin, $LUMA_GLSL);
+                float l = lum / logAvg;
+                float denom = log(2.0 + 8.0 * pow(max(l / lmax, 0.0), biasPow));
+                float mapped = log(l + 1.0) / max(denom, 1e-6);
+                vec3 ratio = pow(lin / max(lum, $LOG_FLOOR_GLSL), vec3(saturation));
+                return max(ratio * mapped, 0.0);
+            }
+        """.trimIndent()
+
+        /**
          * 패스2 — 전역 통계 리덕션. `texelFetch`이므로 필터링·정규화 좌표가 끼지 않는다.
          *
          * 워크그룹 밖 픽셀(해상도가 [LOCAL_SIZE]의 배수가 아닐 때)은 **아무것도 더하지
          * 않는다.** 합은 실재 픽셀에 대해서만 쌓이고, 나눗셈은 실제 픽셀 수로 하므로
          * 경계 처리 때문에 평균이 밝은 쪽으로 치우치지 않는다.
          */
-        private val ANALYZE_SHADER = """
+        internal fun analyzeShaderSource(statsBinding: Int): String = """
             #version 310 es
             layout(local_size_x = $LOCAL_SIZE, local_size_y = $LOCAL_SIZE) in;
             precision highp float;
@@ -335,7 +369,7 @@ class DragoStage : Stage2ComputeStage {
             uniform sampler2D uTexture;
             uniform float ${RenderArm.DRAGO_SRC_GAMMA_UNIFORM};
             uniform float uSumScale;
-            $STATS_BLOCK
+            ${statsBlock(statsBinding)}
             shared uint sSumQ;
             shared uint sMaxBits;
             void main() {
@@ -364,6 +398,9 @@ class DragoStage : Stage2ComputeStage {
             }
         """.trimIndent()
 
+        /** 단품 `drago` arm의 패스2. **binding은 지금까지 쓰던 값 그대로**다. */
+        private val ANALYZE_SHADER = analyzeShaderSource(STATS_BINDING)
+
         /**
          * 패스3 — 통계 → 계수. 스레드 하나다.
          *
@@ -378,7 +415,7 @@ class DragoStage : Stage2ComputeStage {
          * 넣지 않았으므로 `logAvg`·`Lmax`가 상류와 다른 값이 된다 → `RenderArm.DRAGO_DEVIATION`.
          * 마지막에 누산기를 0으로 되돌린다 — 다음 프레임의 analyze가 그 위에 더한다.
          */
-        private val BUILD_SHADER = """
+        internal fun buildShaderSource(statsBinding: Int): String = """
             #version 310 es
             layout(local_size_x = 1) in;
             precision highp float;
@@ -386,7 +423,7 @@ class DragoStage : Stage2ComputeStage {
             uniform float uSumScale;
             uniform float uPixelCount;
             uniform float ${RenderArm.DRAGO_BIAS_UNIFORM};
-            $STATS_BLOCK
+            ${statsBlock(statsBinding)}
             void main() {
                 float sumLog = -float(gStats.sumLogQ) / max(uSumScale, 1e-6);
                 float logAvg = max(exp(sumLog / max(uPixelCount, 1.0)), $LOG_FLOOR_GLSL);
@@ -398,6 +435,9 @@ class DragoStage : Stage2ComputeStage {
                 gStats.maxGrayBits = 0u;
             }
         """.trimIndent()
+
+        /** 단품 `drago` arm의 패스3. **binding은 지금까지 쓰던 값 그대로**다. */
+        private val BUILD_SHADER = buildShaderSource(STATS_BINDING)
 
         /**
          * 패스4 정점. ② 컴퓨트 arm 세 개가 **같은 문자열**을 쓴다 → [ES31_QUAD_VERTEX_SHADER].
@@ -421,7 +461,7 @@ class DragoStage : Stage2ComputeStage {
          * **하나만 고치면 화면이 크게 틀어진다.** 전문·실측 이탈 폭·왜 지금 재현하지 않는지는
          * [RenderArm.DRAGO_DEVIATION].
          */
-        val APPLY_SHADER = """
+        internal fun applyShaderSource(statsBinding: Int): String = """
             #version 310 es
             precision highp float;
             in vec2 vTexCoord;
@@ -430,7 +470,7 @@ class DragoStage : Stage2ComputeStage {
             uniform float ${RenderArm.DRAGO_SRC_GAMMA_UNIFORM};
             uniform float ${RenderArm.DRAGO_OUT_GAMMA_UNIFORM};
             uniform float ${RenderArm.DRAGO_SATURATION_UNIFORM};
-            layout(std430, binding = $STATS_BINDING) readonly buffer DragoStats {
+            layout(std430, binding = $statsBinding) readonly buffer DragoStats {
                 uint sumLogQ;
                 uint maxGrayBits;
                 uint reserved0;
@@ -454,5 +494,17 @@ class DragoStage : Stage2ComputeStage {
                 fragColor = vec4(clamp(tone, 0.0, 1.0), 1.0);
             }
         """.trimIndent()
+
+        /**
+         * 단품 `drago` arm의 패스4. **binding은 지금까지 쓰던 값 그대로**다.
+         *
+         * ⚠ 위 [applyShaderSource]의 블록 선언은 [statsBlock]과 **글자까지 같아야 하는 사본**
+         * 이다(readonly 한정자만 다르다). 이건 HEAD에 이미 있던 중복이고 사본을 **더 만들지는
+         * 않았다** — 조합 arm도 이 함수를 부른다. [statsBlock]을 여기에 끼워 넣지 않은 이유는
+         * 하나뿐이다: 그러면 `trimIndent`가 잡는 최소 들여쓰기가 바뀌어 **이미 승격된
+         * `drago` arm의 셰이더 생성 문자열이 달라진다**(GLSL로는 같은 뜻이지만 재현 경로가
+         * 바뀐다). 둘 중 하나를 고치면 반드시 다른 하나도 고칠 것.
+         */
+        val APPLY_SHADER = applyShaderSource(STATS_BINDING)
     }
 }

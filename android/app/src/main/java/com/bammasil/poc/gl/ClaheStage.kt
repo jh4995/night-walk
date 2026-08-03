@@ -250,13 +250,13 @@ class ClaheStage : Stage2ComputeStage {
          * 패딩 없이 실재 픽셀만 균등 분할한다([RenderArm.CLAHE_DEVIATION]).
          * 720p(1280x720)는 8로 나눠떨어져 이 프레임에서는 차이가 없다.
          */
-        private val ANALYZE_SHADER = """
+        internal fun analyzeShaderSource(histBinding: Int): String = """
             #version 310 es
             layout(local_size_x = $LOCAL_SIZE, local_size_y = $LOCAL_SIZE) in;
             precision highp float;
             precision highp int;
             uniform sampler2D uTexture;
-            layout(std430, binding = $HIST_BINDING) writeonly buffer ClaheHist {
+            layout(std430, binding = $histBinding) writeonly buffer ClaheHist {
                 uint bins[];
             } gHist;
             shared uint sHist[${LabGlsl.BIN_COUNT}];
@@ -287,6 +287,9 @@ class ClaheStage : Stage2ComputeStage {
             }
         """.trimIndent()
 
+        /** 단품 `clahe_gamma` arm의 패스2. **binding은 지금까지 쓰던 값 그대로**다. */
+        private val ANALYZE_SHADER = analyzeShaderSource(HIST_BINDING)
+
         /**
          * 패스3 — 클립 + 재분배 + CDF. **빈 하나에 스레드 하나**(256스레드 = 16×16).
          *
@@ -315,16 +318,16 @@ class ClaheStage : Stage2ComputeStage {
          * 남기는 이유: 이번 라운드에서 검증된 셰이더 산식을 건드리지 않기 위해서다
          * ([RenderArm.LAB_DEVIATION]에도 같은 문장이 있다).
          */
-        private val BUILD_SHADER = """
+        internal fun buildShaderSource(histBinding: Int, lutBinding: Int): String = """
             #version 310 es
             layout(local_size_x = $LOCAL_SIZE, local_size_y = $LOCAL_SIZE) in;
             precision highp float;
             precision highp int;
             uniform float ${RenderArm.CLAHE_CLIP_LIMIT_UNIFORM};
-            layout(std430, binding = $HIST_BINDING) readonly buffer ClaheHist {
+            layout(std430, binding = $histBinding) readonly buffer ClaheHist {
                 uint bins[];
             } gHist;
-            layout(std430, binding = $LUT_BINDING) writeonly buffer ClaheLut {
+            layout(std430, binding = $lutBinding) writeonly buffer ClaheLut {
                 float entries[];
             } gLut;
             shared uint sTotal;
@@ -379,6 +382,9 @@ class ClaheStage : Stage2ComputeStage {
             }
         """.trimIndent()
 
+        /** 단품 `clahe_gamma` arm의 패스3. **binding은 지금까지 쓰던 값 그대로**다. */
+        private val BUILD_SHADER = buildShaderSource(HIST_BINDING, LUT_BINDING)
+
         /**
          * 패스4 프래그먼트 — 타일 간 이중선형 보간 + 감마. **LAB의 `L`만** 바꾸고 `a`,`b`는
          * 그대로 둔다([LabGlsl]).
@@ -398,7 +404,7 @@ class ClaheStage : Stage2ComputeStage {
          * 대신 [RenderArm.LAB_DEVIATION]에 이탈 항목으로 싣는다(§B-6 골든 대조 때 이 항목이
          * 없으면 원인 추적이 어렵다).
          */
-        val APPLY_SHADER = """
+        internal fun applyShaderSource(lutBinding: Int): String = """
             #version 310 es
             precision highp float;
             precision highp int;
@@ -407,7 +413,7 @@ class ClaheStage : Stage2ComputeStage {
             uniform sampler2D uTexture;
             uniform vec2 ${RenderArm.CLAHE_TILES_UNIFORM};
             uniform float ${RenderArm.CLAHE_GAMMA_UNIFORM};
-            layout(std430, binding = $LUT_BINDING) readonly buffer ClaheLut {
+            layout(std430, binding = $lutBinding) readonly buffer ClaheLut {
                 float entries[];
             } gLut;
             ${LabGlsl.FUNCTIONS}
@@ -437,5 +443,15 @@ class ClaheStage : Stage2ComputeStage {
                 );
             }
         """.trimIndent()
+
+        /**
+         * 단품 `clahe_gamma` arm의 패스4. **binding은 지금까지 쓰던 값 그대로**다.
+         *
+         * ⚠ 위 세 소스가 **함수**인 이유: 조합 arm(`drago_clahe_chain`)이 drago의 SSBO와
+         * 번호가 겹치지 않게 hist=1 / lut=2로 다시 컴파일해야 하기 때문이다. 셰이더 텍스트를
+         * 복사하지 않고 **binding만 인자로 갈랐으므로** 산식은 한 곳에만 있고, 단품 arm은
+         * 지금 값으로 부르므로 **생성 문자열이 바이트 단위로 그대로**다.
+         */
+        val APPLY_SHADER = applyShaderSource(LUT_BINDING)
     }
 }

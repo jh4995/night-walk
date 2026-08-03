@@ -317,6 +317,7 @@ class MainActivity : ComponentActivity() {
                     offscreenStatus = renderer.offscreenStatus,
                     offscreenFallbackDraws = renderer.offscreenFallbackDraws,
                     stage2Status = renderer.stage2Status,
+                    colorTransformSites = renderer.colorTransformSites,
                     gpuTimer = gpuTimer,
                 ),
             )

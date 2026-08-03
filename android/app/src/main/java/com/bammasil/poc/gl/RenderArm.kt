@@ -100,15 +100,105 @@ enum class RenderArm(
             "stage_d_apply_ms",
             "gpu_present_ms",
         ),
+    ),
+
+    /**
+     * ② 자리에 **Drago → CLAHE 직렬**(상류 조합 `D1A1`). 단품 arm이 아니라 **조합**이고,
+     * 이번 라운드는 **체인**이다 — 상류 cv2 파이프라인이 Drago 출력을 8비트 이미지로 내고
+     * 그것을 `cvtColor(BGR2LAB)`에 넣는 구조를 그대로 옮긴다(중간 표현이 RGBA8 FBO다).
+     * 중간 materialize를 없애는 **융합**은 알고리즘 변경이라 이번 범위가 아니다.
+     *
+     * 왜 이 arm을 재는가: 상류는 CPU 720p 101.2ms를 근거로 내부 처리 해상도를 640×360으로
+     * 깎는 것을 검토 중인데, 상류 실측상 **글레어 지표가 해상도에 크게 의존한다**
+     * (`docs/research/RESEARCH_20260803_UPSTREAM.md` §6). GPU에서 720p 조합이 게이트 안이면
+     * 그 레버를 당길 이유가 사라진다.
+     *
+     * ⚠ **패스 8개 = [GpuTimerRing.MAX_PASS_COUNT] 정확히다. 여유가 0이다.** 여기에 패스를
+     * 하나라도 더하면 `setPassCount`가 거부하고 이 arm의 GPU 계측이 통째로 꺼진다.
+     *
+     * 세 토큰(`blit_2pass` · `stage2_drago` · `stage2_clahe`)은 전부 **이미 있는 것**이다 —
+     * 조합이라고 새 토큰을 만들지 않는다. 뒤 3개 열(`*2_ms`)은 하네스 스키마 v4에서 들어온
+     * "그 arm의 **두 번째** 톤커브 스테이지의 같은 역할 슬롯"이다.
+     */
+    DRAGO_CLAHE_CHAIN(
+        "drago_clahe_chain",
+        listOf("blit_2pass", "stage2_drago", "stage2_clahe"),
+        listOf(
+            "stage_b_ms",
+            "stage_d_analyze_ms",
+            "stage_d_build_ms",
+            "stage_d_apply_ms",
+            "stage_d_analyze2_ms",
+            "stage_d_build2_ms",
+            "stage_d_apply2_ms",
+            "gpu_present_ms",
+        ),
+    ),
+
+    /**
+     * ② 자리에 **Drago ⊕ CLAHE 융합**. [DRAGO_CLAHE_CHAIN]에서 중간 RGBA8 materialize를
+     * 없애고 Drago 톤맵을 CLAHE의 두 패스에 **인라인**한 것이다 — 7패스다.
+     *
+     * 🔴 **이식 최적화가 아니라 알고리즘 변경이다.** 중간 8비트 왕복과 `pow` 인코드/디코드
+     * 왕복이 사라지므로 **상류와 다른 곡선이 된다** → [FUSED_DEVIATION]. 채택 여부는
+     * 팀장/팀 판단이다.
+     *
+     * ⚠ 열 순서는 **패스 순서 그대로**라 `stage_d_apply_ms`가 `*2_ms` 뒤에 온다 —
+     * 적용이 하나로 접혔기 때문이다. `stage_d_apply2_ms`는 **쓰지 않는다**(재지 않은 열을
+     * 싣지 않는다는 규약 그대로).
+     *
+     * `pipelineStages`는 체인과 **같다** — 융합이라고 새 토큰을 만들지 않는다. 무엇이
+     * 달라졌는지는 `session.json`의 `render_arm`과 `stage2_params`가 말한다.
+     */
+    DRAGO_CLAHE_FUSED(
+        "drago_clahe_fused",
+        listOf("blit_2pass", "stage2_drago", "stage2_clahe"),
+        listOf(
+            "stage_b_ms",
+            "stage_d_analyze_ms",
+            "stage_d_build_ms",
+            "stage_d_analyze2_ms",
+            "stage_d_build2_ms",
+            "stage_d_apply_ms",
+            "gpu_present_ms",
+        ),
     );
 
     /**
-     * ② 자리가 **컴퓨트 3단**(analyze → build → apply)인 arm인가. 5패스 드로우 경로와
-     * `session.json`의 서술 분기가 이 하나로 갈린다 — arm을 나열하는 곳이 늘면 새 arm을
-     * 추가할 때 한 군데를 빠뜨린다.
+     * ② 자리에 **컴퓨트 통계 패스가 있는** arm인가. **`session.json`의 서술 분기 전용**이다
+     * (셰이더 방언·draw_call 서술·컴퓨트 배리어 주석).
+     *
+     * ⚠ 예전에는 이 하나가 **드로우 경로 선택까지** 겸했다. [DRAGO_CLAHE_CHAIN]이 들어오면서
+     * 그 겸업이 깨졌다 — 조합은 서술 기준으로는 여기 속하지만 5패스 경로를 타면 안 된다.
+     * 그래서 경로 선택은 [usesSingleComputeStage2] / [usesChainedComputeStage2]로 갈랐다.
      */
     val usesComputeStage2: Boolean
+        get() = usesSingleComputeStage2 || usesChainedComputeStage2 || usesFusedComputeStage2
+
+    /**
+     * ② 자리가 **컴퓨트 3단 한 벌**(analyze → build → apply)인 arm인가.
+     * **`PassthroughRenderer.drawComputeStage2`(5패스) 경로 선택 전용**이다.
+     */
+    val usesSingleComputeStage2: Boolean
         get() = this == DRAGO || this == CLAHE_GAMMA || this == AGCWD
+
+    /**
+     * ② 자리가 **컴퓨트 3단 두 벌**(조합)인 arm인가.
+     * **`PassthroughRenderer.drawChainedComputeStage2`(8패스) 경로 선택 전용**이다.
+     */
+    val usesChainedComputeStage2: Boolean
+        get() = this == DRAGO_CLAHE_CHAIN
+
+    /**
+     * ② 자리가 **융합**(통계 두 벌 + 적용 한 벌)인 arm인가.
+     * **`PassthroughRenderer.drawFusedComputeStage2`(7패스) 경로 선택 전용**이다.
+     */
+    val usesFusedComputeStage2: Boolean
+        get() = this == DRAGO_CLAHE_FUSED
+
+    /** 조합 arm인가(체인이든 융합이든). 둘의 계수를 나란히 낼 때 쓴다. */
+    val isCompositionArm: Boolean
+        get() = usesChainedComputeStage2 || usesFusedComputeStage2
 
     companion object {
 
@@ -405,5 +495,287 @@ enum class RenderArm(
                 "성질이 다르다. INTERFACES.md §B-4(프레임 간 상태)가 ☐라 시간축 평활을 임의로 " +
                 "넣지 않았다 — 상류 A3가 바로 그 IIR 평활인데 리셋 조건·수렴 시간이 미정의다. " +
                 "이 라운드에서는 **관측 대상**이며, 관측 결과는 보고에 남긴다"
+
+        // ── ② 조합 arm(D1 → A1 체인) ──────────────────────────────────────
+        // 파라미터는 **위 두 스테이지의 상수를 그대로 재사용한다.** 조합용으로 따로 잡으면
+        // 값이 갈라지는 순간 "단품과 같은 설정으로 이었다"는 전제가 조용히 깨진다.
+
+        const val CHAIN_PROVENANCE =
+            "상류(모델링 담당 kty2001/KDT_Hackathon) scripts/lowlight.py의 D1·A1 탐색 구현값을 " +
+                "**그대로** 직렬로 이은 것이며 **계약 확정값이 아니다** — INTERFACES.md §B-5는 " +
+                "여전히 전부 ☐다. 두 스테이지의 파라미터는 단품 arm(drago / clahe_gamma)과 " +
+                "같은 상수를 쓰고 전부 uniform으로 노출했으므로, 팀장이 값을 확정하면 " +
+                "셰이더를 고치지 않고 교체한다. 조합의 출처는 " +
+                "docs/research/RESEARCH_20260803_UPSTREAM.md §6(잠정 1위 D1A1+bf)이다"
+
+        /**
+         * 🔴 **조합 고유의 이탈.** 단품 두 arm의 이탈([DRAGO_DEVIATION]·[LAB_DEVIATION])은
+         * 그대로 성립하고 **그 위에 하나가 더 붙는다.** 이 문장이 빠지면 나중에 상류와 결과가
+         * 다를 때 "두 단품은 맞췄는데 왜 다른가"에서 막힌다.
+         */
+        const val CHAIN_DEVIATION =
+            "🔴 **상류의 조합 합성 방식이 이 저장소에 기록돼 있지 않다.** 기록된 것은 순서" +
+                "(Drago → CLAHE → bilateral)뿐이고, **중간 dtype · 클리핑 · 정규화 유무는 " +
+                "어디에도 없다**(docs/research/RESEARCH_20260803_UPSTREAM.md §6). " +
+                "이 이식이 중간 표현을 **RGBA8 FBO**로 둔 것은 cv2 파이프라인의 통상 동작" +
+                "(톤맵 결과를 8비트 이미지로 내고 그것을 cvtColor(BGR2LAB)에 넣는다)에서 온 " +
+                "**추론이지 상류 코드 인용이 아니다.** 그러므로 다음 두 가지가 상류와 다를 수 " +
+                "있고 우리는 어느 쪽인지 모른다: (1) 중간값의 **8비트 양자화**(상류가 float로 " +
+                "이었다면 없다), (2) Drago 출력의 **0..1 클리핑**(이 이식은 clamp한다). " +
+                "두 스테이지 각각의 이탈은 upstream_deviation_drago / upstream_deviation_lab에 " +
+                "그대로 실었으며 **조합에서도 전부 그대로 성립한다.** " +
+                "⚠ 이번 라운드는 **체인(상류 충실)**이다 — 중간 materialize를 없애는 융합은 " +
+                "알고리즘 변경이라 팀장 판단 영역이고 여기서 하지 않았다"
+
+        /**
+         * 🔴 [LAB_GLARE_NOTE]를 **재사용하면 안 된다.** 그 문장은 "이 arm은 눈부심을 누르지
+         * 못한다"인데 조합은 D1을 포함해 글레어를 누른다 — 그대로 두면 **거짓 문장이 로그로
+         * 나간다.** 대신 이 arm의 진짜 위험(표시 경로 전용 후보라는 사실)을 담는다.
+         */
+        const val CHAIN_GLARE_NOTE =
+            "⚠ **이 arm(`D1A1`)은 상류 표시 1위 후보의 *부분집합*이다 — 1위는 `D1A1+bf`이고 " +
+                "여기에는 `bf`(bilateral)가 없다.** 표시 3축(글레어·대비·노이즈) 1위로 상류가 " +
+                "적은 것은 `D1A1+bf`이지 `D1A1`이 아니다(RESEARCH_20260803_UPSTREAM.md §6, §2). " +
+                "그러니 이 arm의 결과를 '표시 1위 후보를 쟀다'로 옮기지 말 것. " +
+                "그럼에도 **이 arm은 표시(④ 화면) 경로 후보이지 탐지(③) 입력 후보가 아니다.** " +
+                "A1·A2 단품과 달리 이 조합은 D1을 포함하므로 글레어를 실제로 누른다 — " +
+                "LAB_GLARE_NOTE('눈부심을 누르지 못한다')는 **이 arm에 해당하지 않는다.** " +
+                "대신 상류 실측(§2, C7)이 다른 값을 매긴다: **arm이 강할수록 탐지의 `stairs` " +
+                "오탐이 오른다**(무처리 0.1% → A1 0.4% → A1+bf 1.1% → D1A1 3.8% → " +
+                "D1A1+bf 5.7%). 오인 대상이 횡단보도·차선·차 지붕·포장 텍스처라 저시력 " +
+                "보행자가 반드시 지나는 곳이다. 그래서 상류 판정은 **탐지=원본 / " +
+                "표시=D1A1+bf(+ts)의 경로 분리**이며(§3, 🗣️ 팀 추인 대기), 이 arm의 GPU " +
+                "비용이 싸게 나오더라도 그것이 ③ 입력으로 쓸 근거가 되지는 않는다"
+
+        /**
+         * [DRAGO_FLICKER_NOTE]·[LAB_FLICKER_NOTE]와 같은 부류지만 **성질이 다르다** —
+         * 통계가 두 벌이고 앞 스테이지의 출렁임이 뒤 스테이지 입력을 흔든다.
+         */
+        const val CHAIN_FLICKER_NOTE =
+            "통계를 **두 벌** 매 프레임 새로 구한다(stateless) — drago의 **전역** 통계와 " +
+                "clahe의 **타일별** 히스토그램. 그래서 출렁임의 성질이 단품과 다르다: " +
+                "앞 스테이지(D1)의 전역 톤커브가 흔들리면 그 출력이 뒤 스테이지(A1)의 " +
+                "**입력 분포**를 통째로 밀어 타일 LUT까지 함께 흔든다(단품에서는 없던 " +
+                "연쇄다). INTERFACES.md §B-4(프레임 간 상태)가 ☐라 시간축 평활을 임의로 넣지 " +
+                "않았다 — 상류 `+ts`가 바로 그 평활이고 실측은 성공했지만(§7) 리셋 조건· " +
+                "수렴 시간이 여전히 미정의다. 이 라운드에서는 **관측 대상**이며, 관측 결과는 " +
+                "보고에 남긴다"
+
+        /**
+         * [LAB_LEVERS_NOT_PULLED] 3개에 **조합에서만 생기는 3개**를 더한다.
+         * 첫째가 이번 측정의 존재 이유라 특히 중요하다 — 당기면 재는 의미가 없어진다.
+         */
+        const val CHAIN_LEVERS_NOT_PULLED =
+            LAB_LEVERS_NOT_PULLED +
+                " ── 조합에서 추가로 **당기지 않은** 레버 3개: " +
+                "(4) **처리 해상도 640×360 축소** — 상류가 검토 중인 레버지만 " +
+                "(RESEARCH_20260803_UPSTREAM.md §6: CPU 720p 101.2ms / 640×360 33.1ms) " +
+                "**이번 측정의 목적이 그 레버가 불필요함을 보이는 것**이라 당기면 재는 의미가 " +
+                "사라진다. 게다가 상류 실측상 글레어 지표가 해상도에 크게 의존한다(D1 광원 " +
+                "코어 원본 10 / 720p 151 / 640 158 / 480 161) — 해상도는 속도만의 문제가 " +
+                "아니라 표시 품질 자체를 바꾼다. " +
+                "(5) **float/half FBO로 선형 중간값 보존** — 중간 RGBA8 왕복(8비트 양자화 + " +
+                "0..1 클리핑)이 없어진다. 당기지 않은 이유는 두 가지다: 이번 라운드가 " +
+                "**상류 충실(체인)**이고, float 포맷은 기기 의존성을 늘린다(FBO를 RGBA8로만 " +
+                "쓰는 기존 규약). " +
+                "(6) **`bf`·`ts` 미포함** — 상류 잠정 1위는 `D1A1+bf(+ts)`이고 이 arm은 " +
+                "`D1A1`까지다. 범위 밖이며, **슬롯도 넘는다**(8패스 = " +
+                "GpuTimerRing.MAX_PASS_COUNT 정확히라 여유가 0이다)"
+
+        /**
+         * 조합용 비교 지침. 단품과 같은 함정을 그대로 밟으므로 [LAB_HOW_TO_COMPARE]를
+         * **재사용**하고 조합에서만 생기는 함정 하나를 앞에 붙인다.
+         */
+        const val CHAIN_HOW_TO_COMPARE =
+            "🔴 **단품 arm의 숫자를 더해 이 arm의 값을 갈음하지 말 것.** 그 합이 맞는지가 " +
+                "이 측정의 질문이다 — 두 스테이지가 무엇을 공유하고 무엇을 두 번 하는지는 " +
+                "stage2_params.color_transform_sites(자동 계수)와 그 아래 선언 블록에 " +
+                "적어 두었으니 **인용은 그 값으로** 할 것. " +
+                "상류 CPU 실측과 나란히 놓을 때: 상류 D1A1+bf 720p 101.2ms는 (a) PC CPU/" +
+                "NumPy 기준이고 (b) **`bf`를 포함**하는데 이 arm은 `D1A1`까지다 — 두 사실을 " +
+                "함께 옮길 것. " + LAB_HOW_TO_COMPARE
+
+        // ── 색공간 변환 횟수 **선언값** ────────────────────────────────────
+        // 자동 계수(color_transform_sites)와 **다른 층**이다. 자동 계수는 셰이더 텍스트에서
+        // 기계가 센 정적 호출 지점 수이고, 아래는 사람이 픽셀당·프레임당으로 환산한 값이다.
+        // 🔴 어긋나면 **자동 계수가 맞다**(아래 provenance에 같은 문장이 나간다).
+
+        /** 이 arm의 총 패스 수 = [gpuColumns]의 개수 = GPU timer 슬롯 수. */
+        const val CHAIN_PASSES_TOTAL = 8
+
+        /**
+         * 그중 **픽셀마다 도는** 패스 수. 패스3(drago build, 스레드 1개)과 패스6(clahe build,
+         * 빈 하나에 스레드 하나)은 픽셀 루프가 아니라 여기서 빠진다.
+         */
+        const val CHAIN_FULLSCREEN_PASSES = 6
+
+        /** LabGlsl의 **piecewise** `srgbToLinear` 호출 수(패스5 1 + 패스7 1). */
+        const val CHAIN_SRGB_TO_LINEAR_PER_PIXEL = 2
+
+        /** `labF` 정방향 평가 수(패스5의 srgbToLabL 1 + 패스7의 srgbToLabF 3). */
+        const val CHAIN_LAB_F_FORWARD_PER_PIXEL = 4
+
+        /** `labFInv` 역방향 평가 수(패스7의 labFToSrgb 3). */
+        const val CHAIN_LAB_F_INVERSE_PER_PIXEL = 3
+
+        /** LabGlsl의 `linearToSrgb` 호출 수(패스7의 labFToSrgb 1). */
+        const val CHAIN_LINEAR_TO_SRGB_PER_PIXEL = 1
+
+        /** Drago 톤커브 평가 수. 패스4의 적용 1회이며 패스2(통계)는 곡선을 평가하지 않는다. */
+        const val CHAIN_DRAGO_TONEMAP_EVALS_PER_PIXEL = 1
+
+        /**
+         * Drago의 `pow(x, uSrcGamma)` 선형화 수(패스2 1 + 패스4 1).
+         * ⚠ 위 [CHAIN_SRGB_TO_LINEAR_PER_PIXEL]과 **다른 것**이다 — 이쪽은 단순 거듭제곱이고
+         * 저쪽은 sRGB piecewise 함수다. 한 칸에 합치면 두 스테이지가 같은 변환을 쓴다는
+         * 오해가 생긴다(실제로 D1은 LabGlsl을 한 번도 쓰지 않는다).
+         */
+        const val CHAIN_DRAGO_POW_LINEARIZE_PER_PIXEL = 2
+
+        /**
+         * Drago 출력의 되씌우기 `pow(x, 1/uOutGamma)` 수. 체인은 패스4에서 **중간 이미지를
+         * 인코드**하느라 1회 쓴다. 융합은 그 중간이 없어 **0**이다 —
+         * [FUSED_DEVIATION]의 (b)를 정량으로 만드는 칸이다.
+         */
+        const val CHAIN_DRAGO_OUT_GAMMA_ENCODE_PER_PIXEL = 1
+
+        /**
+         * 중간 RGBA8 이미지로 **떨어뜨리는** 횟수(패스1 FBO_A, 패스4 FBO_B, 패스7 FBO_A).
+         * 기본 프레임버퍼로 가는 패스8은 중간이 아니라 세지 않는다. 3패스 골격·단품 컴퓨트
+         * arm은 2회이므로 **조합이 1회를 더 쓴다** — 융합 라운드가 지울 대상이 이것이다.
+         */
+        const val CHAIN_INTERMEDIATE_RGBA8_MATERIALIZATIONS = 3
+
+        const val CHAIN_COLOR_TRANSFORM_DECLARED_PROVENANCE =
+            "**셰이더 소스를 읽어 사람이 센 값이며 측정이 아니다.** " +
+                "🔴 **두 층을 대조하는 방법:** 자동 계수(color_transform_sites)의 " +
+                "**entry_point_tokens**와 어긋나면 **자동 계수가 맞다** — 그쪽은 " +
+                "glShaderSource에 넘긴 문자열 자체를 세고 그 토큰들은 main()에서만 불리므로 " +
+                "셰이더 텍스트와 어긋날 수 없다. " +
+                "⚠ **inner_tokens와는 대조하지 말 것** — 그쪽은 LabGlsl.FUNCTIONS가 통째로 " +
+                "삽입되면서 **죽은 본문까지 세므로 상한**이다(예: 융합의 srgbToLinear는 " +
+                "자동 계수 2 · 실제 실행 0). 픽셀당 실행 횟수는 **이 블록이 진입점에서 호출 " +
+                "그래프를 따라간 값**이며 그 목적에는 이쪽이 맞다. " +
+                "단위: per_pixel은 **처리 해상도의 픽셀 하나당 프레임당** 횟수다(마지막 " +
+                "present 패스는 surface 해상도라 픽셀 수가 다르지만 색공간 변환이 없어 여기 " +
+                "기여가 0이다). 체인과 융합의 같은 칸을 나란히 놓으면 '변환 몇 회를 줄였는가'가 " +
+                "바로 읽힌다 — gpu_sum 차분을 그 감소에 귀속시킬 때 쓰는 표다"
+
+        // ── ② 융합 arm(D1 ⊕ A1) ───────────────────────────────────────────
+        // 파라미터는 체인과 **같은 상수**를 쓴다. 값이 갈라지면 두 arm의 차이가 "융합했기
+        // 때문"인지 "설정이 달라서"인지 구분할 수 없게 된다.
+
+        const val FUSED_PROVENANCE =
+            CHAIN_PROVENANCE +
+                " ⚠ 다만 **융합은 상류에 없는 구성이다** — 상류가 기록한 것은 순서" +
+                "(Drago → CLAHE → bilateral)뿐이고 중간 표현을 어떻게 다뤘는지는 없다. " +
+                "그러므로 이 arm은 '상류 구현을 옮긴 것'이 아니라 **우리가 만든 변형**이며, " +
+                "파라미터만 상류 값을 그대로 쓴다. 채택 여부는 팀장/팀 판단이다"
+
+        /**
+         * 🔴 **융합 고유의 신규 이탈 3건.** 체인의 이탈([CHAIN_DEVIATION])과 단품 두 arm의
+         * 이탈은 그 위에 **그대로 성립한다.**
+         */
+        const val FUSED_DEVIATION =
+            "🔴 **이 arm은 이식 최적화가 아니라 알고리즘 변경이다.** 체인 대비 신규 이탈 3건: " +
+                "**(a) 중간 uint8/RGBA8 materialize 제거** — Drago 출력을 8비트 이미지로 " +
+                "떨어뜨리지 않으므로 **양자화가 사라지고**, 그 write가 하던 **0..1 클리핑도 " +
+                "함께 사라진다**(톤맵 결과가 1을 넘으면 체인은 잘랐지만 융합은 그대로 LAB로 " +
+                "간다). cv2 파이프라인이 하던 바로 그 왕복이라, 없애면 상류 구조에서 멀어진다. " +
+                "**(b) `pow(x, 1/2.2)` 인코드 + sRGB piecewise(지수 2.4) 디코드 왕복 제거** — " +
+                "🔴 **두 곡선이 다르므로 상쇄가 아니다.** 체인에서 CLAHE가 실제로 보던 값은 " +
+                "`srgbDecode(pow(tone, 1/2.2))`(대략 tone^(2.4/2.2), 게다가 저휘도에서는 " +
+                "선형 구간이 섞인다)인데 융합은 `tone` 자체를 본다 — **히스토그램도 LUT도 " +
+                "다른 분포에서 나온다.** 그래서 `uOutGamma`(DRAGO_GAMMA)는 이 arm에서 " +
+                "**적용되지 않는다**(값은 대조용으로 남겨 둔다). " +
+                "**(c) Drago 톤맵을 픽셀당 2회 평가한다** — 융합 analyze와 융합 apply가 각각 " +
+                "다시 계산한다(중간 이미지가 없으니 다시 계산하는 수밖에 없다). 즉 융합은 " +
+                "'패스 1개 + FBO 왕복 + pow 왕복'을 '톤맵 1회 추가'와 **교환**하는 것이다. " +
+                "어느 쪽이 이기는지는 측정 대상이며 여기에 예상치를 적지 않는다. " +
+                "🗣️ **채택 여부는 팀장/팀 판단이다** — KICKOFF_ROLES.md가 알고리즘 설계를 " +
+                "팀장 영역으로 두고, DRAGO_DEVIATION의 '상류를 픽셀 단위로 재현할 것인가'도 " +
+                "같은 이유로 팀장 판단으로 올라가 있다(FRAME_BUDGET.md §5 레버 3)"
+
+        const val FUSED_GLARE_NOTE =
+            CHAIN_GLARE_NOTE +
+                " ⚠ **게다가 이 arm은 융합이라 상류와 곡선 자체가 다르다**" +
+                "(upstream_deviation (a)(b)). 위 상류 3축·오탐 수치는 체인보다도 " +
+                "**더 간접적인** 근거다 — 이 arm의 표시 품질·탐지 영향은 우리 출력으로 " +
+                "다시 재야 말할 수 있다(scripts/metrics.py의 3축 지표가 그 자다)"
+
+        const val FUSED_FLICKER_NOTE =
+            CHAIN_FLICKER_NOTE +
+                " ⚠ **융합에서는 그 연쇄가 더 직접적이다** — 중간 이미지가 없어 drago 통계가 " +
+                "타일 히스토그램을 **같은 프레임 안에서 바로** 민다(체인은 8비트로 한 번 " +
+                "떨어졌다가 다시 읽혔다). 출렁임의 크기가 체인과 다를 수 있고, 그 차이 자체가 " +
+                "관측 항목이다"
+
+        const val FUSED_LEVERS_NOT_PULLED =
+            CHAIN_LEVERS_NOT_PULLED +
+                " ── 융합에서 추가로 **당기지 않은** 레버 2개: " +
+                "(7) **적용 결과를 화면에 바로 그리기** — 지금은 FBO_B에 쓰고 present가 " +
+                "복사한다. 바로 그리면 패스 하나가 줄지만 gpu_present_ms 열이 사라져 다른 " +
+                "arm과 열 구조가 달라지고(비교가 끊긴다) 처리 해상도 ≠ surface 해상도라 " +
+                "스케일링이 적용 패스에 섞인다. " +
+                "(8) **톤맵 2회 평가를 1회로 줄이기** — 중간 결과를 float FBO에 남기면 되지만 " +
+                "그건 **다시 materialize**라 융합의 정의에 어긋난다(그 구성은 별도 arm이지 " +
+                "이 arm의 최적화가 아니다)"
+
+        /**
+         * 🔴 상류 CPU 숫자 옆에 놓을 수 있는 것은 **체인**이지 융합이 아니다.
+         * 융합의 의미는 **체인 대비 절감**이다.
+         */
+        const val FUSED_HOW_TO_COMPARE =
+            "🔴 **상류 CPU 실측(D1A1+bf 720p 101.2ms) 옆에 이 arm의 값을 놓지 말 것.** " +
+                "그 자리에 놓을 수 있는 것은 **체인(`drago_clahe_chain`)**이다 — 체인은 상류 " +
+                "cv2 구조를 그대로 옮긴 것이고 융합은 **다른 알고리즘**이다" +
+                "(upstream_deviation). 융합 값을 상류 옆에 놓으면 서로 다른 두 알고리즘을 " +
+                "비교하는 것이 된다. " +
+                "🔴 **이 arm의 의미는 하나다: 체인 대비 절감.** 비교할 짝은 같은 조건에서 잰 " +
+                "`drago_clahe_chain` 런이고, 비교할 지표는 **gpu_sum_ms의 arm 간 차분**이다" +
+                "(stage_d_total_ms만 보면 과소가 된다 — 아래 이유). 절감의 귀속은 두 arm의 " +
+                "color_transform_declared / color_transform_sites를 나란히 놓고 '변환 몇 회를 " +
+                "줄였는가'로 한다. " +
+                "⚠ 두 arm은 **패스 수도 다르다**(체인 8 / 융합 7). 열 이름이 같아도 담기는 " +
+                "패스가 다르므로 **열 단위 대조는 성립하지 않는다** — 특히 " +
+                "stage_d_apply_ms는 체인에서 drago 적용, 융합에서 융합 적용이다. " +
+                LAB_HOW_TO_COMPARE
+
+        // ── 융합의 색공간 변환 **선언값** ──────────────────────────────────
+        // 체인의 같은 칸과 나란히 읽으라고 만든 표다. 값의 성격은 체인과 같다
+        // (사람이 센 값이며 측정이 아니다 — [CHAIN_COLOR_TRANSFORM_DECLARED_PROVENANCE]).
+
+        const val FUSED_PASSES_TOTAL = 7
+
+        /** 패스3(스레드 1개)과 패스5(빈 하나에 스레드 하나)는 픽셀 루프가 아니라 빠진다. */
+        const val FUSED_FULLSCREEN_PASSES = 5
+
+        /**
+         * 🔴 **0이다.** 융합은 LabGlsl의 piecewise `srgbToLinear`를 한 번도 부르지 않는다 —
+         * 톤맵 결과가 이미 선형이라 [LabGlsl.LINEAR_INPUT_FUNCTIONS]로 바로 들어간다.
+         * 체인은 2였다(이탈 (b)의 정량).
+         */
+        const val FUSED_SRGB_TO_LINEAR_PER_PIXEL = 0
+
+        /** 패스4의 linearToLabL 1 + 패스6의 linearToLabF 3. 체인과 같다. */
+        const val FUSED_LAB_F_FORWARD_PER_PIXEL = 4
+
+        /** 패스6의 labFToSrgb 3. 체인과 같다. */
+        const val FUSED_LAB_F_INVERSE_PER_PIXEL = 3
+
+        /** 패스6의 labFToSrgb 1. 체인과 같다 — 최종 표시 인코딩은 바꾸지 않았다. */
+        const val FUSED_LINEAR_TO_SRGB_PER_PIXEL = 1
+
+        /** 🔴 **2다**(융합 analyze + 융합 apply). 체인은 1이었다 — 이탈 (c)의 정량. */
+        const val FUSED_DRAGO_TONEMAP_EVALS_PER_PIXEL = 2
+
+        /** 패스2 1 + 패스4 1 + 패스6 1 = 3. 체인은 2였다. */
+        const val FUSED_DRAGO_POW_LINEARIZE_PER_PIXEL = 3
+
+        /** 🔴 **0이다.** 중간 이미지가 없어 인코드할 곳이 없다 — 이탈 (b)의 정량. */
+        const val FUSED_DRAGO_OUT_GAMMA_ENCODE_PER_PIXEL = 0
+
+        /** 패스1 FBO_A + 패스6 FBO_B = **2**. 체인은 3이었다 — 이탈 (a)의 정량. */
+        const val FUSED_INTERMEDIATE_RGBA8_MATERIALIZATIONS = 2
     }
 }

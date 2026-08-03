@@ -234,7 +234,14 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
         const val MISSING_NS = -1L
 
         /**
-         * 헤더 규칙 (스키마 v3):
+         * 헤더 규칙 (스키마 v4):
+         *
+         * 0. **GPU 열은 여기 없다.** 이 상수는 타임스탬프 4개 + `dropped_since_last`뿐이고,
+         *    GPU 열은 런마다 `RenderArm.gpuColumns`에서 와서 [start]가 만든 [gpuHeader]로
+         *    뒤에 붙는다. v4에서 들어온 세 열(`stage_d_analyze2_ms` / `stage_d_build2_ms` /
+         *    `stage_d_apply2_ms`)도 **여기에 적지 않는다** — 조합 arm
+         *    (`drago_clahe_chain`)의 `gpuColumns`가 그 이름의 유일한 출처이고, 여기에 사본을
+         *    만들면 arm마다 다른 열 구성이 한 칸씩 밀린다(아래 ⚠ 참고).
          *
          * 1. 여기 쓰는 이름은 `lib/frame_log.py`의 `REQUIRED_COLUMNS + OPTIONAL_COLUMNS`에
          *    있는 이름과 **글자까지** 같아야 한다. 오타를 내면 하네스가 미지 열 경고를 내지만
