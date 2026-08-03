@@ -25,7 +25,7 @@ from typing import Optional
 
 from lib.stats import percentile
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # 폰이 반드시 뱉어야 하는 열
 REQUIRED_COLUMNS = ("frame_idx", "t_recv_ns")
@@ -51,6 +51,12 @@ GPU_TIME_COLUMNS = (
     "stage_d_build_ms",     # ② 그 통계로 LUT·계수를 만드는 패스 (v3)
     "stage_d_apply_ms",     # ② 픽셀에 적용하는 패스 (v3)
     "stage_d_denoise_ms",   # ② 노이즈 억제 패스 (v3)
+    # 서수 2 = **그 arm의 두 번째 톤커브 스테이지**의 같은 역할 슬롯 (v4). 조합 arm이
+    # ② 자리에서 스테이지를 두 번 도는 경우(예: 톤매핑 뒤에 대비 향상)를 담는다.
+    # 위 하위 열 바로 뒤에 두어 **읽는 순서가 패스 순서와 같게** 한다.
+    "stage_d_analyze2_ms",  # ② 두 번째 스테이지의 통계 산출 패스 (v4)
+    "stage_d_build2_ms",    # ② 두 번째 스테이지의 LUT·계수 생성 패스 (v4)
+    "stage_d_apply2_ms",    # ② 두 번째 스테이지의 적용 패스 (v4)
     "stage_i_ms",         # ④ 강조 렌더 패스 (버짓 I칸)
     "gpu_present_ms",     # 기본 프레임버퍼에 그린 최종 표시 패스. **버짓 칸이 아니다**
 )
@@ -76,6 +82,19 @@ GPU_TIME_COLUMNS = (
 #     apply   : 픽셀에 적용한다 (LUT 보간+감마 / 톤맵 / 나눗셈)
 #     denoise : 노이즈 억제 (bilateral 계열, `+bf` arm)
 #
+#   **이름 끝의 서수(`2`)는 '그 arm의 두 번째 톤커브 스테이지의 같은 역할 슬롯'이다** (v4).
+#   조합 arm은 ② 자리에서 스테이지를 두 번 돌기 때문에(예: Drago로 톤을 누른 뒤 CLAHE로
+#   국소 대비를 올린다) analyze/build/apply 슬롯이 각각 두 번 필요하다. 서수는 **순서**만
+#   말하고 알고리즘을 말하지 않는다 — 어느 스테이지가 무엇이었는지는 위와 똑같이
+#   `session.json`의 `render.passes[]`가 선언한다.
+#   ⚠ 앱이 두 스테이지를 **합쳐서 한 슬롯에 넣지 않는다.** 합치면 유도값이고(§2), 어느
+#     스테이지가 비싼지가 사라져 경량화 레버를 고를 수 없다.
+#   ⚠ `stage_d_ms`를 두 번째 스테이지에 재사용하지 않는다 — 그러면 `stage_d_ambiguous`
+#     (하위 열과 `stage_d_ms`가 동시에 있는 모호 경로)에 걸려 이중 계상 경고가 붙는다.
+#   ⚠ `stage_d_denoise_ms`로 대신하지 않는다 — 그 이름은 bilateral(`+bf`) 전용 역할이라
+#     톤커브 스테이지를 담으면 D칸 분해를 읽는 사람이 오독한다(hist/cdf 이름을 버린 이유와
+#     같은 부류).
+#
 #   **그 arm에서 이 슬롯이 구체적으로 무엇이었는지는 앱이 `session.json`의
 #   `render.passes[]`(각 항목의 `gpu_column`)에 선언한다.** 열 이름은 역할이고, 의미는
 #   세션이 말한다 — 하네스는 여기서도 arm을 해석하지 않는다.
@@ -85,6 +104,9 @@ STAGE_D_FAMILY_COLUMNS = (
     "stage_d_build_ms",
     "stage_d_apply_ms",
     "stage_d_denoise_ms",
+    "stage_d_analyze2_ms",
+    "stage_d_build2_ms",
+    "stage_d_apply2_ms",
 )
 
 # D 계열의 **행별 합** (파생 시계열. CSV 열이 아니다).
@@ -109,6 +131,9 @@ COLUMN_ADDED_IN = {
     "stage_d_build_ms": 3,
     "stage_d_apply_ms": 3,
     "stage_d_denoise_ms": 3,
+    "stage_d_analyze2_ms": 4,
+    "stage_d_build2_ms": 4,
+    "stage_d_apply2_ms": 4,
 }
 
 # ── 상수 자기검사 ─────────────────────────────────────────────────────────
@@ -242,6 +267,12 @@ RENDER_ARM_AGCWD_BF = "agcwd_bf"
 RENDER_ARM_DRAGO = "drago"
 RENDER_ARM_REINHARD = "reinhard"
 RENDER_ARM_LIME = "lime"
+# ② 조합 arm(② 자리에서 톤커브 스테이지를 두 번 돈다) + ④ 강조. **위와 같은 취급이다** —
+# 팀원2 쪽 명명이지 계약값이 아니고, 생산자는 앱이므로 앱이 다른 id를 쓰기로 하면 앱이
+# 정답이며 여기를 고친다. 등록은 "이 문자열을 안다"는 뜻일 뿐이다.
+RENDER_ARM_DRAGO_CLAHE_CHAIN = "drago_clahe_chain"
+RENDER_ARM_DRAGO_CLAHE_FUSED = "drago_clahe_fused"
+RENDER_ARM_HIGHLIGHT_BOXES = "highlight_boxes"
 
 RENDER_ARMS = (
     RENDER_ARM_PASSTHROUGH,
@@ -254,6 +285,9 @@ RENDER_ARMS = (
     RENDER_ARM_DRAGO,
     RENDER_ARM_REINHARD,
     RENDER_ARM_LIME,
+    RENDER_ARM_DRAGO_CLAHE_CHAIN,
+    RENDER_ARM_DRAGO_CLAHE_FUSED,
+    RENDER_ARM_HIGHLIGHT_BOXES,
     RENDER_ARM_SYNTHETIC,
 )
 
@@ -353,6 +387,10 @@ class FrameSeries:
     stage_d_build_ms: list[float] = field(default_factory=list)
     stage_d_apply_ms: list[float] = field(default_factory=list)
     stage_d_denoise_ms: list[float] = field(default_factory=list)
+    # 서수 2 = 그 arm의 **두 번째 톤커브 스테이지**의 같은 역할 슬롯 (v4)
+    stage_d_analyze2_ms: list[float] = field(default_factory=list)
+    stage_d_build2_ms: list[float] = field(default_factory=list)
+    stage_d_apply2_ms: list[float] = field(default_factory=list)
     stage_i_ms: list[float] = field(default_factory=list)
     gpu_present_ms: list[float] = field(default_factory=list)
     # **행 단위** 합. p50(B)+p50(D) != p50(B+D)이므로 백분위를 더하지 않고 행에서 먼저

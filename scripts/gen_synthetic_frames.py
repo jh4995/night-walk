@@ -103,6 +103,24 @@ def main() -> int:
         "--stage_d_denoise_ms", type=float, default=0.0,
         help="② 노이즈 억제 패스 GPU 시간 (버짓 D칸). 0=열 없음. 예: bilateral(+bf arm)",
     )
+    # ② 두 번째 톤커브 스테이지의 같은 역할 슬롯 (스키마 v4). 조합 arm은 ② 자리에서
+    # 스테이지를 두 번 돌기 때문에 analyze/build/apply가 각각 두 번 필요하다.
+    # ⚠ 서수 2는 **순서**만 말하고 알고리즘을 말하지 않는다(lib/frame_log.py 주석 참고).
+    parser.add_argument(
+        "--stage_d_analyze2_ms", type=float, default=0.0,
+        help=(
+            "② 두 번째 스테이지의 통계 산출 패스 GPU 시간 (버짓 D칸). 0=열 없음. "
+            "예: 조합 arm에서 1차 톤맵 결과를 다시 훑는 히스토그램"
+        ),
+    )
+    parser.add_argument(
+        "--stage_d_build2_ms", type=float, default=0.0,
+        help="② 두 번째 스테이지의 LUT·계수 생성 패스 GPU 시간 (버짓 D칸). 0=열 없음",
+    )
+    parser.add_argument(
+        "--stage_d_apply2_ms", type=float, default=0.0,
+        help="② 두 번째 스테이지의 적용 패스 GPU 시간 (버짓 D칸). 0=열 없음",
+    )
     parser.add_argument(
         "--stage_i_ms", type=float, default=0.0,
         help="④ 강조 패스 GPU 시간 (버짓 I칸). 0=열 없음",
@@ -177,6 +195,9 @@ def main() -> int:
         "stage_d_build_ms": args.stage_d_build_ms,
         "stage_d_apply_ms": args.stage_d_apply_ms,
         "stage_d_denoise_ms": args.stage_d_denoise_ms,
+        "stage_d_analyze2_ms": args.stage_d_analyze2_ms,
+        "stage_d_build2_ms": args.stage_d_build2_ms,
+        "stage_d_apply2_ms": args.stage_d_apply2_ms,
         "stage_i_ms": args.stage_i_ms,
         "gpu_present_ms": args.gpu_present_ms,
     }
@@ -338,6 +359,9 @@ def main() -> int:
             "stage_d_build_ms": args.stage_d_build_ms,
             "stage_d_apply_ms": args.stage_d_apply_ms,
             "stage_d_denoise_ms": args.stage_d_denoise_ms,
+            "stage_d_analyze2_ms": args.stage_d_analyze2_ms,
+            "stage_d_build2_ms": args.stage_d_build2_ms,
+            "stage_d_apply2_ms": args.stage_d_apply2_ms,
             "stage_i_ms": args.stage_i_ms,
             "gpu_present_ms": args.gpu_present_ms,
             "gpu_disjoint_frac": args.gpu_disjoint_frac,

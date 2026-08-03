@@ -74,6 +74,11 @@ BUDGET_CELL_OF = {
     "stage_d_build_ms": "D",
     "stage_d_apply_ms": "D",
     "stage_d_denoise_ms": "D",
+    # 서수 2 = 그 arm의 **두 번째 톤커브 스테이지**의 같은 역할 슬롯(v4). 조합 arm이 ②
+    # 자리에서 스테이지를 두 번 돌아도 채우는 칸은 여전히 D 하나다.
+    "stage_d_analyze2_ms": "D",
+    "stage_d_build2_ms": "D",
+    "stage_d_apply2_ms": "D",
     STAGE_D_TOTAL_COLUMN: "D",  # 파생(행별 합). 실제 CSV 열이 아니다
     "stage_i_ms": "I",
     "gpu_present_ms": None,  # 최종 표시 패스. 실제 GPU 비용이지만 A~J 어느 칸도 아니다

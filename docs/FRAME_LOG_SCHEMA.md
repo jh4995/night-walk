@@ -1,4 +1,4 @@
-# 프레임 로그 스키마 v3
+# 프레임 로그 스키마 v4
 
 > **작성:** 팀원2 · **상태:** 확정 (Android 트랙 ↔ 하네스 트랙 내부 규격)
 > **소유 주제:** 폰이 뱉고 PC가 읽는 측정 로그의 형식.
@@ -41,7 +41,7 @@ session.json    이 측정이 어떤 조건이었는지
 | `t_render_end_ns` | int ns | 렌더 제출 완료 |
 | `dropped_since_last` | int | 직전 행 이후 백프레셔로 버려진 프레임 수 |
 
-### GPU 패스 시간 (v2 추가, v3에서 D 계열 확장) — **다른 시계에서 온다**
+### GPU 패스 시간 (v2 추가, v3·v4에서 D 계열 확장) — **다른 시계에서 온다**
 
 | 열 | 타입 | 의미 | 버짓 칸 | 추가 |
 |---|---|---|---|---|
@@ -51,6 +51,9 @@ session.json    이 측정이 어떤 조건이었는지
 | `stage_d_build_ms` | float ms | ② **LUT·계수 생성** 슬롯의 GPU 시간 | **D** (D 계열) | v3 |
 | `stage_d_apply_ms` | float ms | ② **적용** 슬롯의 GPU 시간 | **D** (D 계열) | v3 |
 | `stage_d_denoise_ms` | float ms | ② **노이즈 억제** 슬롯의 GPU 시간 | **D** (D 계열) | v3 |
+| `stage_d_analyze2_ms` | float ms | ② **두 번째 톤커브 스테이지**의 통계 산출 슬롯 | **D** (D 계열) | v4 |
+| `stage_d_build2_ms` | float ms | ② **두 번째 톤커브 스테이지**의 LUT·계수 생성 슬롯 | **D** (D 계열) | v4 |
+| `stage_d_apply2_ms` | float ms | ② **두 번째 톤커브 스테이지**의 적용 슬롯 | **D** (D 계열) | v4 |
 | `stage_i_ms` | float ms | ④ 강조 렌더 패스의 GPU 시간 | **I** | v2 |
 | `gpu_present_ms` | float ms | 기본 프레임버퍼에 그린 최종 표시 패스의 GPU 시간 | **없음** (§6) | v2 |
 
@@ -76,6 +79,16 @@ session.json    이 측정이 어떤 조건이었는지
 | `stage_d_build_ms` | 그 통계로 **LUT·계수를 만드는** 패스 | CLAHE 클립+CDF / AGCWD 가중 LUT (**없는 arm도 있다**) |
 | `stage_d_apply_ms` | 픽셀에 **적용하는** 패스 | LUT 보간+감마 / 톤맵 / 나눗셈 |
 | `stage_d_denoise_ms` | **노이즈 억제** 패스 | bilateral (`+bf` arm) |
+| `stage_d_analyze2_ms` | **두 번째 톤커브 스테이지**의 통계 산출 패스 | 조합 arm에서 1차 톤맵 결과를 다시 훑는 히스토그램 |
+| `stage_d_build2_ms` | 〃 의 LUT·계수 생성 패스 | 조합 arm의 2차 클립+CDF (**없는 arm도 있다**) |
+| `stage_d_apply2_ms` | 〃 의 적용 패스 | 조합 arm의 2차 LUT 보간 |
+
+**이름 끝의 서수(`2`)는 "그 arm의 두 번째 톤커브 스테이지의 같은 역할 슬롯"이다** (v4 추가).
+조합 arm은 ② 자리에서 스테이지를 **두 번** 돌기 때문에 `analyze`/`build`/`apply`가 각각 두 번
+필요하다(1차 톤맵으로 톤을 누른 뒤 2차로 국소 대비를 올리는 구성). **서수는 순서만 말하고
+알고리즘을 말하지 않는다** — 어느 스테이지가 무엇이었는지는 위와 똑같이 `render.passes[]`가
+선언한다. `stage_d_ms`를 두 번째 스테이지에 재사용하면 아래 **모호 경로**에 걸리고,
+`stage_d_denoise_ms`는 bilateral 전용 역할 이름이라 톤커브 스테이지를 담으면 오독된다.
 
 **왜 알고리즘 이름을 쓰지 않는가.** 처음에는 CLAHE 구성을 그대로 따서
 `hist`/`cdf`/`apply`로 지었는데, 그러면 Drago의 **최대휘도 리덕션**이 `stage_d_hist_ms`에
@@ -210,7 +223,7 @@ DVFS/발열 차**인지 아직 갈라내지 못했다 → **열별 차분을 근
 
 | 지표 | 계산 | 무엇을 말하나 |
 |---|---|---|
-| `stage_b_ms` · D 계열 4개 · `stage_i_ms` · `gpu_present_ms` | CSV 열 그대로 | 패스별 GPU 점유 시간 |
+| `stage_b_ms` · D 계열(§2의 8개) · `stage_i_ms` · `gpu_present_ms` | CSV 열 그대로 | 패스별 GPU 점유 시간 |
 | `stage_d_total_ms` | **행별로** 유효한 **D 계열** 열들의 합 | **그 런의 D칸** (v3) |
 | `gpu_sum_ms` | **행별로** 유효한 **모든 GPU** 열의 합 | 그 프레임이 GPU를 잡은 총 시간 |
 
@@ -220,7 +233,7 @@ DVFS/발열 차**인지 아직 갈라내지 못했다 → **열별 차분을 근
 
 | 파생 시계열 | 더하는 대상 | 쓰는 곳 |
 |---|---|---|
-| `stage_d_total_ms` | **D 계열만** (`stage_d_ms` + `stage_d_analyze_ms` + `stage_d_build_ms` + `stage_d_apply_ms` + `stage_d_denoise_ms` 중 그 로그에 있는 것) | **D칸** |
+| `stage_d_total_ms` | **D 계열만** (`stage_d_ms` + `stage_d_analyze_ms` + `stage_d_build_ms` + `stage_d_apply_ms` + `stage_d_denoise_ms` + `stage_d_analyze2_ms` + `stage_d_build2_ms` + `stage_d_apply2_ms` 중 그 로그에 있는 것) | **D칸** |
 | `gpu_sum_ms` | **모든 GPU 열** (B + D 계열 + I + present) | 그 프레임의 GPU 총 점유 |
 
 - **행별 합이지 백분위의 합이 아니다.** `p50(hist) + p50(cdf) != p50(hist+cdf)`.
@@ -287,7 +300,7 @@ Android에서는 `SystemClock.elapsedRealtimeNanos()`.
 | `recv_to_render_ms` | `> 0` | **없음** |
 | `capture_to_render_ms` | `> 0` | `< 5000ms` |
 | `stage_b_ms` · `stage_i_ms` · `gpu_present_ms` | `> 0` | **없음** |
-| D 계열: `stage_d_ms` · `stage_d_analyze_ms` · `stage_d_build_ms` · `stage_d_apply_ms` · `stage_d_denoise_ms` | `> 0` | **없음** |
+| D 계열: `stage_d_ms` · `stage_d_analyze_ms` · `stage_d_build_ms` · `stage_d_apply_ms` · `stage_d_denoise_ms` · `stage_d_analyze2_ms` · `stage_d_build2_ms` · `stage_d_apply2_ms` | `> 0` | **없음** |
 | `stage_d_total_ms` (파생) | `> 0` | **없음** |
 | `gpu_sum_ms` (파생) | `> 0` | **없음** |
 
@@ -444,7 +457,7 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "build_type": "release",
   "pipeline_stages": [],
   "capture_clock_base": "unknown",
@@ -510,7 +523,7 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 | `gamma_only` | ② 자리에 감마 패스. **② 비용의 하한**이며 알고리즘이 아니다 | `["blit_2pass", "stage2_gamma"]` |
 | `synthetic` | **합성 로그**(`gen_synthetic_frames.py`)의 기본값. 어떤 셰이더도 돌지 않았다 | 생성 인자에 따름 |
 
-#### ② arm 예약어 (v3에서 미리 등록) — ⚠️ **계약값이 아니다**
+#### ② arm 예약어 (v3·v4에서 미리 등록) — ⚠️ **계약값이 아니다**
 
 ② 알고리즘 arm이 곧 늘어난다. 어휘에 없으면 앱이 붙는 날 매 런 "어휘 밖" 경고가 뜨므로
 아래를 미리 등록해 뒀다. **다만 이 이름들은 팀원2(하네스) 쪽 명명이지 팀과 합의한 계약값이
@@ -523,6 +536,8 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 | `clahe_gamma_bf` | 위 + 바이래터럴 필터 |
 | `agcwd` / `agcwd_bf` | AGCWD (+ 바이래터럴) |
 | `drago` · `reinhard` · `lime` | 톤매핑·조도추정 계열 |
+| `drago_clahe_chain` · `drago_clahe_fused` | **조합 arm** (v4). ② 자리에서 톤커브 스테이지를 **두 번** 돈다 → `stage_d_*2_ms` 슬롯 |
+| `highlight_boxes` | ④ 강조 (v4) |
 
 **어휘에 있다는 것은 "그 문자열을 안다"는 뜻일 뿐이다.** 하네스는 여전히 arm의 의미를
 해석하지 않으며, 어느 arm이 어느 패스에 무엇을 그렸는지는 판단하지 않는다.
@@ -554,8 +569,17 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 | *(빈 배열)* | 처리 없는 arm(`passthrough`). OES→화면 1패스 | 앱 `RenderArm.PASSTHROUGH` |
 | `blit_2pass` | 3패스 골격(OES→오프스크린→②자리→표시). ② 자리는 단순 복사 | 앱 `RenderArm.BLIT_2PASS` / 생성기 `--stage_b_ms` |
 | `stage2_gamma` | ② 자리에 감마 패스. **② 비용의 하한**이며 알고리즘이 아니다 | 앱 `RenderArm.GAMMA_ONLY` / 생성기 `--stage_d_ms` |
+| `stage2_drago` | ② Drago 톤매핑(리덕션+계수+적용 3패스) | 앱 `RenderArm.DRAGO` |
+| `stage2_clahe` | ② CLAHE+감마, LAB `L`(타일 히스토그램+CDF+보간) | 앱 `RenderArm.CLAHE_GAMMA` |
+| `stage2_agcwd` | ② AGCWD, LAB `L`(전역 히스토그램+가중 LUT) | 앱 `RenderArm.AGCWD` |
 | `detect` | ③ 탐지. **앱 미구현** — 현재는 합성 로그만 낸다 | 생성기 `--detect_every_n` |
 | `stage4_highlight` | ④ 강조. **앱 미구현** — 현재는 합성 로그만 낸다 | 생성기 `--stage_i_ms` |
+
+> **조합 arm에는 새 토큰을 만들지 않는다** (v4). ② 자리에서 스테이지를 두 번 도는 arm은
+> 실제로 위 토큰을 **두 개 나열**한다(예: `["blit_2pass","stage2_drago","stage2_clahe"]`) —
+> 도는 것이 그 두 스테이지이므로 그게 정확한 선언이고, 조합 전용 토큰을 새로 지으면 같은
+> 구조가 두 이름으로 갈려 단독 런과의 비교가 "조건 다름"이 된다. 조합인지 단독인지는
+> `render_arm`이 구분한다(그쪽이 비교 조건이다).
 
 - 어휘 밖 토큰이 오면 `analyze_frames.py`가 **경고**하고
   `source.pipeline_stages_vocab_ok = false` / `source.pipeline_stages_unknown_tokens`에 남긴다.
@@ -760,6 +784,14 @@ python scripts/gen_synthetic_frames.py --stage_b_ms 2 \
   --stage_d_analyze_ms 1.5 --stage_d_build_ms 0.4 --stage_d_apply_ms 2.2 \n  --stage_d_denoise_ms 1.1 --render_arm clahe_gamma_bf
 # stage_d_ms와 하위 열을 **동시에** 주면 D 계열 모호 경로(경고 + 해석 명시)
 python scripts/gen_synthetic_frames.py --stage_d_ms 6 --stage_d_analyze_ms 1 --stage_d_build_ms 2
+
+# ② 조합 arm(v4). 톤커브 스테이지를 두 번 도는 arm — 서수 2 슬롯까지 6개가 D 계열로 묶인다.
+# pipeline_stages는 **도는 스테이지를 그대로 나열**한다(조합 전용 토큰을 만들지 않는다).
+python scripts/gen_synthetic_frames.py --stage_b_ms 0.6 \
+  --stage_d_analyze_ms 1.5 --stage_d_build_ms 0.3 --stage_d_apply_ms 2.2 \
+  --stage_d_analyze2_ms 1.8 --stage_d_build2_ms 0.4 --stage_d_apply2_ms 3.4 \
+  --gpu_present_ms 3.6 --pipeline_stages "blit_2pass,stage2_drago,stage2_clahe" \
+  --render_arm drago_clahe_chain
 
 # render_arm / pipeline_stages는 **명시 인자**다 (유추하지 않는다)
 python scripts/gen_synthetic_frames.py --stage_d_ms 5 --render_arm gamma_only
@@ -970,3 +1002,45 @@ S1 이전 빌드의 낡은 로그가 남아 있었다. `pipeline_stages`가 빈 
   존재하지 않는다. 버전은 "옛 로그를 어떻게 읽을지"를 가르는 장치이므로, 읽을 옛 로그가
   없는 이름 변경은 버전을 올릴 호환성 사건이 아니다. 옛 이름이 든 CSV를 태우면 **미지 열
   경고가 그 이름을 지목**한다(실행 확인). 이름을 바꿀 수 있는 가장 싼 순간이 지금이었다.
+- **v4 (2026-08-03, 팀원2) — `SCHEMA_VERSION` 3 → 4. ② 조합 arm의 두 번째 톤커브 스테이지.**
+  조합 arm은 ② 자리에서 톤커브 스테이지를 **두 번** 돈다(1차로 톤을 누르고 2차로 국소 대비를
+  올린다). 그런데 `stage_d_analyze/build/apply_ms` 슬롯이 각각 **하나뿐**이라 두 번째
+  스테이지를 담을 곳이 없었다. 앱이 두 스테이지를 합쳐 한 슬롯에 넣는 것은 §2 "유도값은
+  저장하지 않는다" 위반이고, 어느 스테이지가 비싼지가 사라져 경량화 레버를 고를 수 없다.
+  **CSV에 열이 3개 늘었으므로** 버전을 올린다: `stage_d_analyze2_ms` · `stage_d_build2_ms` ·
+  `stage_d_apply2_ms`(전부 D칸, 전부 D 계열). 서수 `2`의 뜻은 **"그 arm의 두 번째 톤커브
+  스테이지의 같은 역할 슬롯"**이며 순서만 말하고 알고리즘을 말하지 않는다 — 구체적 의미는
+  기존 슬롯과 똑같이 `render.passes[].gpu_column`이 선언한다(§2).
+  `stage_d_ms`를 재사용하지 않은 이유는 그것이 **모호 경로**(`stage_d_ambiguous`)에 들어가
+  이중 계상 경고를 달고 나오기 때문이고, `stage_d_denoise_ms`를 쓰지 않은 이유는 그 이름이
+  bilateral(`+bf`) 전용 역할이라 톤커브 스테이지를 담으면 hist/cdf 이름을 버린 것과 같은
+  **오독**을 낳기 때문이다. 열 순서는 기존 하위 열 **바로 뒤**에 두어 리포트의 읽는 순서가
+  패스 순서와 같게 했다.
+  **`pipeline_stages`에는 새 토큰을 만들지 않았다** — 조합은 실제로 기존 토큰 두 개를
+  나열한다(`["blit_2pass","stage2_drago","stage2_clahe"]`). 조합 전용 토큰을 지으면 같은
+  구조가 두 이름으로 갈려 단독 런과의 비교가 "조건 다름"이 된다. 조합/단독 구분은
+  `render_arm`이 한다. 이 라운드에서 §5 표에 누락돼 있던 `stage2_drago`/`stage2_clahe`/
+  `stage2_agcwd`(앱이 이미 내던 토큰)도 함께 적었다.
+  **`render_arm` 어휘 확장 3종**: `drago_clahe_chain` · `drago_clahe_fused` ·
+  `highlight_boxes`. ⚠️ v3의 ② arm 예약어와 **완전히 같은 취급**이다 — 팀원2 명명이지
+  계약값이 아니고, **생산자는 앱**이므로 앱이 다른 `id`를 쓰기로 하면 앱이 정답이며 여기를
+  고친다. 등록은 "이 문자열을 안다"는 뜻일 뿐이다.
+  판정(`meets_*_target`)·종료 코드는 그대로다 — 단계 비용에는 판정선이 없다.
+  ⚠️ **앱은 아직 v3다.** §6대로 하네스가 먼저 들어간 것이며, 앱 라운드가 붙기 전까지
+  실기기 로그에 "앱이 하네스보다 뒤처졌다" 경고가 뜨는 것은 **정상이고 의도된 순서**다.
+  검증(합성 = **로직 검증이지 실측이 아니다**): 조합 arm 합성 로그(생성 `run_ts=20260803_164152`,
+  집계 `run_ts=20260803_164158`)에서 `stage_d_columns`에 6개가 실리고
+  `stage_d_ambiguous=false`, `gpu_sum_columns`에 8개, `budget_cell`이 새 열 3개를 `D`로
+  매핑한다. `stage_d_total_ms`가 **행별 합**임을 손 검산했다 — 6개 열의 `p50`을 더하면
+  9.617인데 행별 합의 `p50`은 **9.622**로 다르다(백분위의 합은 행별 합이 아니다).
+  `stage_d_ms`까지 함께 준 8열 로그에서는 모호 경로가 그대로 걸리고 해석 문장이 나온다.
+  하위호환: **승격본 14건의 원본 CSV를 전부 v4 하네스로 재집계**했다. v3 선언 12건은
+  `frametime`·`verdict`·`stages`의 **측정값이 비트 단위로 같고**, 달라진 것은 스키마 선언
+  계열뿐이다(`schema_version` 3→4, `schema_version_matches_harness` true→false,
+  `*_columns_defined`·`budget_cell`에 새 열이 추가, 새 열 3개의 `count`는 0).
+  "뒤처졌다" 경고가 **정확히 새 열 3개만** 이름으로 나열한다(`COLUMN_ADDED_IN`이 계산한다).
+  `baseline_diff`는 `schema_version`을 비교 조건으로 보지 않으므로(`CONDITION_KEYS`에 없다)
+  v3 승격본 ↔ v4 재집계가 `p50/p95/p99/mean 전부 +0.00%`로 붙는다(예:
+  `20260803_indoor_clahe_gamma_a34.json` ↔ 집계 `run_ts=20260803_164345`).
+  7/30 v1 승격본 2건은 `frametime`에 `pinned_to_camera_supply` 키가 **추가**된 것만 다르고
+  (v3에서 들어온 키다) 값은 전부 같다 — v4가 만든 차이가 아니다.
