@@ -50,13 +50,30 @@ python scripts/baseline_diff.py \
 | `20260801_indoor_drago_a34.json` | **D1 Drago** — D칸 첫 실측 (+6.28ms) | 〃 / `drago` / **639.8s** |
 | `20260801_indoor_drago_noiseA_a34.json` | **노이즈 바닥 (A)** — 같은 arm 반복 | 〃 / `drago` / **168.6s** |
 | `20260801_indoor_drago_noiseB_a34.json` | **노이즈 바닥 (B)** — 전 열 0.02ms 미만 | 〃 / `drago` / **159.7s** |
-| `20260803_indoor_blit2pass_a34.json` | **② 증분의 분모** (08-03 세션) — 분모를 다시 잰 이유는 ↓ | A34 / release / `55ebed0` / `blit_2pass` / `indoor_bright` / 분석 창 **645.2s** |
+| `20260803_indoor_blit2pass_a34.json` | **② 증분의 분모** (08-03 **13시** 세션) — 분모를 다시 잰 이유는 ↓ | A34 / release / `55ebed0` / `blit_2pass` / `indoor_bright` / 분석 창 **645.2s** |
 | `20260803_indoor_clahe_gamma_a34.json` | **A1 CLAHE+감마** (LAB `L`) — +7.18ms | 〃 / `clahe_gamma` / **644.7s** |
 | `20260803_indoor_agcwd_a34.json` | **A2 AGCWD** (LAB `L`) — +6.10ms | 〃 / `agcwd` / **640.3s** |
+| `20260803_indoor_blit2pass_s4combo_a34.json` | **② 증분의 분모 — 세션 `s4_combo`** (08-03 **20시**). 이 세션의 체인·D1·A1이 전부 이 분모로 빠진다 | A34 / release / **`8103c2b`** / `blit_2pass` / `indoor_bright` / 분석 창 **638.0s** |
+| `20260803_indoor_chain_noiseA_s4combo_a34.json` | **노이즈 바닥 (A)** — 체인 arm 반복 1/2 | 〃 `s4_combo` / `drago_clahe_chain` / ⚠️ **168.8s — 봉투 점** |
+| `20260803_indoor_chain_noiseB_s4combo_a34.json` | **노이즈 바닥 (B)** — 체인 `gpu_sum` 실행 간 폭 p50 **0.032** / p95 0.144 / p99 0.253ms | 〃 `s4_combo` / `drago_clahe_chain` / ⚠️ **167.0s — 봉투 점** |
+| `20260803_indoor_chain_s4combo_a34.json` | **체인 `D1A1`** (`drago_clahe_chain`, 8패스 = ② 자리 6패스) — `gpu_sum` 차분 **+14.526** | 〃 `s4_combo` / **642.4s** / ⚠️ `data_complete: false` (tail query 8개 미해소) |
+| `20260803_indoor_drago_s4combo_a34.json` | **D1 재측** — 같은 세션 분모로 **+6.297** (08-01 값 6.280의 재확인) | 〃 `s4_combo` / `drago` / **639.6s** |
+| `20260803_indoor_clahe_gamma_s4combo_a34.json` | **A1 재측** — 같은 세션 분모로 **+7.152** (08-03 13시 값 7.176의 재확인) | 〃 `s4_combo` / `clahe_gamma` / **642.1s** |
+| `20260804_indoor_blit2pass_s4bfused_a34.json` | **② 증분의 분모 — 세션 `s4b_fused`** (08-04 00시). 융합 차분이 이 분모로 빠진다 | A34 / release / **`cdeaffc`** / `blit_2pass` / `indoor_bright` / 분석 창 **640.9s** / ⚠️ `data_complete: false` (12개 폐기) |
+| `20260804_indoor_fused_noiseA_s4bfused_a34.json` | **노이즈 바닥 (A)** — 융합 arm 반복 1/2 | 〃 `s4b_fused` / `drago_clahe_fused` / ⚠️ **162.9s — 봉투 점** |
+| `20260804_indoor_fused_noiseB_s4bfused_a34.json` | **노이즈 바닥 (B)** — 융합 `gpu_sum` 실행 간 폭 p50 **0.009** / p95 0.071 / p99 0.234ms | 〃 `s4b_fused` / `drago_clahe_fused` / ⚠️ **159.6s — 봉투 점** |
+| `20260804_indoor_fused_s4bfused_a34.json` | **융합** (`drago_clahe_fused`, 7패스 = ② 자리 5패스) — `gpu_sum` 차분 **+12.797**. 🔴 상류에 없는 **우리 변형** | 〃 `s4b_fused` / **639.9s** |
 
-> ⚠️ **분석 창이 600s 미만인 4건은 §1 지속 판정선을 넘지 않는다** — 08-01의 `blit_2pass`·
-> `gamma_only`(각 3분 런)와 노이즈 바닥 2건이다. **B칸과 `gamma_only`의 +0.44는 지속 조건에서
-> 재확인되지 않았다.** 노이즈 바닥 2건은 목적이 "같은 조건 반복의 재현성"이라 짧아도 목적을 채운다.
+> ⚠️ **`blit_2pass` 승격본이 세 건이다** — `20260803_indoor_blit2pass_a34.json`(13시 `55ebed0`) ·
+> `..._s4combo_...`(20시 `8103c2b`) · `..._s4bfused_...`(08-04 `cdeaffc`). **분모는 항상 같은 세션
+> 것으로 뺀다.** 어느 세션 분모인지는 파일명의 세션 id로 읽는다.
+
+> ⚠️ **분석 창이 600s 미만인 8건은 §1 지속 판정선을 넘지 않는다 — 전부 봉투 점이다.**
+> 08-01의 `blit_2pass`·`gamma_only`(각 3분 런), `drago` 노이즈 바닥 2건, `drago_clahe_chain`
+> 노이즈 바닥 2건(08-03), `drago_clahe_fused` 노이즈 바닥 2건(08-04).
+> **B칸과 `gamma_only`의 +0.44는 지속 조건에서 재확인되지 않았다.**
+> 노이즈 바닥 6건은 목적이 "같은 조건 반복의 재현성"이라 짧아도 목적을 채운다 —
+> 🔴 **다만 그 값을 지속 성능으로 옮기지 말 것.** 조합 arm의 본 측정(체인·융합)은 전부 11분 런이다.
 
 > 야간 3건은 전부 **`session.build.git_commit = d011c94`, `git_dirty = "false"`** 다 —
 > 이 APK의 소스가 어느 커밋인지 말할 수 있는 **첫 측정**이다
@@ -204,3 +221,132 @@ LAB 변환**(pow ×9)이다. 경량화 레버는 통계 쪽이 아니라 색공�
 > 그 숫자를 팀에 공유할 때는 단서를 반드시 붙인다 — 처리가 없는 파이프라인의 프레임 간격은
 > **연산 비용이 아니라 카메라 공급 속도**다. 여유의 상한이 아니라 **바닥값**이고,
 > 여기서부터 ①②③④ 비용이 더해진다.
+
+## ② 조합이 말하는 것 — 체인 vs 융합 (2026-08-03 / 08-04 실측)
+
+**전부 `gpu_sum_ms`의 arm 간 차분**(arm − **같은 세션** `blit_2pass`)이며 `stage_d_total_ms`가
+아니다. 🔴 **열 이름 없이 옮기지 말 것** — 같은 런에서 열에 따라 결론이 뒤집힌다(↓ 주의 3).
+
+| arm | 세션 / 커밋 | 분모 | p50 | p95 | p99 | 분석 창 |
+|---|---|---|---|---|---|---|
+| **체인 `D1A1`** (`drago_clahe_chain`, ② 6패스) | `s4_combo` / `8103c2b` | `..._s4combo_...` 3.708 | **+14.526** | +14.915 | +16.200 | 642.4s |
+| **융합** (`drago_clahe_fused`, ② 5패스) | `s4b_fused` / `cdeaffc` | `..._s4bfused_...` 3.699 | **+12.797** | +12.671 | +12.984 | 639.9s |
+| 단품 **D1** (`drago`) | `s4_combo` / `8103c2b` | 3.708 | +6.297 | +6.425 | +6.970 | 639.6s |
+| 단품 **A1** (`clahe_gamma`) | `s4_combo` / `8103c2b` | 3.708 | +7.152 | +7.321 | +8.313 | 642.1s |
+
+**1. 융합이 체인보다 p50 1.729ms 싸다.** 오차 한계는 **0.041ms**
+(세션 간 분모 이동 |−0.009| + 체인 노이즈 바닥 0.032)이고 격차는 그 **42배**다.
+융합 자신의 바닥 0.009까지 더한 0.050으로 잡아도 **35배**라 신호다.
+
+**2. 절감의 메커니즘이 착수 가설과 다르다.** 단품 합은 6.297 + 7.152 = **13.449**인데
+체인은 그보다 **+1.077 비싸고** 융합은 **−0.652 싸다.**
+🔴 착수 근거였던 `RESEARCH_20260803_UPSTREAM.md` §6의 *"두 arm이 LAB 변환을 공유한다"* 는
+**이미 코드 대조로 정정된 서술**이다(`DragoStage`는 `LabGlsl`을 쓰지 않는다 — D1은 선형 RGB,
+A1은 LAB `L`). 승격본의 자동 계수가 이것을 기계로 확증한다:
+`session.stage2_params.color_transform_sites.by_pass`에서 **drago 패스 3개의 색공간 토큰이 전부 0**이고
+토큰은 `clahe_analyze`(8) · `clahe_apply`(9)에만 있다. 즉 절감은 *"LAB을 한 번만 해서"* 가 아니다.
+사람이 센 선언 블록(`color_transform_declared`, 픽셀당·프레임당)이 체인→융합에서 무엇이 바뀌었는지 말한다:
+
+| 항목 | 체인 | 융합 |
+|---|---|---|
+| `intermediate_rgba8_materializations` | 3 | **2** |
+| `fullscreen_passes` / `passes_total` | 6 / 8 | **5 / 7** |
+| `srgb_to_linear_per_pixel` | 2 | **0** |
+| `drago_out_gamma_encode_per_pixel` | 1 | **0** |
+| `drago_tonemap_evals_per_pixel` | 1 | **2** ← 맞바꾼 것 |
+| `drago_pow_linearize_per_pixel` | 2 | **3** ← 맞바꾼 것 |
+| `lab_f_forward` / `lab_f_inverse` | 4 / 3 | 4 / 3 (같다) |
+
+**3. 상류 게이트 안이다.** 상류 ② 게이트 **≤20ms**(출처: **상류 `data.md`** — 우리 판정선이 아니다.
+우리 것은 `FRAME_BUDGET.md` §1 · `lib/targets.py`에만 있다)를 체인·융합 모두 **p99에서도** 통과한다
+(체인 p99 16.200 = 게이트의 81.0% / 융합 p99 12.984 = 64.9%).
+🔴 상류 CPU `D1A1+bf` 720p 101.2ms와 나란히 놓을 수 있는 것은 **체인뿐이다**(같은 알고리즘).
+**융합은 상류에 없는 우리 변형이라 그 자리에 놓지 마라.**
+
+**4. 세션 간 분모 이동량**(이번 측정의 부산물): 같은 `blit_2pass`의 `gpu_sum`이
+p50 **3.708 → 3.699 = −0.009** / p95 +0.034 / p99 +0.197로 움직였다.
+전례(08-01↔08-03의 0.062ms)보다 **작다.** 프레임타임 `baseline_diff`는 **회귀 없음**
+(p50 −0.23% / p95 +0.38% / p99 +0.09%, 전부 within_noise)이라 두 값이 같은 표에 앉을 수 있다.
+
+### 이 조합 숫자에 반드시 붙는 단서
+
+1. **이 값은 하한이다.** 마지막 패스의 타일 해결이 `eglSwapBuffers`에서 일어나 **모든 query
+   바깥**이다(`GLSurfaceView`를 쓰는 한 옮길 수 없다). → 승격본 `session.gpu_timer.attribution_note`
+2. 🔴 **개별 D 하위 열을 그 패스의 비용으로 인용하면 틀린다.** 적용 패스 실행이 다음 패스의
+   query 창에 앉는다는 정량 근거가 같은 `attribution_note`에 있다. **신뢰할 수 있는 것은
+   합(`gpu_sum`)뿐이다.** 융합은 패스 경계가 체인과 달라(7패스 vs 8패스) 하위 열을 서로
+   대응시키지 마라.
+3. ⚠️ **열을 바꾸면 결론의 부호가 바뀐다.** `stage_d_total_ms` 차분으로 같은 계산을 하면
+   단품 합 8.798 / 체인 11.570(**+2.772**) / 융합 9.019(**+0.221**)이라 **융합도 단품 합보다
+   비싸 보인다** — `gpu_sum`에서는 −0.652로 부호가 반대다. 원인은 증분의 상당 부분이 D 열 밖
+   `gpu_present_ms`에 앉기 때문이다(같은 코드인데 차분이 체인 +2.937 / 융합 +3.786로 움직인다).
+   **D칸은 `gpu_sum` 차분 쪽이다**(`FRAME_BUDGET.md` §3 주3). 체인−융합의 **대소는 두 열 모두
+   같지만**(1.729 / 2.551), 단품 합과의 비교는 열에 따라 뒤집힌다.
+4. **분석 창은 `t_recv_ns`의 실제 span**이다. `p50 × 표본수` 유도값이 아니다(과거에 그 유도값을
+   적었다가 독립 검증에서 잡혔다).
+5. **3분 런 4건은 봉투 점**이고 지속 근거가 아니다. 역할은 열별 노이즈 바닥뿐이다.
+6. 🔴 **`D1A1` ≠ 상류 배포 후보.** 상류 1위는 `D1A1+bf`이고 이후 `+ts`가 붙었다.
+   **`bf`는 안 쟀다** — 그러므로 "상류 결론을 뒤집었다"고 쓰지 마라. 말할 수 있는 것은
+   **"`D1A1`까지는 720p GPU에서 게이트 안"** 까지다.
+7. 🔴 **융합은 이식 최적화가 아니라 알고리즘 변경이다** — 중간 8비트 양자화 제거, 감마 왕복 제거
+   (두 곡선이 달라 상쇄가 아니다), 톤맵 픽셀당 2회. **채택은 팀장/팀 판단이다.**
+8. 🔴 **이식 정확성은 판정 불가.** `INTERFACES.md` §B-6 골든 이미지가 없다.
+   이 결과는 **비용만** 말한다.
+9. 🔴 **안전 회귀 `evaluated: false`** — ③ 탐지 미구현이라 위험물 강조 누락률을 못 잰다.
+   **성능만 있는 보고는 불완전한 보고다.**
+10. **융합↔체인 비교는 세션도 바이너리도 다르다**(`8103c2b` vs `cdeaffc`). 위 4의 분모 이동량이
+    그 오차 한계다.
+11. ⚠️ **체인 런은 `data_complete: false`** 다 — tail query 8개가 해소되지 않아 GPU 열 8개에서
+    각 1샘플이 폐기됐다. 노이즈 바닥 2건도 같다(24개 / 16개). 08-04 `blit_2pass`도 12개다.
+    폐기된 것이 최악 프레임일 수 있어 **tail은 낙관 쪽이다.**
+12. **상류 조합 합성 방식(중간 dtype·클리핑·정규화)이 저장소에 기록돼 있지 않다.**
+    체인의 중간 RGBA8은 cv2 파이프라인의 통상 동작에서 온 **추론이지 상류 코드 인용이 아니다**
+    (승격본 `stage2_params.upstream_deviation`).
+
+## 🔴 승격하지 않은 무효 런 하나 — 같은 함정을 다시 밟지 않기 위해
+
+세션 `s4_combo`의 **#5 (`drago_clahe_fused`, 기기 런 `20260803_204345`, 하네스 `run_ts`
+`20260803_212127`, 커밋 `8103c2b`)** 는 **무효이며 승격하지 않았다.** 그런데도 기록을 남기는 이유는
+**그 런이 자동 검사를 전부 통과했기 때문**이다.
+
+**무슨 일이 있었나.** 융합 적용 프래그먼트 셰이더가 A34(Mali-G68)에서 컴파일에 실패했다 —
+`0:109: S0001: Function call discards 'readonly' access qualifier.`
+(출처: `docs/plans/20260804_s4b_fused_indoor_a34.json`의 `question` / `why_this_session_exists`.
+이 문자열은 실기기 logcat에서 나왔고 `summary.json`에는 들어 있지 않다.)
+앱은 패스스루로 폴백해 **20,032 프레임 전부가 아무 처리도 하지 않았다.**
+
+**🔴 함정: 그 런의 프레임타임은 완벽하게 정상으로 보인다.**
+
+| | 무효 런 #5 | 유효한 체인 런 #4 |
+|---|---|---|
+| 프레임타임 p50 / p95 / p99 | 32.674 / 38.237 / 40.787 | 32.903 / 38.097 / 40.659 |
+| `verdict.meets_fps_target` / `meets_p95_target` | true / true | true / true |
+| `verdict.data_complete` | **true** ← 더 깨끗해 보인다 | **false** (8개 폐기) |
+| 계획 대조 (arm·조명·build_type·분석 창) | **통과** (639.5s) | 통과 (642.4s) |
+
+아무 처리도 안 했으니 프레임타임이 정상인 게 **당연하다.** 그리고 폐기 샘플이 0인 것도
+**GPU query가 애초에 하나도 없었기 때문**이다.
+
+**그럼 무엇이 이 런을 무효로 지목하나** (`summary.json`에서 읽을 수 있는 것만):
+
+| 필드 | 무효 런 | 유효 런 |
+|---|---|---|
+| `session.render.processing.frames_fell_back_to_passthrough` | **20032** | 0 |
+| `session.gpu_timer.supported` / `instrumented` | **false / false** | true / true |
+| `session.gpu_timer.columns_emitted` | **`[]`** | 열 8개 |
+| `stages.has_gpu_timings` / `stages.columns_present` | **false / `[]`** | true / 열 8개 |
+| `frames.csv` 헤더 | GPU 열 **0개** | `stage_*` + `gpu_present_ms` |
+| 집계된 분포 열 수 | **1** (`frametime_primary`) | 11 |
+
+⚠️ **이 세션들을 돌린 하네스의 모순 검사는 울리지 않았다.** `source.gpu_timer_contradicted`와
+`source.pipeline_stages_contradicted`가 **둘 다 false**다 — 앱이 "GPU 타이머 미지원"이라고
+**정직하게 선언**했고 CSV가 그 선언과 일치했기 때문이다. `session.render_arm`도
+`drago_clahe_fused`로 정상 기록됐다. 즉 **측정 당시의** 하네스는
+*"스피너를 안 바꾼 실수"* 는 잡았지만 ***"앱 내부 폴백"* 은 잡지 못했다.**
+
+**수동 게이트 (측정 당시의 대응).** 융합·체인처럼 GPU 열이 있어야 하는 arm을 회수한 직후,
+출력되는 **분포 목록에 `stage_d_*` 계열 열이 실제로 있는지 눈으로 확인한다.**
+**열이 `frametime` 하나뿐이면 폴백이고, 계획 대조를 통과했어도 그 런은 무효다.**
+(이 확인 절차는 `docs/plans/20260804_s4b_fused_indoor_a34.json`의 `invariants` 마지막 항목에 있다.)
+
+셰이더는 이후 수정돼 커밋 `cdeaffc`에서 재측정했고, 그 결과가 위 `..._fused_s4bfused_...` 승격본이다.
