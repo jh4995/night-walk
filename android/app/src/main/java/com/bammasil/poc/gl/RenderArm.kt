@@ -70,9 +70,10 @@ enum class RenderArm(
      * 필요해 [DRAGO]와 같은 3단이지만 성격이 다르다 — Drago는 **전역** 통계 하나이고
      * 이쪽은 **타일별** 통계 64벌이다(그래서 화면 효과도 국소 대비다).
      *
-     * `stage2_clahe` 토큰은 **앱이 먼저 낸다** — 하네스 어휘(`lib/frame_log.py`의
-     * `PIPELINE_STAGES`)에 아직 없어 "어휘 밖" 경고가 뜨는 것이 **정상이고 의도된 순서**다
-     * (생산자가 앱이다. `stage2_drago`도 같은 순서로 등록됐다).
+     * `stage2_clahe` 토큰은 **앱이 먼저 냈고**, 하네스 어휘(`lib/frame_log.py`의
+     * `PIPELINE_STAGES`)에 뒤이어 등록됐다 — 생산자가 앱이라 그 순서가 정상이다
+     * (`stage2_drago`·`stage2_agcwd`·`stage2_bilateral`도 같은 순서로 등록됐다).
+     * **지금은 등록이 끝나 "어휘 밖" 경고가 뜨지 않는다.**
      */
     CLAHE_GAMMA(
         "clahe_gamma",
@@ -106,15 +107,18 @@ enum class RenderArm(
      * ② 자리에 **Drago → CLAHE 직렬**(상류 조합 `D1A1`). 단품 arm이 아니라 **조합**이고,
      * 이번 라운드는 **체인**이다 — 상류 cv2 파이프라인이 Drago 출력을 8비트 이미지로 내고
      * 그것을 `cvtColor(BGR2LAB)`에 넣는 구조를 그대로 옮긴다(중간 표현이 RGBA8 FBO다).
-     * 중간 materialize를 없애는 **융합**은 알고리즘 변경이라 이번 범위가 아니다.
+     * 중간 materialize를 없애는 **융합**은 알고리즘 변경이며, 별 arm([DRAGO_CLAHE_FUSED])으로
+     * 이미 있고 실측도 끝났다 — **채택 여부가 팀장 판단 영역**이다.
      *
      * 왜 이 arm을 재는가: 상류는 CPU 720p 101.2ms를 근거로 내부 처리 해상도를 640×360으로
      * 깎는 것을 검토 중인데, 상류 실측상 **글레어 지표가 해상도에 크게 의존한다**
      * (`docs/research/RESEARCH_20260803_UPSTREAM.md` §6). GPU에서 720p 조합이 게이트 안이면
      * 그 레버를 당길 이유가 사라진다.
      *
-     * ⚠ **패스 8개 = [GpuTimerRing.MAX_PASS_COUNT] 정확히다. 여유가 0이다.** 여기에 패스를
-     * 하나라도 더하면 `setPassCount`가 거부하고 이 arm의 GPU 계측이 통째로 꺼진다.
+     * ⚠ **패스 8개다.** [GpuTimerRing.MAX_PASS_COUNT]가 8이던 시절에는 이 arm 하나가 슬롯을
+     * 정확히 다 써서 여유가 0이었고, 그래서 `bf`를 얹으면 그 arm의 GPU 계측이 통째로 꺼졌다 —
+     * 그 상수를 **12로 올려** [DRAGO_CLAHE_CHAIN_BF](9패스)를 재게 했다. 이 arm 자체의 패스
+     * 수와 열 구성은 그대로이므로 과거 승격본과 비교 조건이 같다.
      *
      * 세 토큰(`blit_2pass` · `stage2_drago` · `stage2_clahe`)은 전부 **이미 있는 것**이다 —
      * 조합이라고 새 토큰을 만들지 않는다. 뒤 3개 열(`*2_ms`)은 하네스 스키마 v4에서 들어온
@@ -162,6 +166,96 @@ enum class RenderArm(
             "stage_d_apply_ms",
             "gpu_present_ms",
         ),
+    ),
+
+    /**
+     * ② 자리에 **Drago → CLAHE → bilateral 직렬**(상류 조합 `D1A1+bf`). [DRAGO_CLAHE_CHAIN]에
+     * bf 한 패스를 더한 **9패스**다.
+     *
+     * 🔴 **이제야 상류 잠정 1위와 구성이 같은 arm이 생겼다** — 다만 `+ts`는 여전히 없다
+     * (`INTERFACES.md` §B-4가 ☐다). 무엇을 비교할 수 있고 무엇을 못 하는지는
+     * [BF_HOW_TO_COMPARE]에 있다.
+     *
+     * 앞 7패스는 [DRAGO_CLAHE_CHAIN]과 **글자 그대로 같은 GL 호출**이다(같은 프로그램·같은
+     * SSBO를 쓴다) — 그래야 두 arm의 차분이 곧 bf 한 패스의 비용이 된다.
+     *
+     * `stage2_bilateral` 토큰은 하네스 어휘(`lib/frame_log.py`의 `STAGE2_BILATERAL`)에 이미
+     * 있다. `stage_d_denoise_ms` 열도 스키마 v3에서 들어와 있었고 **이 arm이 처음 채운다.**
+     */
+    DRAGO_CLAHE_CHAIN_BF(
+        "drago_clahe_chain_bf",
+        listOf("blit_2pass", "stage2_drago", "stage2_clahe", "stage2_bilateral"),
+        listOf(
+            "stage_b_ms",
+            "stage_d_analyze_ms",
+            "stage_d_build_ms",
+            "stage_d_apply_ms",
+            "stage_d_analyze2_ms",
+            "stage_d_build2_ms",
+            "stage_d_apply2_ms",
+            "stage_d_denoise_ms",
+            "gpu_present_ms",
+        ),
+    ),
+
+    /**
+     * ② 자리에 **Drago ⊕ CLAHE 융합 → bilateral**. [DRAGO_CLAHE_FUSED]에 bf 한 패스를 더한
+     * **8패스**다.
+     *
+     * 🔴 융합 자체가 **알고리즘 변경**이므로([FUSED_DEVIATION]) 이 arm도 상류 CPU 숫자 옆에
+     * 놓을 수 없다. 이 arm의 뜻은 [DRAGO_CLAHE_CHAIN_BF] **대비 절감**이다.
+     *
+     * `pipelineStages`는 체인+bf와 **같다** — 융합이라고 새 토큰을 만들지 않는다.
+     */
+    DRAGO_CLAHE_FUSED_BF(
+        "drago_clahe_fused_bf",
+        listOf("blit_2pass", "stage2_drago", "stage2_clahe", "stage2_bilateral"),
+        listOf(
+            "stage_b_ms",
+            "stage_d_analyze_ms",
+            "stage_d_build_ms",
+            "stage_d_analyze2_ms",
+            "stage_d_build2_ms",
+            "stage_d_apply_ms",
+            "stage_d_denoise_ms",
+            "gpu_present_ms",
+        ),
+    ),
+
+    /**
+     * ④ **선택적 강조 오버레이**. 3패스 골격의 ② 자리는 단순 복사이고, 그 뒤에 오버레이
+     * 패스가 하나 붙는 **4패스**다 — 재는 것은 `stage_i_ms`(버짓 I칸) 하나다.
+     *
+     * ```
+     * 패스1  OES   → FBO_A            stage_b_ms
+     * 패스2  FBO_A → FBO_B (복사)     stage_d_ms
+     * 패스3  FBO_B에 오버레이 덧그림   stage_i_ms
+     * 패스4  FBO_B → 화면             gpu_present_ms
+     * ```
+     * 명세는 상류 `scripts/emphasize.py`에서 확정된 것이다([HighlightOverlay] 참고) —
+     * 임의 더미의 비용 봉투가 아니라 **실제 사양**으로 잰다.
+     *
+     * ⚠ 박스 **개수**는 사양이 아니라 우리가 선언한 측정 조건이다([HIGHLIGHT_BOX_PROVENANCE]).
+     * `session.json`의 `overlay.box_count`에 반드시 실린다.
+     */
+    HIGHLIGHT_BOXES(
+        "highlight_boxes",
+        listOf("blit_2pass", "stage4_highlight"),
+        listOf("stage_b_ms", "stage_d_ms", "stage_i_ms", "gpu_present_ms"),
+    ),
+
+    /**
+     * [HIGHLIGHT_BOXES]와 **박스 개수만** 다른 arm(개당 비용 기울기용).
+     *
+     * 왜 개수를 arm id로 갈랐는가: `scripts/baseline_diff.py`의 비교 조건에는 박스 개수를 담을
+     * 키가 없어서(`pipeline_stages`가 둘 다 같다) 같은 id로 개수만 바꾸면 **조건 차이가
+     * 무경고로 통과한다.** 같은 이유로 하네스도 이 id를 따로 등록해 두었다
+     * (`lib/frame_log.py`의 `RENDER_ARM_HIGHLIGHT_BOXES_STRESS`).
+     */
+    HIGHLIGHT_BOXES_STRESS(
+        "highlight_boxes_stress",
+        listOf("blit_2pass", "stage4_highlight"),
+        listOf("stage_b_ms", "stage_d_ms", "stage_i_ms", "gpu_present_ms"),
     );
 
     /**
@@ -173,7 +267,8 @@ enum class RenderArm(
      * 그래서 경로 선택은 [usesSingleComputeStage2] / [usesChainedComputeStage2]로 갈랐다.
      */
     val usesComputeStage2: Boolean
-        get() = usesSingleComputeStage2 || usesChainedComputeStage2 || usesFusedComputeStage2
+        get() = usesSingleComputeStage2 || usesChainedComputeStage2 || usesFusedComputeStage2 ||
+            usesChainedBilateral || usesFusedBilateral
 
     /**
      * ② 자리가 **컴퓨트 3단 한 벌**(analyze → build → apply)인 arm인가.
@@ -196,9 +291,52 @@ enum class RenderArm(
     val usesFusedComputeStage2: Boolean
         get() = this == DRAGO_CLAHE_FUSED
 
-    /** 조합 arm인가(체인이든 융합이든). 둘의 계수를 나란히 낼 때 쓴다. */
+    /**
+     * ② 자리가 **체인 + bilateral**인 arm인가.
+     * **`PassthroughRenderer.drawChainedBilateral`(9패스) 경로 선택 전용**이다.
+     *
+     * ⚠ [usesChainedComputeStage2]와 **겹치지 않는다.** 겹치면 이 arm이 8패스 경로를 타고
+     * bf 패스가 조용히 사라진다(`usesComputeStage2` 겸업 함정과 같은 부류다).
+     */
+    val usesChainedBilateral: Boolean
+        get() = this == DRAGO_CLAHE_CHAIN_BF
+
+    /**
+     * ② 자리가 **융합 + bilateral**인 arm인가.
+     * **`PassthroughRenderer.drawFusedBilateral`(8패스) 경로 선택 전용**이다.
+     */
+    val usesFusedBilateral: Boolean
+        get() = this == DRAGO_CLAHE_FUSED_BF
+
+    /**
+     * ④ 오버레이 arm인가. **`PassthroughRenderer.drawHighlightOverlay`(4패스) 경로 선택
+     * 전용**이다 — 개수 차이는 [highlightBoxCount]가 따로 말한다.
+     */
+    val usesHighlightOverlay: Boolean
+        get() = this == HIGHLIGHT_BOXES || this == HIGHLIGHT_BOXES_STRESS
+
+    /** ② 자리에 bilateral 한 패스가 붙는 arm인가(체인이든 융합이든). */
+    val usesBilateral: Boolean
+        get() = usesChainedBilateral || usesFusedBilateral
+
+    /**
+     * 조합 arm인가(체인이든 융합이든, bf가 붙었든). 둘의 계수를 나란히 낼 때 쓴다.
+     * **서술용이며 경로 선택에 쓰지 않는다.**
+     */
     val isCompositionArm: Boolean
-        get() = usesChainedComputeStage2 || usesFusedComputeStage2
+        get() = usesChainedComputeStage2 || usesFusedComputeStage2 || usesBilateral
+
+    /**
+     * 이 arm이 그리는 ④ 박스 수. 오버레이 arm이 아니면 0이다.
+     *
+     * ⚠ **사양이 아니라 우리가 선언한 측정 조건**이다([HIGHLIGHT_BOX_PROVENANCE]).
+     */
+    val highlightBoxCount: Int
+        get() = when (this) {
+            HIGHLIGHT_BOXES -> HIGHLIGHT_BOX_COUNT
+            HIGHLIGHT_BOXES_STRESS -> HIGHLIGHT_BOX_COUNT_STRESS
+            else -> 0
+        }
 
     companion object {
 
@@ -300,9 +438,11 @@ enum class RenderArm(
                 "실측 이탈 폭: 실기기 실내 프레임 23.5 LSB, 합성 야간+클리핑 광원 55.6 LSB. " +
                 "이 이식이 계통적으로 더 밝다 — 골든 이미지 대조(INTERFACES.md §B-6)를 하면 " +
                 "여기서 걸린다. " +
-                "왜 지금 재현하지 않는가: 앞뒤 정규화는 전체 화면 리덕션이 **두 번 더** " +
-                "필요해 GPU 타이머 슬롯을 초과하고, 뒤 정규화는 매 프레임 전역 오토레벨이라 " +
+                "왜 지금 재현하지 않는가: 뒤 정규화는 매 프레임 전역 오토레벨이라 " +
                 "§B-4가 안전 문제로 규정한 프레임 간 출렁임을 하나 더 얹는다. " +
+                "⚠ 예전에 여기 함께 적혀 있던 '전체 화면 리덕션 두 번이 GPU 타이머 슬롯을 " +
+                "초과한다'는 **이제 근거가 아니다**(GpuTimerRing.MAX_PASS_COUNT를 12로 " +
+                "올렸다). 남는 이유는 위 안전 문제 하나다. " +
                 "**'상류를 픽셀 단위로 재현할 것인가'는 알고리즘 결정이므로 팀장 판단이다** " +
                 "(FRAME_BUDGET.md §5 레버 3). " +
                 "덤: 검증 중 상류 쪽 결함이 나왔다 — OpenCV는 앞 정규화가 만든 정확한 0을 " +
@@ -579,8 +719,11 @@ enum class RenderArm(
                 "**상류 충실(체인)**이고, float 포맷은 기기 의존성을 늘린다(FBO를 RGBA8로만 " +
                 "쓰는 기존 규약). " +
                 "(6) **`bf`·`ts` 미포함** — 상류 잠정 1위는 `D1A1+bf(+ts)`이고 이 arm은 " +
-                "`D1A1`까지다. 범위 밖이며, **슬롯도 넘는다**(8패스 = " +
-                "GpuTimerRing.MAX_PASS_COUNT 정확히라 여유가 0이다)"
+                "`D1A1`까지다. `bf`는 그 뒤 **별 arm으로 실제로 쟀다**" +
+                "(`drago_clahe_chain_bf` 9패스. GpuTimerRing.MAX_PASS_COUNT를 8→12로 올려 " +
+                "슬롯을 만들었으므로 '슬롯을 넘는다'는 더 이상 이유가 아니다). " +
+                "**이 arm에는 여전히 bf가 없으므로** 여기 숫자는 `D1A1`의 값으로만 읽어야 " +
+                "한다. `ts`는 양쪽 arm 모두 없다 — INTERFACES.md §B-4가 ☐다"
 
         /**
          * 조합용 비교 지침. 단품과 같은 함정을 그대로 밟으므로 [LAB_HOW_TO_COMPARE]를
@@ -777,5 +920,370 @@ enum class RenderArm(
 
         /** 패스1 FBO_A + 패스6 FBO_B = **2**. 체인은 3이었다 — 이탈 (a)의 정량. */
         const val FUSED_INTERMEDIATE_RGBA8_MATERIALIZATIONS = 2
+
+        // ── `+bf` bilateral 파라미터 ──────────────────────────────────────
+        // 상류(모델링 담당) `scripts/lowlight.py`의 `+bf`:
+        //   Bilateral(d=7, sigma_color=50, sigma_space=50)   동작 공간 **BGR**
+        // 출처는 docs/research/RESEARCH_20260731_UPSTREAM.md §2-2의 파라미터 표(`:96`)다.
+        // ⚠ **팀장이 준 계약 답변이 아니다.** INTERFACES.md §B-5는 여전히 전부 ☐다.
+        //   그래서 상수로 박지 않고 전부 uniform으로 노출한다.
+
+        /** OpenCV `bilateralFilter(d=...)`. 상류가 *"720p 실시간을 노리면 `d<=7`"* 이라 했다. */
+        const val BF_D = 7
+
+        /**
+         * 실제 반경. OpenCV `bilateralFilter_8u`는 `d > 0`이면 `radius = d/2`(**정수
+         * 나눗셈**)로 잡고 `sigma_space`는 반경 결정에 쓰지 않는다 — 그 규칙을 그대로 옮겼다.
+         * 그래서 이 값은 자유 파라미터가 아니라 [BF_D]의 **유도값**이다.
+         */
+        const val BF_RADIUS = BF_D / 2
+
+        /**
+         * 원형 이웃의 탭 수. OpenCV는 `i*i + j*j <= radius*radius`인 탭만 쓴다 —
+         * `i,j ∈ [-3,3]`에서 i=0이 7개, i=±1이 5개씩, i=±2가 5개씩, i=±3이 1개씩 = **29**.
+         * **7×7 사각형 49탭이 아니다.**
+         *
+         * ⚠ 서술용 상수다. 셰이더는 조건식으로 걸러 실제 탭 수를 스스로 맞추므로,
+         * [BF_RADIUS]가 바뀌면 셰이더는 따라가지만 **이 값은 손으로 다시 세야 한다.**
+         */
+        const val BF_TAP_COUNT = 29
+
+        /** 색 거리(3채널 L1 합)의 σ. **0..255 단위**다 — 셰이더가 L1 합을 255배해서 비교한다. */
+        const val BF_SIGMA_COLOR = 50f
+
+        /** 공간 거리의 σ. **픽셀 단위**다. */
+        const val BF_SIGMA_SPACE = 50f
+
+        const val BF_RADIUS_UNIFORM = "uBfRadius"
+        const val BF_SIGMA_COLOR_UNIFORM = "uBfSigmaColor"
+        const val BF_SIGMA_SPACE_UNIFORM = "uBfSigmaSpace"
+
+        /** 1/처리해상도. 해상도를 셰이더에 하드코딩하지 않기 위한 uniform이다. */
+        const val BF_TEXEL_UNIFORM = "uTexel"
+
+        const val BF_PROVENANCE =
+            "상류(모델링 담당 kty2001/KDT_Hackathon) scripts/lowlight.py의 `+bf` 탐색 구현값" +
+                "(Bilateral d=7, sigma_color=50, sigma_space=50, 동작 공간 BGR)이며 " +
+                "**계약 확정값이 아니다** — INTERFACES.md §B-5는 여전히 전부 ☐다. " +
+                "출처는 docs/research/RESEARCH_20260731_UPSTREAM.md §2-2의 파라미터 표다. " +
+                "radius는 자유 파라미터가 아니라 d의 유도값이다(radius = d/2 = $BF_RADIUS, " +
+                "정수 나눗셈 — OpenCV bilateralFilter_8u의 규칙). 전부 uniform으로 " +
+                "노출했으므로 팀장이 값을 확정하면 셰이더를 고치지 않고 교체한다"
+
+        /**
+         * 🔴 **bf 고유의 이탈.** [CHAIN_DEVIATION]이 중간 dtype에 대해 한 것과 같은 처리다 —
+         * **상류 문서에 `cv2.bilateralFilter`의 내부 정의가 없어서** OpenCV 구현을 읽어
+         * 옮겼다는 사실을 여기서 밝힌다. 이 문장이 빠지면 나중에 결과가 다를 때
+         * "파라미터는 맞췄는데 왜 다른가"에서 막힌다.
+         */
+        const val BF_DEVIATION =
+            "🔴 **상류 문서에 `cv2.bilateralFilter`의 내부 정의가 기록돼 있지 않다.** " +
+                "기록된 것은 `Bilateral(d=7, σc=50, σs=50)`과 동작 공간이 BGR이라는 사실뿐이다" +
+                "(RESEARCH_20260731_UPSTREAM.md §2-2). 그러므로 다음 넷은 **OpenCV " +
+                "구현(bilateralFilter_8u)을 읽어 옮긴 것이지 상류 코드 인용이 아니다**: " +
+                "(1) 색 거리를 **3채널 L1 합**으로 보고 그것을 제곱한다" +
+                "(w_color = exp(-(|Δr|+|Δg|+|Δb|)² / (2σc²)) — OpenCV가 " +
+                "color_weight[|Δb|+|Δg|+|Δr|]를 미리 굽는 방식이며 **채널별 분리가 아니다**), " +
+                "(2) **0..255 스케일** — OpenCV는 uchar에서 도므로 셰이더의 0..1 L1 합에 255를 " +
+                "곱해 σc=50과 같은 단위로 만든다, " +
+                "(3) **원형 이웃 ${BF_TAP_COUNT}탭**(i²+j² ≤ radius². 7×7 사각형 49탭이 아니다), " +
+                "(4) **radius = d/2**(정수 나눗셈. σs는 반경을 정하지 않는다). " +
+                "그 밖에 상류와 다른 곳: " +
+                "**(a) 경계 처리가 다르다** — OpenCV 기본은 BORDER_REFLECT_101인데 이 이식은 " +
+                "샘플러의 CLAMP_TO_EDGE다(테두리 radius=$BF_RADIUS 폭에서만 다르다). " +
+                "CLAHE의 패딩 이탈(upstream_deviation_lab의 (3))과 **같은 부류**다. " +
+                "**(b) 관찰: σs=50이면 공간 가중이 사실상 평탄하다** — 반경 $BF_RADIUS 안에서 " +
+                "exp(0)=1 ~ exp(-9/5000)=0.9982라, 이 설정에서 필터를 지배하는 것은 " +
+                "**range 가중 하나**다(공간 가중은 거의 상수배로 약분된다). 상류 값이 그러니 " +
+                "그대로 썼다 — **레버가 아니라 사실의 기록**이다. " +
+                "**(c) 골든 이미지(INTERFACES.md §B-6)가 없어 픽셀 단위 대조는 미수행**이다. " +
+                "🔴 그러므로 **이 라운드의 결과는 비용만 말한다** — 화질·글레어·노이즈 지표는 " +
+                "이 arm의 출력으로 다시 재야 한다"
+
+        /**
+         * bf에서만 생기는 레버 4개. 번호를 `(bf-n)`으로 매긴 이유: 체인의 레버는 (1)~(6),
+         * 융합이 (7)(8)까지 쓰므로 숫자를 이어 붙이면 chain_bf에서 7·8이 빈 채로 9부터
+         * 시작해 **번호가 거짓말을 한다.**
+         *
+         * 둘째가 특히 중요하다 — 그것을 당기면 이 라운드가 '상류 충실 이식'이 아니게 된다.
+         */
+        const val BF_LEVERS_SUFFIX =
+            " ── bf에서 추가로 **당기지 않은** 레버 4개: " +
+                "(bf-1) **`d`를 7보다 줄이기** — 상류가 말한 것은 `d<=7`을 **유지**하라는 " +
+                "것이고 7 미만으로 내리는 것은 값 변경이다(탭 수와 결과가 함께 바뀐다). " +
+                "(bf-2) **분리형 2패스 근사** — 🔴 bilateral은 **분리 불가능한 필터**라 2패스는 " +
+                "근사이고, 그것은 융합과 **같은 부류의 알고리즘 변경**이다(팀장 판단 영역, " +
+                "FRAME_BUDGET.md §5 레버 3). 그래서 당기지 않았다 — " +
+                "**이번 라운드는 상류 충실 1패스다.** " +
+                "(bf-3) **다운샘플 후 적용** — 상류에 없는 연산이다. " +
+                "(bf-4) **원형 이웃을 사각형으로 넓히기** — 탭이 ${BF_TAP_COUNT}→49로 늘고 " +
+                "OpenCV와 달라진다(빠르지도 않다)"
+
+        /** 체인+bf의 레버 목록. 체인의 (1)~(6)이 **그대로 성립하고** 그 위에 bf 4개가 붙는다. */
+        const val CHAIN_BF_LEVERS_NOT_PULLED = CHAIN_LEVERS_NOT_PULLED + BF_LEVERS_SUFFIX
+
+        /** 융합+bf의 레버 목록. 융합의 (7)(8)까지 성립하므로 그 목록에 붙인다. */
+        const val FUSED_BF_LEVERS_NOT_PULLED = FUSED_LEVERS_NOT_PULLED + BF_LEVERS_SUFFIX
+
+        /**
+         * 🔴 [CHAIN_GLARE_NOTE]를 **그대로 재사용하면 안 된다.** 그 문장은 "이 arm은 상류
+         * 표시 1위 후보의 **부분집합**이고 `bf`가 없다"인데 이제 `bf`가 있다 — 그대로 두면
+         * **거짓이 로그로 나간다.** 남는 사실만 담는다.
+         */
+        const val BF_GLARE_NOTE =
+            "⚠ **`bf`가 붙었지만 여전히 상류 표시 1위 후보 전체가 아니다** — 상류 잠정 1위는 " +
+                "`D1A1+bf+ts`이고 이 arm에는 `ts`(시간축 평활)가 없다" +
+                "(INTERFACES.md §B-4가 ☐라 임의로 넣지 않았다. " +
+                "RESEARCH_20260803_UPSTREAM.md §6·§7). " +
+                "🔴 그리고 **이 arm은 표시(④ 화면) 경로 후보이지 탐지(③) 입력 후보가 아니다.** " +
+                "상류 실측(§2, C7)에서 **arm이 강할수록 탐지의 `stairs` 오탐이 오른다**: " +
+                "무처리 0.1% → A1 0.4% → A1+bf 1.1% → D1A1 3.8% → **D1A1+bf 5.7%**. " +
+                "즉 `bf`를 더한 이 구성이 그 표에서 **오탐이 가장 높은 조합**이다. 오인 대상이 " +
+                "횡단보도·차선·차 지붕·포장 텍스처라 저시력 보행자가 반드시 지나는 곳이다. " +
+                "그래서 상류 판정은 **탐지=원본 / 표시=D1A1+bf(+ts)의 경로 분리**이며" +
+                "(§3, 🗣️ 팀 추인 대기), 이 arm의 GPU 비용이 싸게 나오더라도 그것이 ③ 입력으로 " +
+                "쓸 근거가 되지는 않는다"
+
+        /**
+         * [CHAIN_FLICKER_NOTE]·[FUSED_FLICKER_NOTE]와 같은 취지. **bf가 출렁임을 줄이지
+         * 않는다**는 것이 요점이다 — 노이즈 억제 필터라서 그럴 것 같지만 아니다.
+         */
+        const val BF_FLICKER_NOTE =
+            "bf 자체는 **stateless**이고 프레임 간 상태를 두지 않는다" +
+                "(INTERFACES.md §B-4가 ☐라 임의로 도입하지 않았다). 픽셀마다 **같은 프레임의 " +
+                "이웃만** 보므로 앞 스테이지(D1·A1)의 프레임 간 출렁임은 **그대로 통과한다** — " +
+                "🔴 **bf가 그것을 줄이지 않는다.** 공간 필터와 시간축 평활은 다른 것이고, " +
+                "상류에서 출렁임을 잡는 것은 `+bf`가 아니라 `+ts`다(§7). " +
+                "앞 스테이지의 출렁임 서술은 chain/fused의 flicker_note를 함께 볼 것"
+
+        /**
+         * bf 조합용 비교 지침. [CHAIN_HOW_TO_COMPARE]를 **재사용**하고, 이번 라운드에서 처음
+         * 성립하는 사실(구성이 같은 arm이 생겼다)과 그래도 남는 단서를 앞에 붙인다.
+         */
+        const val BF_HOW_TO_COMPARE =
+            "🔴 **이제야 상류 `D1A1+bf`와 구성이 같은 arm이 생겼다** — 상류 CPU 720p " +
+                "101.2ms 옆에 놓을 수 있는 것은 (융합이 아닌) **체인+bf**다. 다만 단서 셋을 " +
+                "함께 옮길 것: (a) 상류 101.2ms는 **PC CPU/NumPy** 기준이라 조건이 다르다, " +
+                "(b) 상류 잠정 1위는 `D1A1+bf+ts`인데 **`ts`는 여전히 없다**" +
+                "(INTERFACES.md §B-4가 ☐다) — 구성이 같아진 것은 `+bf`까지다, " +
+                "(c) **'② ≤20ms' 게이트는 기획서가 아니라 상류 `data.md`의 내부 기준**이다" +
+                "(RESEARCH_20260803_UPSTREAM.md). 우리 판정선은 FRAME_BUDGET.md §1과 " +
+                "lib/targets.py 두 곳에만 있고 그 20ms는 거기 없다 — 상류 기준을 우리 게이트로 " +
+                "옮겨 쓰지 말 것. " + CHAIN_HOW_TO_COMPARE
+
+        // ── bf 조합의 색공간 변환 **선언값** ───────────────────────────────
+        // 체인·융합의 같은 칸과 나란히 읽으라고 만든 표다. 값의 성격도 같다
+        // (사람이 센 값이며 측정이 아니다 — [CHAIN_COLOR_TRANSFORM_DECLARED_PROVENANCE]).
+        //
+        // 🔴 **bf는 LabGlsl을 한 번도 부르지 않는다** — sRGB 8비트에서 직접 돌기 때문이다.
+        //   그래서 색공간 변환 칸은 전부 base arm의 값에 **0을 더한 것**이고, 달라지는 것은
+        //   패스 수·전체화면 패스 수·중간 materialize 수뿐이다.
+
+        /** 체인 8패스 + bf 1패스. */
+        const val CHAIN_BF_PASSES_TOTAL = CHAIN_PASSES_TOTAL + 1
+
+        /** bf는 픽셀마다 도는 프래그먼트 패스다 → 체인의 6에 1을 더한다. */
+        const val CHAIN_BF_FULLSCREEN_PASSES = CHAIN_FULLSCREEN_PASSES + 1
+
+        /** 체인과 같다(bf가 0을 더한다). */
+        const val CHAIN_BF_SRGB_TO_LINEAR_PER_PIXEL = CHAIN_SRGB_TO_LINEAR_PER_PIXEL
+        const val CHAIN_BF_LAB_F_FORWARD_PER_PIXEL = CHAIN_LAB_F_FORWARD_PER_PIXEL
+        const val CHAIN_BF_LAB_F_INVERSE_PER_PIXEL = CHAIN_LAB_F_INVERSE_PER_PIXEL
+        const val CHAIN_BF_LINEAR_TO_SRGB_PER_PIXEL = CHAIN_LINEAR_TO_SRGB_PER_PIXEL
+        const val CHAIN_BF_DRAGO_TONEMAP_EVALS_PER_PIXEL = CHAIN_DRAGO_TONEMAP_EVALS_PER_PIXEL
+        const val CHAIN_BF_DRAGO_POW_LINEARIZE_PER_PIXEL = CHAIN_DRAGO_POW_LINEARIZE_PER_PIXEL
+        const val CHAIN_BF_DRAGO_OUT_GAMMA_ENCODE_PER_PIXEL =
+            CHAIN_DRAGO_OUT_GAMMA_ENCODE_PER_PIXEL
+
+        /** 패스1 FBO_A + 패스4 FBO_B + 패스7 FBO_A + **패스8 bf FBO_B** = 4. 체인은 3이었다. */
+        const val CHAIN_BF_INTERMEDIATE_RGBA8_MATERIALIZATIONS =
+            CHAIN_INTERMEDIATE_RGBA8_MATERIALIZATIONS + 1
+
+        /** 융합 7패스 + bf 1패스. */
+        const val FUSED_BF_PASSES_TOTAL = FUSED_PASSES_TOTAL + 1
+
+        const val FUSED_BF_FULLSCREEN_PASSES = FUSED_FULLSCREEN_PASSES + 1
+
+        /** 융합과 같다(bf가 0을 더한다). */
+        const val FUSED_BF_SRGB_TO_LINEAR_PER_PIXEL = FUSED_SRGB_TO_LINEAR_PER_PIXEL
+        const val FUSED_BF_LAB_F_FORWARD_PER_PIXEL = FUSED_LAB_F_FORWARD_PER_PIXEL
+        const val FUSED_BF_LAB_F_INVERSE_PER_PIXEL = FUSED_LAB_F_INVERSE_PER_PIXEL
+        const val FUSED_BF_LINEAR_TO_SRGB_PER_PIXEL = FUSED_LINEAR_TO_SRGB_PER_PIXEL
+        const val FUSED_BF_DRAGO_TONEMAP_EVALS_PER_PIXEL = FUSED_DRAGO_TONEMAP_EVALS_PER_PIXEL
+        const val FUSED_BF_DRAGO_POW_LINEARIZE_PER_PIXEL = FUSED_DRAGO_POW_LINEARIZE_PER_PIXEL
+        const val FUSED_BF_DRAGO_OUT_GAMMA_ENCODE_PER_PIXEL =
+            FUSED_DRAGO_OUT_GAMMA_ENCODE_PER_PIXEL
+
+        /** 패스1 FBO_A + 패스6 FBO_B + **패스7 bf FBO_A** = 3. 융합은 2였다. */
+        const val FUSED_BF_INTERMEDIATE_RGBA8_MATERIALIZATIONS =
+            FUSED_INTERMEDIATE_RGBA8_MATERIALIZATIONS + 1
+
+        // ── ④ 오버레이 ────────────────────────────────────────────────────
+        // 명세는 상류 `scripts/emphasize.py`에서 **확정된 것**이다(FRAME_BUDGET.md §3 주5,
+        // docs/research/RESEARCH_20260803_UPSTREAM.md §5). 임의 더미의 봉투가 아니다.
+        // ⚠ 단 **박스 개수와 배치는 사양이 아니다** — 아래 provenance를 함께 낸다.
+
+        /** `highlight_boxes` — stairs 1 + person 3. */
+        const val HIGHLIGHT_BOX_COUNT = 4
+
+        /** `highlight_boxes_stress` — 개당 비용 기울기용. */
+        const val HIGHLIGHT_BOX_COUNT_STRESS = 32
+
+        /** 본선 두께의 기준값(720p에서 px). 상류 확정 사양이다. */
+        const val HIGHLIGHT_STROKE_PX_AT_720P = 4f
+
+        /** 720p의 **짧은 변**. 두께를 짧은 변에 비례시키는 기준이라 여기 둔다. */
+        const val HIGHLIGHT_SHORT_SIDE_AT_720P = 720f
+
+        /**
+         * 검정 밑선이 본선보다 **한쪽으로** 더 나가는 폭(720p에서 px).
+         *
+         * ⚠ **상류 문서에 이 값이 기록돼 있지 않다** — 확정된 것은 "이중 스트로크(검정 밑선 +
+         * 대비색 본선)"라는 구성과 본선 두께 4px까지다. 그래서 이 1px은 **우리가 선언한 측정
+         * 조건**이고 사양이 아니다(cv2.rectangle을 t+2와 t로 두 번 그리는 통상 관용에서 왔다).
+         * `session.json`에 계산식과 함께 그대로 나간다.
+         */
+        const val HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P = 1f
+
+        const val HIGHLIGHT_STROKE_FORMULA =
+            "scale = min(처리폭, 처리높이) / $HIGHLIGHT_SHORT_SIDE_AT_720P ; " +
+                "본선 = $HIGHLIGHT_STROKE_PX_AT_720P * scale ; " +
+                "검정 밑선 = ($HIGHLIGHT_STROKE_PX_AT_720P + " +
+                "2 * $HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P) * scale. " +
+                "두 띠는 경계선 위에 **가운데를 맞춘다**(cv2.rectangle(thickness=t)와 같은 " +
+                "배치라 안쪽·바깥쪽으로 t/2씩 채운다). 픽셀 값을 하드코딩하지 않고 **처리 " +
+                "해상도에서 계산**하므로 640×360으로 내려도 비례가 유지된다"
+
+        const val HIGHLIGHT_SPEC_PROVENANCE =
+            "상류(모델링 담당 kty2001/KDT_Hackathon) scripts/emphasize.py로 **확정된 ④ 명세**다 " +
+                "— 이중 스트로크(검정 밑선 + 대비색 본선) · 비채움 · stairs=노랑 / person=시안 · " +
+                "빨강 금지 · 깜빡임 금지 · 두께는 짧은 변 비례로 720p 기준 " +
+                "${HIGHLIGHT_STROKE_PX_AT_720P}px. 출처는 " +
+                "docs/research/RESEARCH_20260803_UPSTREAM.md §5이고 FRAME_BUDGET.md §3 주5에 " +
+                "같은 내용이 있다. 즉 I칸은 '임의 더미의 비용 봉투'가 아니라 **실제 사양으로 잰 " +
+                "값**이다. ⚠ 다만 밑선이 본선보다 얼마나 넓은지는 상류에 기록이 없어 우리가 " +
+                "정했다(stroke_formula의 underline_margin_px_at_720p)"
+
+        /**
+         * 🔴 **④ 고유의 이탈.** [CHAIN_DEVIATION]이 중간 dtype에 대해 한 것과 같은 처리다 —
+         * **스펙 문구와 이 구현의 스트로크 기하가 다르다는 사실**을 숫자로 밝힌다.
+         * 이 문장이 빠지면 골든 이미지가 생겨 픽셀 대조를 하는 날 결과가 어긋나는데
+         * "사양대로 그렸다"에서 막힌다.
+         *
+         * ⚠ 고치지 않은 것은 의도다 — 어느 쪽이 상류와 같은지 **우리가 알지 못한다**(아래 (3)).
+         * 기하를 건드리면 검증을 다시 받아야 하므로 이번 라운드는 **선언만** 추가했다.
+         */
+        const val HIGHLIGHT_DEVIATION =
+            "🔴 **(1) 스펙 문구와 이 구현의 스트로크 기하가 다르다.** 스펙은 '비채움 — " +
+                "경계선 밖은 일절 안 건드림'인데(FRAME_BUDGET.md:258 · " +
+                "docs/research/RESEARCH_20260803_UPSTREAM.md:114 §5 표의 '채움' 행) 이 구현은 " +
+                "두 띠를 경계선 위에 **가운데 맞춤**해서 경계 **밖으로 나간다.** 720p 기준 실제 " +
+                "값(정점의 NDC 반폭 = 두께/처리폭이고 NDC 1 = 처리폭/2 px이므로 **한쪽 = " +
+                "두께/2 px**이다): 본선은 밖으로 " +
+                "$HIGHLIGHT_STROKE_PX_AT_720P / 2 = ${HIGHLIGHT_STROKE_PX_AT_720P / 2f}px, " +
+                "검정 밑선은 ($HIGHLIGHT_STROKE_PX_AT_720P + " +
+                "2 * $HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P) / 2 = " +
+                "${(HIGHLIGHT_STROKE_PX_AT_720P + 2f * HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P) / 2f}" +
+                "px — 즉 **경계 밖 " +
+                "${(HIGHLIGHT_STROKE_PX_AT_720P + 2f * HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P) / 2f}" +
+                "px을 덮는다**(가장 바깥 " +
+                "${HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P}px이 검정, 그 안 " +
+                "${HIGHLIGHT_STROKE_PX_AT_720P / 2f}px이 대비색). 안쪽도 대칭으로 같은 폭이며, " +
+                "**그보다 더 안쪽(박스 내부)은 한 픽셀도 건드리지 않는다**(overlay.fill). " +
+                "**(2) 왜 고치지 않았는가**: `cv2.rectangle(img, p1, p2, color, thickness=t)`가 " +
+                "스트로크를 경계선 **가운데**에 놓고(안쪽 t/2 · 바깥 t/2), 상류 " +
+                "scripts/emphasize.py가 쓰는 함수가 바로 그것이다. 그러므로 **이 구현이 오히려 " +
+                "상류 동작과 일치할 가능성이 높고**, 스펙 문구가 '비채움'(= 박스 내부를 칠하지 " +
+                "않는다)을 느슨하게 표현한 것일 수 있다. 문구에 맞춰 기하를 안쪽 맞춤으로 고치면 " +
+                "상류와 어긋날 위험이 오히려 커진다. " +
+                "🔴 **(3) 어느 쪽이 맞는지 확인할 수 없다.** 상류 원문에 `thickness` 인자와 좌표 " +
+                "규약(경계선을 어느 쪽에 포함하는지)이 기록돼 있지 않고, **INTERFACES.md §B-6 " +
+                "골든 이미지가 없어 픽셀 단위 대조가 불가능하다.** 그러므로 (2)는 **추론이지 " +
+                "상류 코드 인용이 아니다** — BF_DEVIATION이 cv2.bilateralFilter의 내부 정의에 " +
+                "대해 한 것과 같은 처지다. " +
+                "**(4) 어디서 걸리는가**: 골든 이미지가 생겨 **픽셀 단위 대조를 하는 날 이 " +
+                "항목을 먼저 의심할 것.** 그리고 경계 밖으로 나가므로 **박스가 프레임 " +
+                "가장자리에 붙으면 밑선이 잘린다**(뷰포트 밖은 조용히 버려진다). ⚠ 사실 확인: " +
+                "**이 arm의 배치는 그 경우를 만들지 않는다** — 셀 격자의 가장자리 여백이 최소 " +
+                "CELL_INSET/CELL_COLS = 폭의 1.5%(720p에서 x 19.2px) · " +
+                "CELL_INSET/CELL_ROWS = 높이의 3%(y 21.6px)라 " +
+                "${(HIGHLIGHT_STROKE_PX_AT_720P + 2f * HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P) / 2f}" +
+                "px보다 훨씬 크다. 그러므로 **이 라운드의 stage_i_ms는 잘림의 영향을 받지 " +
+                "않는다** — 잘림은 ③의 실제 탐지 박스를 그리기 시작하는 날의 문제다. " +
+                "**(5) 비용에 대한 영향**: 드로우콜(프레임당 1회)과 정점 수(박스당 " +
+                "${HighlightOverlay.VERTS_PER_BOX}개)는 이 선택과 무관하게 같다. 다만 **채우는 " +
+                "프래그먼트 수는 완전히 같지 않다** — 두께 t 띠 하나의 면적이 가운데 맞춤이면 " +
+                "2t(W+H)이고 안쪽 맞춤이면 2t(W+H) - 4t²이라 **띠마다 4t²만큼 더 채운다**" +
+                "(720p에서 본선 t=$HIGHLIGHT_STROKE_PX_AT_720P → 64px, 밑선 t=" +
+                "${HIGHLIGHT_STROKE_PX_AT_720P + 2f * HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P}" +
+                " → 144px, 합 박스당 208px). 이 격자의 720p 박스가 121.6x136.8px이고 박스당 총 " +
+                "5168px을 채우므로 **약 4%**다. 작지만 **0이 아니다** — '그린 픽셀 수가 안 " +
+                "바뀐다'로 적지 말 것"
+
+        /**
+         * ⚠ **개수와 배치는 계약값이 아니다.** `session.json`에 개수를 싣지 않으면 I칸 숫자가
+         * 무슨 조건의 값인지 사라진다 — 그래서 `overlay.box_count`가 필수다.
+         */
+        const val HIGHLIGHT_BOX_PROVENANCE =
+            "🔴 **박스 개수와 배치는 사양이 아니라 우리가 선언한 측정 조건이다.** 실제 개수는 " +
+                "장면마다 다르므로(상류도 '몇 개 기준인지 함께 적을 것'이라는 단서를 달았다 — " +
+                "FRAME_BUDGET.md §3 주5) 이 값을 사양으로 옮기지 말 것. " +
+                "arm 두 개로 갈라 잰다: highlight_boxes = ${HIGHLIGHT_BOX_COUNT}개" +
+                "(stairs 1 + person 3) / highlight_boxes_stress = " +
+                "${HIGHLIGHT_BOX_COUNT_STRESS}개(개당 비용 기울기용). " +
+                "배치는 ${HighlightOverlay.CELL_COLS}x${HighlightOverlay.CELL_ROWS} 셀 격자에서 " +
+                "**서로 겹치지 않는 같은 크기**의 박스를 stride ${HighlightOverlay.CELL_STRIDE}로 " +
+                "뽑은 것이다(gcd(7,32)=1이라 순열이고, 개수가 적어도 화면 전체에 퍼진다). " +
+                "**박스 크기가 두 arm에서 같으므로** 두 값을 나란히 놓아 개당 기울기로 쓸 수 " +
+                "있다 — 격자를 개수에 맞춰 바꾸면 박스마다 둘레가 달라져 그 기울기가 깨진다. " +
+                "박스는 **정적 더미**이고 ③ 탐지 결과가 아니다(③ 미구현)"
+
+        const val HIGHLIGHT_COLOR_STAIRS = "노랑 (1, 1, 0)"
+        const val HIGHLIGHT_COLOR_PERSON = "시안 (0, 1, 1)"
+        const val HIGHLIGHT_COLOR_UNDERLINE = "검정 (0, 0, 0)"
+
+        const val HIGHLIGHT_NO_RED_REASON =
+            "🔴 **빨강 금지.** 빨강은 휘도가 낮아 야간 배경에 묻히고 적록색약에서 무너진다 " +
+                "(RESEARCH_20260803_UPSTREAM.md §5). 그래서 이 오버레이의 색은 노랑·시안·검정 " +
+                "셋뿐이고 빨강 단색 스트로크는 코드에 존재하지 않는다"
+
+        const val HIGHLIGHT_NO_BLINK_REASON =
+            "🔴 **깜빡임 금지 — 안전 이슈다.** 대상 사용자가 광과민이므로 상류가 '항상 정적 " +
+                "윤곽'으로 못 박았다(RESEARCH_20260803_UPSTREAM.md §5). 그래서 이 오버레이는 " +
+                "난수를 쓰지 않고 박스가 프레임마다 **완전히 같다**(재현성도 그 덕에 유지된다)"
+
+        /**
+         * 🔴 이 문장이 빠지면 "깜빡임이 없었다"가 **성능 근거처럼** 읽힌다.
+         * 실제 깜빡임 위험은 H칸이고 미구현이다.
+         */
+        const val HIGHLIGHT_BLINK_NOT_A_PERF_CLAIM =
+            "🔴 **이 arm에 깜빡임이 없다는 사실을 성능·안전 근거로 쓰지 말 것.** 박스가 정적 " +
+                "더미라 구조적으로 없을 뿐이고, 이 런은 깜빡임을 **시험하지 않았다.** 실제 " +
+                "깜빡임 위험은 ③을 N프레임마다 돌릴 때 박스가 튀는 것이고(버짓 H칸: 좌표 IIR " +
+                "평활·hold) **미구현**이다. 상류가 그것을 안전 이슈로 규정했다" +
+                "(RESEARCH_20260803_UPSTREAM.md §5)"
+
+        /**
+         * 🔴 `INTERFACES.md` §A-4의 클래스 2번은 ☐(미정)다. 3번째 색을 지어내지 않는다.
+         */
+        const val HIGHLIGHT_CLASS_NOTE =
+            "클래스는 `stairs`(index 0) · `person`(index 1) 두 종만 그린다. " +
+                "🔴 INTERFACES.md §A-4의 **클래스 2번은 ☐(미정)**이라 3번째 클래스의 색을 " +
+                "지어내지 않았다 — 클래스가 늘면 그 자체가 렌더 규약 변경이고(§A-4 불변 규칙) " +
+                "이 오버레이도 함께 고쳐야 한다. 색은 픽셀 비용에 영향이 없다(어느 색이든 같은 " +
+                "면적을 채운다)"
+
+        const val HIGHLIGHT_HOW_TO_COMPARE =
+            "🔴 **이 arm의 stage_i_ms를 '박스 하나의 비용'으로 읽지 말 것** — 개수는 우리가 " +
+                "선언한 조건이고(box_count) 그 개수에서의 값이다. 개당 기울기는 " +
+                "highlight_boxes(${HIGHLIGHT_BOX_COUNT}개)와 highlight_boxes_stress" +
+                "(${HIGHLIGHT_BOX_COUNT_STRESS}개)의 **차분을 개수 차로 나눠** 얻는다(박스 크기가 " +
+                "두 arm에서 같아 성립한다). " +
+                "⚠ stage_i_ms에는 **컬러 어태치먼트를 다시 load하는 비용이 섞여 있다** — " +
+                "오버레이는 ② 출력 위에 얹으므로 glClear를 부를 수 없고, 타일 GPU는 그때 이전 " +
+                "내용을 타일로 다시 읽어 온다. 그게 오버레이 패스의 실제 비용이며 빼낼 수단이 " +
+                "없다(패스 경계·귀속의 일반 주의사항은 gpu_timer.attribution_note). " +
+                "⚠ 이 arm의 ② 자리는 **단순 복사**다 — blit_2pass와 같은 골격이므로 " +
+                "gpu_sum 차분의 짝은 blit_2pass다"
     }
 }

@@ -317,6 +317,8 @@ class MainActivity : ComponentActivity() {
                     offscreenStatus = renderer.offscreenStatus,
                     offscreenFallbackDraws = renderer.offscreenFallbackDraws,
                     stage2Status = renderer.stage2Status,
+                    // ④ 오버레이 자원 상태는 ②와 **따로** 싣는다(한 문장에 섞으면 실패가 묻힌다).
+                    overlayStatus = renderer.overlayStatus,
                     colorTransformSites = renderer.colorTransformSites,
                     gpuTimer = gpuTimer,
                 ),

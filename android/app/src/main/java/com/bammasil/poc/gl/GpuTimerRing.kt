@@ -576,13 +576,20 @@ class GpuTimerRing(private val recorder: FrameLogRecorder) {
          * ⚠ **현재 가장 긴 arm에 딱 맞추지 않는다.** 컴퓨트 arm 3종이 정확히 5패스라
          * 여유가 0이었는데, ② 후보에 붙을 수 있는 전처리 한 단(예: bilateral)이 6패스가
          * 되고 그러면 [setPassCount]가 거부해 그 arm은 GPU 열을 통째로 잃는다. 링의 비용은
-         * query 객체 몇 개(= 이 값 × [RING_DEPTH])뿐이므로 **여유를 두는 쪽이 싸다** —
-         * 8은 5패스 + 분리형 필터 2패스 + ④ 오버레이 1패스까지 담는다.
+         * query 객체 몇 개(= 이 값 × [RING_DEPTH])뿐이므로 **여유를 두는 쪽이 싸다.**
+         *
+         * 🔴 **8이던 값을 12로 올렸다.** 8을 정할 때 적어 둔 *"8은 5패스 + 분리형 필터
+         * 2패스 + ④ 오버레이 1패스까지 담는다"*는 **사실이 아니었다** — 조합 arm
+         * ([RenderArm.DRAGO_CLAHE_CHAIN])이 혼자 8패스를 다 써서 여유가 0이 됐고, 그래서
+         * `bf` 한 패스를 얹을 수 없는 상태였다(위 규칙을 적어 두고도 규칙대로 두지 못한
+         * 것이다). 12는 [RenderArm.DRAGO_CLAHE_CHAIN_BF]의 9패스에 ④ 오버레이 한 패스와
+         * `+ts`(`INTERFACES.md` §B-4가 ☐다) 여유까지 담는다. 비용은 query 객체
+         * 12 × [RING_DEPTH] = 48개를 컨텍스트당 **1회** 만드는 것뿐이다.
          *
          * 그래도 넘는 arm이 생기면 [setPassCount]가 **거부하고 계측을 끈다**(무시하지
          * 않는다). 그때 할 일은 여기를 올리고 다시 재는 것이다.
          */
-        const val MAX_PASS_COUNT = 8
+        const val MAX_PASS_COUNT = 12
 
         /** arm을 고르기 전의 기본값. 3패스 골격 arm의 패스 수다. */
         const val DEFAULT_PASS_COUNT = 3
