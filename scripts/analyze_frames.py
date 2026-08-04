@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import device_meta, targets  # noqa: E402
 from lib.frame_log import (  # noqa: E402
     ANOMALOUS_SKIP_REASONS,
+    GPU_FRAME_COLUMN,
     GPU_SUM_COLUMNS,
     GPU_TIME_COLUMNS,
     PIPELINE_STAGES,
@@ -82,6 +83,11 @@ BUDGET_CELL_OF = {
     STAGE_D_TOTAL_COLUMN: "D",  # 파생(행별 합). 실제 CSV 열이 아니다
     "stage_i_ms": "I",
     "gpu_present_ms": None,  # 최종 표시 패스. 실제 GPU 비용이지만 A~J 어느 칸도 아니다
+    # 🔴 프레임 단일 query (v5)는 **칸 없음**이다. 단계 비용이 아니라 프레임 전체 GPU
+    #    시간이므로, 칸 라벨을 붙이는 순간 그 숫자가 D칸(또는 아무 칸)에 인용된다.
+    #    `gpu_present_ms`와 같은 이유로 명시적으로 None을 적어 둔다 — 키를 빼면 "칸이 없다"와
+    #    "매핑을 등록하는 것을 잊었다"가 구분되지 않는다.
+    GPU_FRAME_COLUMN: None,
 }
 
 # 처리 단계가 하나도 없는 로그를 해석할 때 반드시 따라붙어야 하는 단서.
@@ -310,15 +316,32 @@ def _stages_block(
         # **이 런에서 실제로 합산 대상이 된 열.** 상수 전체 목록을 그대로 실으면
         # 헤더에 2개뿐인 로그에서도 4개가 실려 "4개를 다 더한 값"으로 오독된다.
         # columns_present와 대조해야만 알 수 있는 상태로 두지 않는다.
-        "gpu_sum_columns": [c for c in GPU_SUM_COLUMNS if c in series.gpu_columns_present],
+        # ⚠ columns_present의 부분집합이다 — gpu_frame_ms(v5)는 헤더에 있어도 여기 없다.
+        "gpu_sum_columns": list(series.gpu_sum_columns_present),
         # 스키마가 합산 대상으로 정의한 전체 목록(이 런에 있었는지와 무관). 둘을 나눠 둔다.
         "gpu_sum_columns_defined": list(GPU_SUM_COLUMNS),
         "gpu_sum_note": (
             "gpu_sum_columns는 이 런에서 실제로 더해진 열이다(헤더에 있는 것만). "
             "행별로 유효한 값을 먼저 더한 뒤 백분위를 냈다(p50(B)+p50(D) != p50(B+D)). "
-            "유효한 열이 하나도 없는 행은 기여하지 않는다"
+            "유효한 열이 하나도 없는 행은 기여하지 않는다. "
+            f"⚠ {GPU_FRAME_COLUMN}은 **더하지 않는다** — 프레임 하나를 query 하나로 감싼 값이라 "
+            "패스별 합에 더하면 같은 프레임을 두 번 센다"
         ),
         "gpu_sum_partial_rows": series.gpu_sum_partial_rows,
+        # ── 프레임 단일 query (v5) ──────────────────────────────────────────
+        # **패스별 열과 다른 물리량이다.** 이 블록만 떼어 읽는 소비자에게 그 사실이
+        # 안 보이면 gpu_frame_ms가 곧 gpu_sum_ms 자리에, 또는 D칸에 들어간다.
+        "gpu_frame_column": GPU_FRAME_COLUMN,
+        "gpu_frame_present": GPU_FRAME_COLUMN in series.gpu_columns_present,
+        "gpu_frame_note": (
+            f"{GPU_FRAME_COLUMN}은 **프레임 하나를 GL_TIME_ELAPSED query 하나로 감싼 값**이다. "
+            f"패스별 값이 아니므로 gpu_sum_ms에도 {STAGE_D_TOTAL_COLUMN}에도 들어가지 않고 "
+            f"버짓 칸도 없다(budget_cell=null). 같은 런에 패스별 열과 함께 있을 수 없다 — "
+            f"GL_TIME_ELAPSED는 중첩되지 않는다. ⚠ 이 값도 **하한**이다: 마지막 전체화면 패스의 "
+            f"타일 해결이 eglSwapBuffers에서 일어나 이 query 바깥이다(알려진 이슈 2)"
+        ),
+        # 도달 불가한 상태(두 계측이 한 런에 동시에). true면 경고가 함께 나간다.
+        "gpu_frame_conflict": series.gpu_frame_conflict,
         # ── D 계열 (D칸을 채우는 열들) ──────────────────────────────────────
         # **`stage_d_total_ms`만 보고 D를 인용할 사람**과 **내부 분해를 보고 경량화 레버를
         # 고를 사람**이 둘 다 있다. 그래서 합과 구성을 같은 블록에 함께 낸다.
@@ -704,6 +727,11 @@ def _print_stages(summary: dict) -> None:
     st = summary.get("stages") or {}
     cols = st.get("columns_present") or []
     d_cols = st.get("stage_d_columns") or []
+    # gpu_sum_ms가 **있을 수 있는 런인가.** cols와 다르다: 프레임 단일 query 런(v5)은
+    # GPU 열이 있어도 패스별 열이 하나도 없으므로 gpu_sum_ms가 애초에 나올 수 없다.
+    # cols로 판단하면 그런 런마다 "gpu_sum_ms 유효 표본 0개 — 재지 못한 것이다"라는
+    # **거짓 경고**가 뜬다(재지 못한 게 아니라 그 계측을 하지 않은 것이다).
+    sum_cols = st.get("gpu_sum_columns") or []
     arm_long, arm_short = _arm_long(st), _arm_short(st)
     if not cols:
         LOG.info(
@@ -739,6 +767,21 @@ def _print_stages(summary: dict) -> None:
                 "이 로그로는 알 수 없다. 하네스는 **하위 패스로 해석**해 그대로 더했다 "
                 "(아래 경고 참고)"
             )
+    # 프레임 단일 query(v5)가 있는 런에서는 그 열이 무엇인지를 숫자 **앞에** 낸다.
+    # 줄만 보면 gpu_sum_ms와 같은 자리의 값처럼 읽히는데, 물리량도 계측 방식도 다르다.
+    if st.get("gpu_frame_present"):
+        LOG.info(
+            "  %s: 프레임 하나를 query 하나로 감싼 값 — gpu_sum_ms(패스별 합)에 더하지 "
+            "않았고 %s에도 넣지 않았으며 버짓 칸도 없다. 마지막 타일 해결이 "
+            "eglSwapBuffers에서 일어나 이 값도 하한이다",
+            GPU_FRAME_COLUMN, STAGE_D_TOTAL_COLUMN,
+        )
+        if st.get("gpu_frame_conflict"):
+            LOG.warning(
+                "  ⚠ 계측 방식 혼재 — %s와 패스별 열이 한 런에 동시에 있다. "
+                "GL_TIME_ELAPSED는 중첩되지 않으므로 둘 중 하나는 못 믿는다 (아래 경고 참고)",
+                GPU_FRAME_COLUMN,
+            )
     for name in _stage_series_order():
         s = st.get(name) or {}
         if not s:
@@ -757,7 +800,7 @@ def _print_stages(summary: dict) -> None:
             )
         elif (
             name in cols
-            or (name == "gpu_sum_ms" and cols)
+            or (name == "gpu_sum_ms" and sum_cols)
             or (name == STAGE_D_TOTAL_COLUMN and d_cols)
         ):
             LOG.warning(

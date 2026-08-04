@@ -1,4 +1,4 @@
-# 프레임 로그 스키마 v4
+# 프레임 로그 스키마 v5
 
 > **작성:** 팀원2 · **상태:** 확정 (Android 트랙 ↔ 하네스 트랙 내부 규격)
 > **소유 주제:** 폰이 뱉고 PC가 읽는 측정 로그의 형식.
@@ -41,7 +41,7 @@ session.json    이 측정이 어떤 조건이었는지
 | `t_render_end_ns` | int ns | 렌더 제출 완료 |
 | `dropped_since_last` | int | 직전 행 이후 백프레셔로 버려진 프레임 수 |
 
-### GPU 패스 시간 (v2 추가, v3·v4에서 D 계열 확장) — **다른 시계에서 온다**
+### GPU 패스 시간 (v2 추가, v3·v4에서 D 계열 확장, v5에서 프레임 단일 query) — **다른 시계에서 온다**
 
 | 열 | 타입 | 의미 | 버짓 칸 | 추가 |
 |---|---|---|---|---|
@@ -56,6 +56,39 @@ session.json    이 측정이 어떤 조건이었는지
 | `stage_d_apply2_ms` | float ms | ② **두 번째 톤커브 스테이지**의 적용 슬롯 | **D** (D 계열) | v4 |
 | `stage_i_ms` | float ms | ④ 강조 렌더 패스의 GPU 시간 | **I** | v2 |
 | `gpu_present_ms` | float ms | 기본 프레임버퍼에 그린 최종 표시 패스의 GPU 시간 | **없음** (§6) | v2 |
+| `gpu_frame_ms` | float ms | **프레임 하나 전체**를 query 하나로 감싼 GPU 시간. 패스별 값이 아니다 | **없음** (아래) | v5 |
+
+#### `gpu_frame_ms` — 프레임 단일 query (v5). **위 열들과 다른 물리량이다**
+
+위 열들이 **패스 하나**를 재는 반면 이 열은 **프레임 전체**를 잰다.
+`GL_TIME_ELAPSED` query 하나로 프레임의 모든 드로우를 감싼 값이다.
+
+🔴 **더하지 않는다. 세 곳 전부에서.**
+
+| 어디 | 왜 |
+|---|---|
+| `gpu_sum_ms` | 더하면 **같은 프레임을 두 번 센다.** `lib/frame_log.py`의 `GPU_SUM_COLUMNS`에서 이 열만 빠져 있고, 상수 자기검사가 그것을 강제한다(들어가 있으면 import에서 죽는다) |
+| `stage_d_total_ms` | **D 계열이 아니다.** `STAGE_D_FAMILY_COLUMNS`에 넣으면 ② 비용이 프레임 전체 시간으로 부풀려진다. 같은 자기검사가 막는다 |
+| 버짓 칸 | 단계 비용이 아니라 프레임 전체 GPU 시간이다. `analyze_frames.py`의 `BUDGET_CELL_OF`에서 **`null`**이며, 칸 라벨을 붙이는 순간 그 숫자가 D칸에 인용된다 |
+
+- **이 열이 있는 런에는 패스별 열이 없다.** `GL_TIME_ELAPSED`는 중첩되지 않으므로 같은
+  프레임에 두 계측을 걸 수 없다. **반대도 같다.** 그래서 계측 방식이 `render_arm`으로
+  갈린다(§5의 `_1q` 접미사) — 알려진 이슈 4와 같은 패턴이다.
+- ⚠️ **그래도 둘이 함께 온 로그는 경고한다.** 현재 앱 구현상 도달 불가한 상태지만, 도달
+  불가한 상태를 조용히 통과시키지 않는 것이 이 저장소의 규약이다(`-1` 처리와 같은 취지).
+  `stages.gpu_frame_conflict = true`가 되고 경고가 **패스별 열 이름을 나열**한다.
+  집계는 죽지 않고, 어느 쪽도 버리지 않으며, 합이 이중 계상되지도 않는다(이 열은 애초에
+  어느 합에도 안 들어간다) — 다만 두 계측이 서로를 방해했을 수 있으므로 그 런의 GPU
+  숫자를 버짓 칸이나 중복 계상량 계산에 쓰기 전에 앱 쪽 링 구성을 확인해야 한다.
+- 가드·폐기 계수는 다른 GPU 열과 **완전히 동일**하다(하한 `> 0`, 상한 없음 → §4).
+- 🔴 **이 값도 여전히 하한이다.** 마지막 전체화면 패스의 타일 해결이 `eglSwapBuffers`에서
+  일어나는데 그 시점은 프레임 단일 query의 **바깥**이다(아래 4항 = 알려진 이슈 2).
+  그러므로 이 열과 `gpu_sum_ms`의 차로 재는 것은 **"중복 계상량의 하한"**이지 "진짜 GPU
+  시간"이 아니다.
+- `summary.json`에는 `stages.gpu_frame_column` / `stages.gpu_frame_present` /
+  `stages.gpu_frame_note` / `stages.gpu_frame_conflict`가 함께 실린다 — 이 블록만 떼어 읽는
+  소비자에게 "패스별 합과 다른 물리량"이라는 사실이 보여야 한다(`render_arm`을 이 블록에
+  한 번 더 싣는 것과 같은 이유).
 
 #### D 계열(D-family) — D칸을 채우는 열들
 
@@ -224,8 +257,9 @@ DVFS/발열 차**인지 아직 갈라내지 못했다 → **열별 차분을 근
 | 지표 | 계산 | 무엇을 말하나 |
 |---|---|---|
 | `stage_b_ms` · D 계열(§2의 8개) · `stage_i_ms` · `gpu_present_ms` | CSV 열 그대로 | 패스별 GPU 점유 시간 |
+| `gpu_frame_ms` | CSV 열 그대로 | **프레임 하나를 query 하나로** 감싼 GPU 시간 (v5). 어느 합에도 안 들어간다 |
 | `stage_d_total_ms` | **행별로** 유효한 **D 계열** 열들의 합 | **그 런의 D칸** (v3) |
-| `gpu_sum_ms` | **행별로** 유효한 **모든 GPU** 열의 합 | 그 프레임이 GPU를 잡은 총 시간 |
+| `gpu_sum_ms` | **행별로** 유효한 **패스별 GPU** 열들의 합 | 그 프레임이 GPU를 잡은 총 시간 |
 
 #### `stage_d_total_ms` — D칸을 한 키로 (v3)
 
@@ -234,7 +268,7 @@ DVFS/발열 차**인지 아직 갈라내지 못했다 → **열별 차분을 근
 | 파생 시계열 | 더하는 대상 | 쓰는 곳 |
 |---|---|---|
 | `stage_d_total_ms` | **D 계열만** (`stage_d_ms` + `stage_d_analyze_ms` + `stage_d_build_ms` + `stage_d_apply_ms` + `stage_d_denoise_ms` + `stage_d_analyze2_ms` + `stage_d_build2_ms` + `stage_d_apply2_ms` 중 그 로그에 있는 것) | **D칸** |
-| `gpu_sum_ms` | **모든 GPU 열** (B + D 계열 + I + present) | 그 프레임의 GPU 총 점유 |
+| `gpu_sum_ms` | **패스별 GPU 열 전부** (B + D 계열 + I + present). 🔴 `gpu_frame_ms`는 **빼고** — 프레임 전체 query를 패스별 합에 더하면 프레임을 두 번 센다 | 그 프레임의 GPU 총 점유 |
 
 - **행별 합이지 백분위의 합이 아니다.** `p50(hist) + p50(cdf) != p50(hist+cdf)`.
   행에서 먼저 더한 뒤 분포를 낸다(`gpu_sum_ms`와 같은 규칙). 실측 예: 하위 두 열의 p50이
@@ -262,6 +296,12 @@ DVFS/발열 차**인지 아직 갈라내지 못했다 → **열별 차분을 근
   "무엇을 더한 값인지"가 맞아야 하고, 두 키를 대조해야 알 수 있는 상태로 두지 않는다.
 - `gpu_present_ms`도 `gpu_sum_ms`에 **포함한다.** 버짓 칸이 없다는 것은 A~J 매핑이 없다는
   뜻이지 GPU를 안 쓴다는 뜻이 아니다. 칸별로 보고 싶으면 개별 시계열을 본다.
+  🔴 **`gpu_frame_ms`는 다르다** — 그것도 버짓 칸이 없지만 `gpu_sum_ms`에서 **빠진다.**
+  두 열의 차이는 "칸이 있냐"가 아니라 **"패스를 재느냐 프레임을 재느냐"**다(§2).
+  그래서 `stages.gpu_sum_columns`는 `stages.columns_present`의 **부분집합**이며, 프레임 단일
+  query 런에서는 `gpu_sum_columns`가 빈 배열이고 `gpu_sum_ms.count == 0`이다 — 그 0은
+  "재지 못했다"가 아니라 **"그 계측을 하지 않았다"**이므로 리포트도 그 런에는
+  "유효 표본 0개" 경고를 붙이지 않는다.
 - **`render_arm`을 이 블록에도 싣는다**(`stages.render_arm` / `stages.render_arm_known`).
   `session` 블록에도 있지만, **이 블록만 떼어 읽는 경로**가 열려 있으면 그 소비자에게는
   arm이 사라진 채 `stage_d_ms`만 남는다 → §2 "이 숫자를 읽을 때의 조건" 1항.
@@ -301,6 +341,7 @@ Android에서는 `SystemClock.elapsedRealtimeNanos()`.
 | `capture_to_render_ms` | `> 0` | `< 5000ms` |
 | `stage_b_ms` · `stage_i_ms` · `gpu_present_ms` | `> 0` | **없음** |
 | D 계열: `stage_d_ms` · `stage_d_analyze_ms` · `stage_d_build_ms` · `stage_d_apply_ms` · `stage_d_denoise_ms` · `stage_d_analyze2_ms` · `stage_d_build2_ms` · `stage_d_apply2_ms` | `> 0` | **없음** |
+| `gpu_frame_ms` (프레임 단일 query, v5) | `> 0` | **없음** |
 | `stage_d_total_ms` (파생) | `> 0` | **없음** |
 | `gpu_sum_ms` (파생) | `> 0` | **없음** |
 
@@ -457,7 +498,7 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "build_type": "release",
   "pipeline_stages": [],
   "capture_clock_base": "unknown",
@@ -588,8 +629,33 @@ id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통
 | `drago_clahe_chain_bf` · `drago_clahe_fused_bf` | 위 조합 + **bilateral**(1패스 joint gather. **`d=7`(반경 3)의 원형 이웃 29탭이며 7×7 사각형 49탭이 아니다** — 앱 `RenderArm.BF_D=7` / `BF_RADIUS=3` / `BF_TAP_COUNT=29`, 조건은 `i²+j² ≤ radius²`. ⚠ 이 줄은 앞서 "1패스 7×7 joint gather"라고 적혀 있었다 — 그 서술을 인용하면 탭 수가 49로 전파된다. `RenderArm.kt`·`BilateralStage.kt`가 세 곳에서 "7×7 사각형 49탭이 아니다"라고 명시적으로 부정한다). 이름은 `clahe_gamma_bf`·`agcwd_bf`의 `<arm>_bf` 규약을 따른다 → `stage_d_denoise_ms` 슬롯. **새 열을 만들지 않는다**(그 열은 v3부터 bilateral 전용으로 예약돼 있다) |
 | `highlight_boxes_stress` | ④ 강조를 **박스 개수만 다르게** 재는 조건(개당 기울기용). 개수는 `CONDITION_KEYS`에 담기지 않으므로(`pipeline_stages`가 `highlight_boxes`와 동일하다) 같은 id로 개수만 바꾸면 **조건 차이가 무경고로 통과**한다 — `blit_2pass`/`clahe_gamma`가 둘 다 `["blit_2pass"]`여서 무경고로 "회귀 없음"이 나온 실패와 동형이다. 개수 자체는 하네스가 해석하지 않는다 |
 
+##### `_1q` 접미사 = **프레임 단일 query 계측** (v5)
+
+| 값 | 짝이 되는 arm | 계측 |
+|---|---|---|
+| `blit_2pass_1q` | `blit_2pass` | 프레임 하나를 query 하나로 → `gpu_frame_ms` |
+| `drago_clahe_chain_1q` | `drago_clahe_chain` | 〃 |
+| `drago_clahe_chain_bf_1q` | `drago_clahe_chain_bf` | 〃 |
+
+🔴 **렌더 경로는 접미사 없는 짝과 글자 그대로 같다.** 셰이더도 패스 구성도 그리는 내용도
+같고, 다른 것은 **GPU 시간을 어떻게 재는가** 하나뿐이다. 그러므로 **`pipeline_stages`도
+같다** — 두 arm을 가르는 것은 `render_arm` 하나뿐이고, 그 키가 `baseline_diff.py`의
+`CONDITION_KEYS`에 있으므로 조건 차이로 잡힌다.
+**`highlight_boxes`/`highlight_boxes_stress`와 같은 구조**다 — 그쪽은 박스 개수가, 이쪽은
+계측 방식이 `pipeline_stages`에 담기지 않아서 arm id로 가른다.
+
+**왜 arm으로 가르는가:** `GL_TIME_ELAPSED`는 **중첩되지 않는다.** 프레임 전체를 감싼 query
+안에 패스별 query를 넣을 수 없으므로 같은 런에서 두 계측을 함께 걸 수 없다 — 계측 방식이
+런의 조건이 될 수밖에 없다(알려진 이슈 4와 같은 패턴).
+
+⚠️ **차분을 낼 때 계측 방식이 같은 분모를 쓴다.** `_1q` arm은 `_1q` 분모(`blit_2pass_1q`)에,
+패스별 arm은 패스별 분모(`blit_2pass`)에 뺀다. 섞으면 계측 방식 차이가 arm 차분에 섞여
+그 값이 arm 비용도 중복 계상량도 아니게 된다.
+
 **어휘에 있다는 것은 "그 문자열을 안다"는 뜻일 뿐이다.** 하네스는 여전히 arm의 의미를
 해석하지 않으며, 어느 arm이 어느 패스에 무엇을 그렸는지는 판단하지 않는다.
+(`_1q` 짝이 정말 같은 렌더 경로인지도 **검증하지 않는다** — 앱 쪽 `RenderArm` 정의를
+사람이 확인해야 한다.)
 
 - **이 표는 사람이 읽는 것이고, 하네스는 이 의미를 해석하지 않는다.** 하네스가 하는 일은
   "그 문자열이 아는 어휘인가"를 보고 **숫자 옆에 arm을 붙이는 것**까지다. 해석을 시작하면
@@ -843,6 +909,14 @@ python scripts/gen_synthetic_frames.py --stage_b_ms 0.6 \
   --gpu_present_ms 3.6 --pipeline_stages "blit_2pass,stage2_drago,stage2_clahe" \
   --render_arm drago_clahe_chain
 
+# 프레임 단일 query(v5). 패스별 열과 **함께 쓰지 않는다** — 렌더 경로는 같고 계측만 다르다.
+# pipeline_stages는 접미사 없는 짝과 똑같이 적는다(가르는 것은 render_arm 하나뿐이다).
+python scripts/gen_synthetic_frames.py --gpu_frame_ms 14.2 \
+  --pipeline_stages "blit_2pass,stage2_drago,stage2_clahe,stage2_bilateral" \
+  --render_arm drago_clahe_chain_bf_1q
+# 둘을 **동시에** 주면 계측 혼재 경고 경로 (도달 불가 상태를 조용히 통과시키지 않는다)
+python scripts/gen_synthetic_frames.py --gpu_frame_ms 14.2 --stage_b_ms 1.5 --gpu_present_ms 5
+
 # render_arm / pipeline_stages는 **명시 인자**다 (유추하지 않는다)
 python scripts/gen_synthetic_frames.py --stage_d_ms 5 --render_arm gamma_only
 python scripts/gen_synthetic_frames.py --stage_d_ms 5 --render_arm ""   # 키 없음 = 'arm 미상' 경고 경로
@@ -1094,3 +1168,42 @@ S1 이전 빌드의 낡은 로그가 남아 있었다. `pipeline_stages`가 빈 
   `20260803_indoor_clahe_gamma_a34.json` ↔ 집계 `run_ts=20260803_164345`).
   7/30 v1 승격본 2건은 `frametime`에 `pinned_to_camera_supply` 키가 **추가**된 것만 다르고
   (v3에서 들어온 키다) 값은 전부 같다 — v4가 만든 차이가 아니다.
+- **v5 (2026-08-04, 팀원2) — `SCHEMA_VERSION` 4 → 5. 프레임 단일 query (`gpu_frame_ms`).**
+  s5_bf 실측에서 `gpu_sum_ms`가 **물리적으로 불가능한 값**을 냈다: `chain_bf`가
+  29.92fps × 43.794ms = **1310 ms/s**(1초에 1.31초의 GPU 작업)인데 30fps가 스톨·드롭 없이
+  유지됐고 프레임타임·지연도 움직이지 않았다. 행 단위로 보면 **95.8%의 행에서 `gpu_sum`이
+  그 프레임의 출력 간격을 넘고** 중앙값 초과가 +10.230ms다. 원인 후보는
+  `gpu_present_ms`가 **마지막 전체화면 패스의 타일 해결을 흡수해 중복 계상**하는 것이다
+  (같은 셰이더인데 query가 1.862 → 15.078로 부풀었고, ④ 오버레이 arm은 +0.010(2%)뿐이다).
+  **그 중복량을 모델이 아니라 실측으로 잡기 위해** 프레임 전체를 query 하나로 감싼 계측을
+  들인다: **`gpu_frame_ms` 열 1개 추가**(§2).
+  🔴 **이 열은 다른 GPU 열과 물리량이 다르다** — 패스가 아니라 프레임을 잰다. 그래서
+  `GPU_SUM_COLUMNS`에서 **빠지고**(더하면 프레임 이중 계상), `STAGE_D_FAMILY_COLUMNS`에도
+  들어가지 않으며, `BUDGET_CELL_OF`에서 **칸 없음(`null`)**이다. 셋 다 상수 자기검사가
+  강제한다(어기면 import에서 죽는다) — "GPU 열이면 다 더한다"가 아니라 "패스별 열을
+  더한다"가 `gpu_sum_ms`의 정의임을 코드가 붙잡고 있게 하기 위해서다.
+  `GL_TIME_ELAPSED`는 중첩되지 않으므로 **한 런에 두 계측을 함께 걸 수 없다.** 그래서
+  계측 방식이 `render_arm`으로 갈린다 — **`_1q` 어휘 3종 추가**(`blit_2pass_1q` ·
+  `drago_clahe_chain_1q` · `drago_clahe_chain_bf_1q`). 렌더 경로와 `pipeline_stages`는
+  접미사 없는 짝과 **글자 그대로 같고**, 두 arm을 가르는 것은 `render_arm` 하나뿐이다
+  (`highlight_boxes`/`highlight_boxes_stress`와 동형 — §5).
+  도달 불가한 조합(두 계측이 한 로그에)은 **경고로 잡는다**(`stages.gpu_frame_conflict`) —
+  현재 앱 구현상 올 수 없지만, 도달 불가한 상태를 조용히 통과시키지 않는 것이 이 저장소의
+  규약이다. 집계는 죽지 않고 어느 쪽도 버리지 않는다.
+  ⚠️ **이 열도 하한이다.** 마지막 타일 해결이 `eglSwapBuffers`에서 일어나 프레임 단일 query
+  **바깥**이다(§2 4항 = 알려진 이슈 2) — 그래서 이 실험이 재는 것은 **"중복 계상량의 하한"**
+  이지 "진짜 GPU 시간"이 아니다.
+  판정(`meets_*_target`)·종료 코드는 그대로다 — 단계 비용에는 판정선이 없다.
+  ⚠️ **앱은 아직 v4다.** §6대로 하네스가 먼저 들어간 것이며, 앱 라운드가 붙기 전까지
+  실기기 로그에 "앱이 하네스보다 뒤처졌다" 경고가 뜨는 것은 **정상이고 의도된 순서**다.
+  측정 계획은 `docs/plans/20260804_s6_1q_indoor_a34.json`(세션 `s6_1q`, 8런/72분).
+  검증(합성 = **로직 검증이지 실측이 아니다**): `gpu_frame_ms`만 있는 합성 런에서 분포가
+  나오고 `budget_cell`이 `null`, `gpu_sum_columns`가 빈 배열, `gpu_sum_ms.count == 0`이며
+  "유효 표본 0개" 거짓 경고가 뜨지 않는다. 두 계측을 함께 준 합성 런에서 혼재 경고가
+  뜨고 `gpu_sum_ms p50=13.531`(= 패스별 4열 합)로 `gpu_frame_ms`(14.2)가 **섞이지 않았다.**
+  상수 자기검사는 반사실 3종(`GPU_SUM_COLUMNS`에 포함 / `COLUMN_ADDED_IN` 미등록 /
+  D 계열에 포함)에서 전부 `RuntimeError`로 죽는 것을 확인했다.
+  하위호환: **s5_bf 회수본 13건(실기기 v4 로그)을 v4 하네스와 v5 하네스로 각각 재집계**해
+  `frametime`·`verdict`·`stages`의 **모든 측정값과 폐기·행 회계가 동일**함을 확인했다
+  (차이는 "앱이 하네스보다 뒤처졌다" 경고 1줄뿐이고, 그 경고가 **정확히 `gpu_frame_ms`만**
+  이름으로 나열한다 — `COLUMN_ADDED_IN`이 계산한다).

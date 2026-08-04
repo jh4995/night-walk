@@ -20,6 +20,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.frame_log import (  # noqa: E402
+    GPU_FRAME_COLUMN,
+    GPU_SUM_COLUMNS,
     GPU_TIME_COLUMNS,
     LIGHTING_SYNTHETIC,
     MISSING,
@@ -129,6 +131,17 @@ def main() -> int:
         "--gpu_present_ms", type=float, default=0.0,
         help="최종 표시 패스 GPU 시간 (버짓 칸 아님). 0=열 없음",
     )
+    # ── 프레임 단일 query (스키마 v5). **위 열들과 다른 물리량이다.**
+    #    실기기에서는 이 열이 있는 런에 패스별 열이 없다(GL_TIME_ELAPSED는 중첩되지 않는다).
+    #    생성기는 **그 조합을 막지 않는다** — 하네스의 '계측 방식 혼재' 경고 경로를 태우려면
+    #    도달 불가한 입력을 만들 수 있어야 하기 때문이다(어휘 밖 arm을 그대로 쓰는 것과 같은 취지).
+    parser.add_argument(
+        "--gpu_frame_ms", type=float, default=0.0,
+        help=(
+            "프레임 하나를 query 하나로 감싼 GPU 시간 (버짓 칸 아님, gpu_sum_ms에 더하지 "
+            "않는다). 0=열 없음. 패스별 열과 함께 주면 하네스의 계측 혼재 경고 경로가 된다"
+        ),
+    )
     parser.add_argument(
         "--gpu_disjoint_frac", type=float, default=0.0,
         help=(
@@ -200,6 +213,7 @@ def main() -> int:
         "stage_d_apply2_ms": args.stage_d_apply2_ms,
         "stage_i_ms": args.stage_i_ms,
         "gpu_present_ms": args.gpu_present_ms,
+        GPU_FRAME_COLUMN: args.gpu_frame_ms,
     }
     gpu_cols = [c for c in GPU_TIME_COLUMNS if gpu_base[c] > 0]
 
@@ -238,7 +252,13 @@ def main() -> int:
         gpu_true = {
             c: gpu_base[c] * (1.0 + rng.uniform(-0.15, 0.15)) for c in gpu_cols
         }
-        gpu_total_ms = sum(gpu_true.values())
+        # ⚠ **프레임 단일 query 열은 패스별 합에 더하지 않는다** — 같은 프레임을 두 번 세는
+        #   것이고, 하네스의 gpu_sum_ms 정의(GPU_SUM_COLUMNS)와도 어긋난다. 프레임 query는
+        #   패스들을 **감싼** 값이므로 둘 중 큰 쪽이 그 프레임의 GPU 점유다.
+        gpu_total_ms = max(
+            sum(v for c, v in gpu_true.items() if c in GPU_SUM_COLUMNS),
+            gpu_true.get(GPU_FRAME_COLUMN, 0.0),
+        )
         # swapBuffers는 GPU가 끝나기를 기다리므로, GPU 총합이 CPU 제출 비용보다 크면
         # 그쪽이 프레임 비용을 지배한다. 이 모델이 없으면 stage_d를 아무리 키워도
         # 프레임타임이 안 변해서 "카메라 공급에 묶임" 단서만 늘 참이 된다.
@@ -364,6 +384,7 @@ def main() -> int:
             "stage_d_apply2_ms": args.stage_d_apply2_ms,
             "stage_i_ms": args.stage_i_ms,
             "gpu_present_ms": args.gpu_present_ms,
+            "gpu_frame_ms": args.gpu_frame_ms,
             "gpu_disjoint_frac": args.gpu_disjoint_frac,
         },
         "gpu_columns_written": gpu_cols,

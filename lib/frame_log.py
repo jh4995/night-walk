@@ -25,7 +25,7 @@ from typing import Optional
 
 from lib.stats import percentile
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # 폰이 반드시 뱉어야 하는 열
 REQUIRED_COLUMNS = ("frame_idx", "t_recv_ns")
@@ -59,7 +59,30 @@ GPU_TIME_COLUMNS = (
     "stage_d_apply2_ms",    # ② 두 번째 스테이지의 적용 패스 (v4)
     "stage_i_ms",         # ④ 강조 렌더 패스 (버짓 I칸)
     "gpu_present_ms",     # 기본 프레임버퍼에 그린 최종 표시 패스. **버짓 칸이 아니다**
+    # ── 프레임 단일 query (v5). **위 열들과 다른 물리량이다** — 아래 GPU_FRAME_COLUMN 참고 ──
+    "gpu_frame_ms",
 )
+
+# ── 프레임 단일 query (v5) ────────────────────────────────────────────────
+# **프레임 하나를 GL_TIME_ELAPSED query 하나로 감싼 값**이다. 위 열들이 "패스 하나"를 재는
+# 것과 달리 이 열은 "프레임 전체"를 잰다.
+#
+# 🔴 **`gpu_sum_ms`에 더하지 않는다**(GPU_SUM_COLUMNS에서 뺀다). 더하면 같은 프레임을 두 번
+#   세는 것이다. 🔴 **`stage_d_total_ms`에도 들어가지 않는다** — D 계열이 아니다.
+#   🔴 **버짓 칸도 없다**(analyze_frames의 BUDGET_CELL_OF에서 None). 단계 비용이 아니라
+#   프레임 전체 GPU 시간이므로 칸 라벨을 붙이면 그 숫자가 D칸에 인용된다.
+#
+# **한 런에 이 열과 패스별 열이 함께 있을 수 없다.** GL_TIME_ELAPSED는 중첩되지 않으므로
+# 같은 프레임에 두 계측을 걸 수 없다 — 프레임 단일 query 런에는 패스별 열이 없고, 반대도
+# 같다. 그래도 둘이 함께 온 로그는 **경고한다**(_add_gpu_warnings): 도달 불가한 상태를
+# 조용히 통과시키면 둘 중 어느 쪽을 못 믿는지 되물을 근거가 사라진다.
+#
+# ⚠ **이 값도 여전히 하한이다.** 마지막 전체화면 패스의 타일 해결이 `eglSwapBuffers`에서
+#   일어나는데 그 시점은 프레임 단일 query의 **바깥**이다(알려진 이슈 2). 그래서 이 열로
+#   재는 것은 "패스별 합의 중복 계상량의 하한"이지 "진짜 GPU 시간"이 아니다.
+#
+# 폐기 가드는 다른 GPU 열과 **완전히 같다**(하한 `> 0`, 상한 없음).
+GPU_FRAME_COLUMN = "gpu_frame_ms"
 
 # ── D 계열 ────────────────────────────────────────────────────────────────
 # **D칸을 채우는 열들.** ②를 여러 패스로 쪼개면 GL_TIME_ELAPSED가 중첩되지 않으므로
@@ -134,6 +157,7 @@ COLUMN_ADDED_IN = {
     "stage_d_analyze2_ms": 4,
     "stage_d_build2_ms": 4,
     "stage_d_apply2_ms": 4,
+    GPU_FRAME_COLUMN: 5,
 }
 
 # ── 상수 자기검사 ─────────────────────────────────────────────────────────
@@ -164,7 +188,35 @@ if _missing_family:
 # "이 프레임이 GPU를 몇 ms 잡았나"에서 그것만 빼면 총량이 과소평가된다. 버짓 칸이
 # 아니라는 것은 A~J 매핑이 없다는 뜻이지 비용이 아니라는 뜻이 아니다.
 # (칸별 비용을 보고 싶으면 stage_* 시계열을 각각 보면 된다.)
-GPU_SUM_COLUMNS = GPU_TIME_COLUMNS
+#
+# 🔴 **`gpu_frame_ms`만 뺀다** (v5). 그 열은 프레임 하나를 query 하나로 감싼 값이라
+#   패스별 합에 더하면 같은 프레임을 두 번 세는 것이다. "GPU 열이면 다 더한다"가 아니라
+#   "패스별 열을 더한다"가 이 합의 정의다.
+GPU_SUM_COLUMNS = tuple(c for c in GPU_TIME_COLUMNS if c != GPU_FRAME_COLUMN)
+
+# ── 상수 자기검사 (v5) ────────────────────────────────────────────────────
+# 위 블록과 같은 부류다 — 상수끼리의 불변식이므로 데이터와 무관하고, 깨지는 순간은 개발자가
+# 상수를 고친 그 편집 시점이다. 여기서 죽이지 않으면 `gpu_frame_ms`가 조용히 `gpu_sum_ms`나
+# `stage_d_total_ms`에 섞여 **프레임을 두 번 센 숫자**가 버짓표로 나간다.
+_frame_col_errors = []
+if GPU_FRAME_COLUMN not in GPU_TIME_COLUMNS:
+    _frame_col_errors.append(f"{GPU_FRAME_COLUMN}이 GPU_TIME_COLUMNS에 없다(집계되지 않는다)")
+if GPU_FRAME_COLUMN in GPU_SUM_COLUMNS:
+    _frame_col_errors.append(
+        f"{GPU_FRAME_COLUMN}이 GPU_SUM_COLUMNS에 있다 — 프레임 전체 query를 패스별 합에 "
+        f"더하면 같은 프레임을 두 번 센다"
+    )
+if GPU_FRAME_COLUMN in STAGE_D_FAMILY_COLUMNS:
+    _frame_col_errors.append(
+        f"{GPU_FRAME_COLUMN}이 STAGE_D_FAMILY_COLUMNS에 있다 — D 계열이 아니라 프레임 "
+        f"전체 GPU 시간이며 D칸에 들어가면 ② 비용이 부풀려진다"
+    )
+if _frame_col_errors:
+    raise RuntimeError(
+        "lib/frame_log.py 상수 불일치 — 프레임 단일 query 열의 성질이 어긋난다: "
+        + "; ".join(_frame_col_errors)
+        + " (docs/FRAME_LOG_SCHEMA.md §2 '프레임 단일 query')"
+    )
 
 # 있으면 쓰고 없으면 건너뛰는 열
 OPTIONAL_COLUMNS = (
@@ -299,6 +351,26 @@ RENDER_ARM_DRAGO_CLAHE_FUSED_BF = "drago_clahe_fused_bf"
 # ⚠ 개수 자체를 하네스가 해석하지는 않는다(그 값은 앱이 session.json에 적는다).
 RENDER_ARM_HIGHLIGHT_BOXES_STRESS = "highlight_boxes_stress"
 
+# ── `_1q` 접미사 = **프레임 단일 query 계측** (v5) ─────────────────────────
+# 🔴 **렌더 경로는 접미사 없는 arm과 글자 그대로 같다.** 셰이더도 패스 구성도 그리는 내용도
+#   같고, 다른 것은 **GPU 시간을 어떻게 재는가** 하나뿐이다:
+#     접미사 없음 : 패스마다 query 하나 → `stage_*_ms` / `gpu_present_ms` (합이 `gpu_sum_ms`)
+#     `_1q`       : 프레임 하나를 query 하나로 감싼다 → `gpu_frame_ms`
+#   `GL_TIME_ELAPSED`는 중첩되지 않으므로 같은 런에서 둘 다는 불가능하다. 그래서 계측 방식이
+#   arm으로 갈리며, 이건 이 저장소의 기존 패턴이다(알려진 이슈 4).
+#
+# 그러므로 **`pipeline_stages`도 접미사 없는 arm과 같다.** 두 arm을 가르는 것은 `render_arm`
+# 하나뿐이고, 그 키가 `baseline_diff.py`의 `CONDITION_KEYS`에 있으므로 조건 차이로 잡힌다 —
+# `highlight_boxes` / `highlight_boxes_stress`와 **같은 구조**다(그쪽은 박스 개수가,
+# 이쪽은 계측 방식이 `pipeline_stages`에 담기지 않는다).
+#
+# ⚠ **생산자는 앱이다.** 위 예약어 블록들과 같은 취급 — 팀원2 쪽 명명이지 계약값이 아니고,
+#   앱이 다른 id를 쓰기로 하면 앱이 정답이며 여기를 고친다. 등록은 "이 문자열을 안다"는
+#   뜻일 뿐이고, 하네스는 arm의 의미를 해석하지 않는다.
+RENDER_ARM_BLIT_2PASS_1Q = "blit_2pass_1q"
+RENDER_ARM_DRAGO_CLAHE_CHAIN_1Q = "drago_clahe_chain_1q"
+RENDER_ARM_DRAGO_CLAHE_CHAIN_BF_1Q = "drago_clahe_chain_bf_1q"
+
 RENDER_ARMS = (
     RENDER_ARM_PASSTHROUGH,
     RENDER_ARM_BLIT_2PASS,
@@ -316,6 +388,10 @@ RENDER_ARMS = (
     RENDER_ARM_DRAGO_CLAHE_CHAIN_BF,
     RENDER_ARM_DRAGO_CLAHE_FUSED_BF,
     RENDER_ARM_HIGHLIGHT_BOXES_STRESS,
+    # 프레임 단일 query 계측 (v5). 렌더 경로는 접미사 없는 짝과 같다 — 위 블록 참고.
+    RENDER_ARM_BLIT_2PASS_1Q,
+    RENDER_ARM_DRAGO_CLAHE_CHAIN_1Q,
+    RENDER_ARM_DRAGO_CLAHE_CHAIN_BF_1Q,
     RENDER_ARM_SYNTHETIC,
 )
 
@@ -421,8 +497,12 @@ class FrameSeries:
     stage_d_apply2_ms: list[float] = field(default_factory=list)
     stage_i_ms: list[float] = field(default_factory=list)
     gpu_present_ms: list[float] = field(default_factory=list)
+    # 프레임 하나를 query 하나로 감싼 값 (v5). **패스별 값이 아니다** —
+    # gpu_sum_ms에도 stage_d_total_ms에도 들어가지 않는다 (GPU_FRAME_COLUMN 주석).
+    gpu_frame_ms: list[float] = field(default_factory=list)
     # **행 단위** 합. p50(B)+p50(D) != p50(B+D)이므로 백분위를 더하지 않고 행에서 먼저
     # 더한 뒤 분포를 낸다. 그 행에 유효한 GPU 열이 하나도 없으면 기여하지 않는다.
+    # ⚠ 더하는 대상은 **패스별 열**(GPU_SUM_COLUMNS)이며 gpu_frame_ms는 빠진다.
     gpu_sum_ms: list[float] = field(default_factory=list)
     # D 계열만의 **행 단위** 합 = 그 런의 D칸. gpu_sum_ms와 더하는 대상이 다르다.
     stage_d_total_ms: list[float] = field(default_factory=list)
@@ -431,6 +511,9 @@ class FrameSeries:
     gpu_columns_present: list[str] = field(default_factory=list)
     # 그중 D 계열만 (헤더에 있던 것). stage_d_total_ms가 무엇을 더한 값인지가 여기 있다.
     stage_d_columns_present: list[str] = field(default_factory=list)
+    # 그중 **gpu_sum_ms에 실제로 더해진 열**(헤더에 있던 것). gpu_columns_present와 다르다 —
+    # gpu_frame_ms는 헤더에 있어도 여기 없다(프레임을 두 번 세지 않는다).
+    gpu_sum_columns_present: list[str] = field(default_factory=list)
     # gpu_sum_ms에 들어갔지만 헤더에 있는 GPU 열을 **전부** 채우지는 못한 행 수.
     # 이 값이 0이 아니면 gpu_sum_ms 분포는 아래쪽으로 치우친다(빠진 패스만큼 작다).
     gpu_sum_partial_rows: int = 0
@@ -474,6 +557,18 @@ class FrameSeries:
         """
         cols = set(self.stage_d_columns_present)
         return "stage_d_ms" in cols and bool(cols - {"stage_d_ms"})
+
+    @property
+    def gpu_frame_conflict(self) -> bool:
+        """프레임 단일 query 열과 패스별 열이 **같은 로그에 동시에** 있는가 (v5).
+
+        `GL_TIME_ELAPSED`는 중첩되지 않으므로 같은 프레임에 두 계측을 걸 수 없다 — 즉 이
+        상태는 도달 불가여야 한다. 그런데도 왔다면 둘 중 하나는 그 프레임의 값이 아니고,
+        어느 쪽인지는 로그만으로 알 수 없다. 죽이지 않고(앱이 스키마보다 앞서 나갈 수 있다)
+        경고로 낸다 — `stage_d_ambiguous`와 같은 부류다.
+        """
+        cols = set(self.gpu_columns_present)
+        return GPU_FRAME_COLUMN in cols and bool(cols & set(GPU_SUM_COLUMNS))
 
     @property
     def discarded_total(self) -> int:
@@ -605,12 +700,18 @@ def read_frames(
         stage_d_columns_present = [
             c for c in STAGE_D_FAMILY_COLUMNS if c in gpu_columns_present
         ]
+        # gpu_sum_ms에 **실제로 더해질** 열. gpu_columns_present와 다르다 — 프레임 단일
+        # query 열(v5)은 읽고 분포도 내지만 합에는 들어가지 않는다(프레임 이중 계상).
+        gpu_sum_columns_present = [
+            c for c in GPU_SUM_COLUMNS if c in gpu_columns_present
+        ]
         rows = list(reader)
 
     series = FrameSeries()
     series.unknown_columns = unknown_columns
     series.gpu_columns_present = gpu_columns_present
     series.stage_d_columns_present = stage_d_columns_present
+    series.gpu_sum_columns_present = gpu_sum_columns_present
     _add_unknown_column_warnings(series)
     series.rows_read = len(rows)
     if not rows:
@@ -711,6 +812,10 @@ def read_frames(
             before = len(getattr(series, col))
             _collect(series, col, getattr(series, col), val)
             if len(getattr(series, col)) > before:
+                # 🔴 프레임 단일 query 열(v5)은 **어느 합에도 들어가지 않는다.** 분포는
+                #    위 _collect로 이미 냈다 — 여기서 더하면 프레임을 두 번 세게 된다.
+                if col not in GPU_SUM_COLUMNS:
+                    continue
                 row_gpu_sum += val
                 row_gpu_valid += 1
                 # D 계열은 같은 행 합에 한 번 더 들어간다. **가드·폐기 경로는 위와 동일**이며
@@ -719,7 +824,7 @@ def read_frames(
                     row_d_sum += val
                     row_d_valid += 1
         if row_gpu_valid:
-            if row_gpu_valid < len(gpu_columns_present):
+            if row_gpu_valid < len(gpu_sum_columns_present):
                 # 일부 패스만 해소된 행. 합이 그만큼 작으므로 사실을 세어 둔다.
                 series.gpu_sum_partial_rows += 1
             # 백분위를 더하지 않는다: 행에서 먼저 더하고 분포는 그 뒤에 낸다.
@@ -1112,10 +1217,22 @@ def _add_gpu_warnings(series: FrameSeries) -> None:
         )
     if series.gpu_sum_partial_rows:
         series.warnings.append(
-            f"gpu_sum_ms: {series.gpu_sum_partial_rows}개 행이 헤더에 있는 GPU 열 "
-            f"{len(series.gpu_columns_present)}개를 다 채우지 못한 채 합산됐다 "
-            f"(있는 열: {', '.join(series.gpu_columns_present)}). "
+            f"gpu_sum_ms: {series.gpu_sum_partial_rows}개 행이 헤더에 있는 패스별 GPU 열 "
+            f"{len(series.gpu_sum_columns_present)}개를 다 채우지 못한 채 합산됐다 "
+            f"(있는 열: {', '.join(series.gpu_sum_columns_present)}). "
             f"빠진 패스만큼 합이 작으므로 이 분포는 아래쪽으로 치우친다"
+        )
+    if series.gpu_frame_conflict:
+        pass_cols = [c for c in series.gpu_columns_present if c in GPU_SUM_COLUMNS]
+        series.warnings.append(
+            f"계측 방식이 섞여 있다 — 이 로그에 프레임 단일 query 열({GPU_FRAME_COLUMN})과 "
+            f"패스별 열이 **동시에** 있다(패스별: {', '.join(pass_cols)}). "
+            f"GL_TIME_ELAPSED는 중첩되지 않으므로 같은 프레임에 두 계측을 걸 수 없다 — "
+            f"둘 중 하나는 그 프레임의 값이 아니며 어느 쪽인지는 이 로그만으로 알 수 없다. "
+            f"**하네스는 둘 다 그대로 집계했고 어느 쪽도 버리지 않았다**: {GPU_FRAME_COLUMN}은 "
+            f"gpu_sum_ms에도 {STAGE_D_TOTAL_COLUMN}에도 더하지 않았으므로 합이 이중 계상되지는 "
+            f"않는다. 그래도 두 계측이 서로를 방해했을 수 있으므로 이 런의 GPU 숫자를 "
+            f"버짓 칸이나 중복 계상량 계산에 쓰기 전에 앱 쪽 GpuTimerRing 구성을 확인할 것"
         )
 
 
