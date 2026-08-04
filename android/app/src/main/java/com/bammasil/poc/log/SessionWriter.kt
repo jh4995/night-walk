@@ -200,8 +200,19 @@ object SessionWriter {
      * 이름이 아니다. 이 앱에서는 조합 arm `drago_clahe_chain`이 낸다 — ② 자리에서 3단을
      * 두 벌 돌기 때문이다. **두 스테이지를 합쳐 한 슬롯에 넣지 않는다**(합치면 유도값이고
      * 어느 스테이지가 비싼지가 사라진다 — `docs/FRAME_LOG_SCHEMA.md` §2).
+     *
+     * v5에서 **프레임 단일 query 열**(`gpu_frame_ms`) 하나가 들어왔고, 이 앱은
+     * `_1q` arm 3개(`blit_2pass_1q` · `drago_clahe_chain_1q` · `drago_clahe_chain_bf_1q`)에서
+     * 낸다. 🔴 **이 열은 다른 GPU 열과 물리량이 다르다** — 패스가 아니라 프레임을 재므로
+     * `gpu_sum_ms`에도 D 계열에도 들어가지 않고 버짓 칸도 없다
+     * ([RenderArm.SINGLE_QUERY_NOT_A_SUM]).
+     *
+     * ⚠ **이 버전을 4에서 5로 올린 것은 이 앱이 그 열을 실제로 내기 시작했기 때문이다.**
+     * 하네스는 이미 v5였고(`docs/FRAME_LOG_SCHEMA.md` §6대로 하네스가 먼저 들어간다),
+     * 앱이 4를 선언한 채 v5 열을 실으면 "앱이 하네스보다 뒤처졌다 — `gpu_frame_ms`가 없을 수
+     * 있다"는 **거짓 경고**가 그 열이 실제로 있는 로그에 붙는다.
      */
-    const val SCHEMA_VERSION = 4
+    const val SCHEMA_VERSION = 5
 
     fun write(file: File, facts: SessionFacts) {
         file.writeText(build(facts).toString(2) + "\n")
@@ -416,11 +427,17 @@ object SessionWriter {
         json.put("extension", GlCapabilitiesProbe.EXT_DISJOINT_TIMER_QUERY)
         json.put("extension_present", report.extensionPresent)
         json.put("instrumented", report.instrumented)
-        json.put("method", GpuTimerRing.METHOD)
+        // 🔴 **이 런이 어느 계측 방식이었는가**를 명시한다. method 문자열도 링이 실제로 쓴
+        //    모드의 것이 나온다(상수를 여기서 고르면 모드와 어긋날 수 있다 — 링이 정한다).
+        json.put("instrumentation", report.instrumentation)
+        json.put("method", report.method)
         json.put("target_enum", "GL_TIME_ELAPSED_EXT=0x88BF, GL_GPU_DISJOINT_EXT=0x8FBB")
         json.put("ring_depth_frames", GpuTimerRing.RING_DEPTH)
         // arm마다 패스 수가 다르다(3패스 골격 3개 / drago 5개) → 상수가 아니라 실적에서 낸다.
         json.put("queries_per_frame", report.passesPerFrame)
+        // ⚠ 위와 **다른 수**다. 단일 query 모드는 렌더 패스 3~9개에 query 1개다 —
+        //   패스와 열이 1:1이 아니라는 사실이 이 두 값의 차로 드러난다.
+        json.put("render_passes_per_frame", report.renderPassesPerFrame)
         json.put("max_passes_per_frame", GpuTimerRing.MAX_PASS_COUNT)
 
         // 실제로 CSV에 실은 열. 재지 않은 열은 싣지 않는다(§CSV_HEADER 주석).
@@ -446,6 +463,44 @@ object SessionWriter {
         // 성공이면 키 자체가 없다. null을 넣으면 "확인은 했다"와 "에러가 없었다"가 섞인다.
         report.beginQueryError?.let { json.put("begin_query_error", it) }
         report.disabledReason?.let { json.put("disabled_reason", it) }
+
+        // 프레임 단일 query arm이면 **읽는 법을 여기서도 낸다.** stage2_params에도 같은
+        // 문장이 나가지만, gpu_timer 블록만 보고 숫자를 옮기는 독자가 있다 — 한쪽만 읽어도
+        // 오독하지 않아야 한다.
+        if (facts.arm.usesSingleFrameQuery) {
+            json.put("single_frame_query_what_differs", RenderArm.SINGLE_QUERY_WHAT_DIFFERS)
+            json.put("single_frame_query_not_a_sum", RenderArm.SINGLE_QUERY_NOT_A_SUM)
+            json.put("single_frame_query_how_to_compare", RenderArm.SINGLE_QUERY_HOW_TO_COMPARE)
+            json.put("single_frame_query_lower_bound", RenderArm.SINGLE_QUERY_LOWER_BOUND_NOTE)
+            json.put(
+                "peer_arm",
+                facts.arm.singleFrameQueryPeer?.id ?: JSONObject.NULL
+            )
+            // 자기검사. null이면 키가 없다 — "확인했다"와 "어긋났다"를 섞지 않는다.
+            RenderArm.SINGLE_FRAME_QUERY_COLUMN_MISMATCH?.let {
+                json.put("single_frame_query_column_mismatch", it)
+            }
+            // ⚠ 여기서 attribution_note의 어느 부분이 이 런에 성립하는지를 가른다.
+            //    🔴 **문단 순서로 가리키지 않는다**('마지막 문단' 같은 표현은 원문에 문단이
+            //    하나 붙는 날 조용히 다른 곳을 가리킨다 — 실제로 그렇게 어긋난 적이 있다).
+            //    내용으로 지목한다.
+            json.put(
+                "attribution_note_scope",
+                "🔴 **아래 attribution_note는 패스별 계측(짝 arm)을 서술한 문장이다.** 이 런은 " +
+                    "query가 하나뿐이므로 문단 순서가 아니라 **내용으로 골라 읽어야 한다.** " +
+                    "▪ 이 런에 그대로 성립하는 것 = **eglSwapBuffers 항목**: 마지막 패스는 기본 " +
+                    "프레임버퍼에 그리는데 그 타일 해결이 eglSwapBuffers에서 일어나고 " +
+                    "GLSurfaceView는 그것을 onDrawFrame 반환 **후에** 부르므로 **모든 query의 " +
+                    "바깥**이다 — 그래서 gpu_frame_ms도 하한이다" +
+                    "(single_frame_query_lower_bound). " +
+                    "▪ 이 런에 성립하지 **않는** 것 = ① '개별 열의 경계가 ±1패스만큼 흐리다'와 " +
+                    "② **패스별 열이 약 한 패스 밀려 있다는 정량 근거 항목**(gpu_present_ms − " +
+                    "적용 열이 arm별로 상수라는 그 대목, stage_d_apply_ms를 '적용 패스의 비용'으로 " +
+                    "인용하면 틀린다는 결론까지) — **이 arm에는 패스별 열이 아예 없다.** " +
+                    "그 항목을 남겨 두는 이유는 짝 arm의 열이 왜 부풀 수 있는지가 거기 적혀 " +
+                    "있고, 이 arm의 값은 **그것과 나란히 놓을 때만** 뜻을 갖기 때문이다"
+            )
+        }
 
         if (facts.arm.usesComputeStage2) {
             val computePasses = when {
@@ -540,14 +595,7 @@ object SessionWriter {
                 json.put("algorithm", "none")
                 json.put("note", "패스스루 arm에는 ② 자리 자체가 없다(1패스)")
             }
-            RenderArm.BLIT_2PASS -> {
-                json.put("algorithm", "copy")
-                json.put(
-                    "note",
-                    "3패스 골격은 다 돌지만 ② 자리는 단순 복사다. 여기서 나오는 비용은 " +
-                        "②의 비용이 아니라 **골격 자체(오프스크린 왕복)의 비용**이다"
-                )
-            }
+            RenderArm.BLIT_2PASS -> putBlit2Pass(json)
             RenderArm.GAMMA_ONLY -> {
                 json.put("algorithm", "gamma_only")
                 json.put("gamma", RenderArm.GAMMA_MEASUREMENT_VALUE.toDouble())
@@ -675,6 +723,24 @@ object SessionWriter {
                 putFused(json, facts)
                 putBilateralOverrides(json, facts, RenderArm.DRAGO_CLAHE_FUSED_BF)
             }
+            // ── 프레임 단일 query arm ─────────────────────────────────────
+            // 🔴 **짝 arm의 서술을 그대로 재사용하고 `else` 낙하로 처리하지 않는다.** ② 자리의
+            //    알고리즘·파라미터·이탈은 짝과 **글자 그대로 같아야** 두 계측을 비교할 수 있고,
+            //    사본을 만들면 한쪽만 고쳐지는 날 두 arm의 서술이 갈라진다. 다른 것은 계측
+            //    방식뿐이며 그 사실은 putSingleFrameQueryNotes가 덮어쓴다.
+            RenderArm.BLIT_2PASS_1Q -> {
+                putBlit2Pass(json)
+                putSingleFrameQueryNotes(json, RenderArm.BLIT_2PASS_1Q)
+            }
+            RenderArm.DRAGO_CLAHE_CHAIN_1Q -> {
+                putChain(json, facts)
+                putSingleFrameQueryNotes(json, RenderArm.DRAGO_CLAHE_CHAIN_1Q)
+            }
+            RenderArm.DRAGO_CLAHE_CHAIN_BF_1Q -> {
+                putChain(json, facts)
+                putBilateralOverrides(json, facts, RenderArm.DRAGO_CLAHE_CHAIN_BF)
+                putSingleFrameQueryNotes(json, RenderArm.DRAGO_CLAHE_CHAIN_BF_1Q)
+            }
             // ④ arm의 ② 자리는 **단순 복사**다. 오버레이 서술은 root의 overlay 블록에 있다.
             RenderArm.HIGHLIGHT_BOXES, RenderArm.HIGHLIGHT_BOXES_STRESS -> {
                 json.put("algorithm", "copy")
@@ -690,6 +756,44 @@ object SessionWriter {
             }
         }
         return json
+    }
+
+    /**
+     * 3패스 골격 arm(`blit_2pass`)의 ② 서술. **`blit_2pass_1q`도 이 함수를 부른다** —
+     * 두 arm의 렌더가 글자 그대로 같아야 계측 방식의 차이만 남고, 서술에 사본을 만들면
+     * 한쪽만 고쳐지는 날 두 arm의 문장이 갈라진다([putChain]/[putFused]와 같은 이유다).
+     *
+     * [SessionFacts]를 받지 않는다 — 이 arm의 ② 자리에는 런에 따라 달라지는 값이 없다.
+     */
+    private fun putBlit2Pass(json: JSONObject) {
+        json.put("algorithm", "copy")
+        json.put(
+            "note",
+            "3패스 골격은 다 돌지만 ② 자리는 단순 복사다. 여기서 나오는 비용은 " +
+                "②의 비용이 아니라 **골격 자체(오프스크린 왕복)의 비용**이다"
+        )
+    }
+
+    /**
+     * 프레임 단일 query arm의 서술. 짝 arm의 ② 서술 **위에 계측 방식의 차이만 덮는다.**
+     *
+     * 🔴 **② 알고리즘 관련 키는 하나도 건드리지 않는다.** 이 arm은 알고리즘이 아니라 계측
+     * 방식이 다르고, 짝과 렌더가 같아야 두 값의 차가 뜻을 갖는다 — 여기서 알고리즘 서술을
+     * 고치면 그 전제가 로그 위에서부터 깨진다.
+     *
+     * 더하는 키: `instrumentation` · `render_arm_peer` · `instrumentation_note` ·
+     * `gpu_column_note` · `how_to_compare_instrumentation` · `lower_bound_note`.
+     * 🔴 `how_to_compare`는 **덮지 않는다** — 그 키는 ②의 비용을 arm끼리 비교하는 법이고
+     * 짝 arm의 문장이 여기서도 그대로 성립한다. 계측 방식의 비교법은 별 키로 낸다(두 문장이
+     * 서로 다른 질문에 답하므로 한 키에 뭉치면 하나가 묻힌다).
+     */
+    private fun putSingleFrameQueryNotes(json: JSONObject, arm: RenderArm) {
+        json.put("instrumentation", GpuTimerRing.INSTRUMENTATION_SINGLE_FRAME_QUERY)
+        json.put("render_arm_peer", arm.singleFrameQueryPeer?.id ?: JSONObject.NULL)
+        json.put("instrumentation_note", RenderArm.SINGLE_QUERY_WHAT_DIFFERS)
+        json.put("gpu_column_note", RenderArm.SINGLE_QUERY_NOT_A_SUM)
+        json.put("how_to_compare_instrumentation", RenderArm.SINGLE_QUERY_HOW_TO_COMPARE)
+        json.put("lower_bound_note", RenderArm.SINGLE_QUERY_LOWER_BOUND_NOTE)
     }
 
     /**
@@ -1186,7 +1290,14 @@ object SessionWriter {
             RenderArm.DRAGO_CLAHE_FUSED -> RenderArm.DRAGO_CLAHE_CHAIN
             RenderArm.DRAGO_CLAHE_CHAIN_BF -> RenderArm.DRAGO_CLAHE_FUSED_BF
             RenderArm.DRAGO_CLAHE_FUSED_BF -> RenderArm.DRAGO_CLAHE_CHAIN_BF
-            // 조합 arm이 아니면 짝이 없다. **아무 arm이나 집지 않는다.**
+            // 프레임 단일 query arm. 여기 오는 것은 **호출부가 짝 arm을 넘기지 않은 경우**뿐이며
+            // (buildStage2Params는 짝을 넘긴다) 그때도 계수는 렌더가 같은 짝의 반대쪽 구성이다 —
+            // 계측 방식은 셰이더를 바꾸지 않으므로 색공간 변환 계수도 짝과 같다.
+            // 🔴 `else -> null`로 흘리지 않는다. 흘리면 조합 arm인데 peer가 사라진다.
+            RenderArm.DRAGO_CLAHE_CHAIN_1Q -> RenderArm.DRAGO_CLAHE_FUSED
+            RenderArm.DRAGO_CLAHE_CHAIN_BF_1Q -> RenderArm.DRAGO_CLAHE_FUSED_BF
+            // 조합 arm이 아니면 짝이 없다(blit_2pass_1q도 여기다). **아무 arm이나 집지 않는다.**
+            RenderArm.BLIT_2PASS_1Q -> null
             else -> null
         }
         json.put("color_transform_sites", buildColorTransformSites(facts, arm))
@@ -1253,11 +1364,43 @@ object SessionWriter {
      * 체인과 융합의 같은 칸을 나란히 놓으면 이탈 (a)(b)(c)가 그대로 숫자로 보인다.
      */
     private fun buildColorTransformDeclared(arm: RenderArm): JSONObject {
-        // 🔴 예전에는 `val fused = arm == DRAGO_CLAHE_FUSED` 하나로 갈랐고, 그러면 **새 arm에
-        //    체인의 선언값이 그대로 나간다**(else 체계의 함정. render.passes[]의
-        //    `else -> drago 패스 이름`과 같은 부류다). 그래서 arm마다 명시 분기다.
-        //    조합 arm이 아니면 이 표 자체가 성립하지 않으므로 **값을 지어내지 않고** 이유만 낸다.
-        val counts: Map<String, Int> = when (arm) {
+        val counts = declaredCounts(arm)
+        val json = JSONObject().put("arm", arm.id)
+        for ((key, value) in counts) {
+            json.put(key, value)
+        }
+        if (counts.isEmpty()) {
+            json.put(
+                "empty_reason",
+                "이 arm은 조합(② 스테이지 2벌) arm이 아니라 이 표가 성립하지 않는다 — " +
+                    "값을 지어내지 않는다"
+            )
+            return json
+        }
+        json.put(
+            "bilateral_taps_note",
+            "bilateral_taps_per_pixel은 색공간 변환이 아니라 **bf의 텍스처 샘플 수**다" +
+                "(원형 이웃 ${RenderArm.BF_TAP_COUNT}탭. 같은 표에 둔 이유는 bf 패스의 픽셀당 " +
+                "일을 이 표에서 함께 읽게 하려는 것이다). bf는 LabGlsl을 부르지 않으므로 " +
+                "위 색공간 변환 칸에는 **0을 더한다** — 그래서 base arm과 값이 같다"
+        )
+        json.put("provenance", RenderArm.CHAIN_COLOR_TRANSFORM_DECLARED_PROVENANCE)
+        return json
+    }
+
+    /**
+     * [buildColorTransformDeclared]의 선언값 표.
+     *
+     * 🔴 예전에는 이 자리가 `val fused = arm == DRAGO_CLAHE_FUSED` 하나였고, 그러면 **새 arm에
+     * 체인의 선언값이 그대로 나간다**(else 낙하의 함정. `render.passes[]`의
+     * `else -> drago 패스 이름`과 같은 부류다). 그래서 arm마다 명시 분기다.
+     * 조합 arm이 아니면 이 표 자체가 성립하지 않으므로 **값을 지어내지 않고** 이유만 낸다.
+     *
+     * 함수로 뽑은 이유: 프레임 단일 query arm이 **짝의 표를 그대로** 써야 하는데(계측 방식은
+     * 셰이더를 바꾸지 않는다) 사본을 만들면 한쪽만 고쳐지는 날 두 arm이 갈라진다.
+     */
+    private fun declaredCounts(arm: RenderArm): Map<String, Int> {
+        return when (arm) {
             RenderArm.DRAGO_CLAHE_CHAIN -> mapOf(
                 "passes_total" to RenderArm.CHAIN_PASSES_TOTAL,
                 "fullscreen_passes" to RenderArm.CHAIN_FULLSCREEN_PASSES,
@@ -1328,29 +1471,16 @@ object SessionWriter {
                     RenderArm.FUSED_BF_INTERMEDIATE_RGBA8_MATERIALIZATIONS,
                 "bilateral_taps_per_pixel" to RenderArm.BF_TAP_COUNT,
             )
+            // 프레임 단일 query arm. **계측 방식은 셰이더를 바꾸지 않으므로 선언값이 짝과
+            // 같다** — 그래서 짝의 표를 그대로 재사용한다(사본을 만들면 한쪽만 고쳐진다).
+            // 🔴 `else -> emptyMap()`으로 흘리지 않는다. 흘리면 조합 arm인데 "조합 arm이
+            //    아니다"라는 **거짓 empty_reason**이 로그로 나간다.
+            RenderArm.DRAGO_CLAHE_CHAIN_1Q -> declaredCounts(RenderArm.DRAGO_CLAHE_CHAIN)
+            RenderArm.DRAGO_CLAHE_CHAIN_BF_1Q -> declaredCounts(RenderArm.DRAGO_CLAHE_CHAIN_BF)
+            // 조합 arm이 아니다 — 짝(blit_2pass)과 같이 이 표가 성립하지 않는다.
+            RenderArm.BLIT_2PASS_1Q -> emptyMap()
             else -> emptyMap()
         }
-        val json = JSONObject().put("arm", arm.id)
-        for ((key, value) in counts) {
-            json.put(key, value)
-        }
-        if (counts.isEmpty()) {
-            json.put(
-                "empty_reason",
-                "이 arm은 조합(② 스테이지 2벌) arm이 아니라 이 표가 성립하지 않는다 — " +
-                    "값을 지어내지 않는다"
-            )
-            return json
-        }
-        json.put(
-            "bilateral_taps_note",
-            "bilateral_taps_per_pixel은 색공간 변환이 아니라 **bf의 텍스처 샘플 수**다" +
-                "(원형 이웃 ${RenderArm.BF_TAP_COUNT}탭. 같은 표에 둔 이유는 bf 패스의 픽셀당 " +
-                "일을 이 표에서 함께 읽게 하려는 것이다). bf는 LabGlsl을 부르지 않으므로 " +
-                "위 색공간 변환 칸에는 **0을 더한다** — 그래서 base arm과 값이 같다"
-        )
-        json.put("provenance", RenderArm.CHAIN_COLOR_TRANSFORM_DECLARED_PROVENANCE)
-        return json
     }
 
     /**
@@ -1573,6 +1703,12 @@ object SessionWriter {
                             CHAIN_STAGE2_PASSES + bilateralPass("FBO_B (처리 해상도. 핑퐁)")
                         RenderArm.DRAGO_CLAHE_FUSED_BF ->
                             FUSED_STAGE2_PASSES + bilateralPass("FBO_A (처리 해상도. 핑퐁)")
+                        // 프레임 단일 query arm은 짝과 **같은 draw 함수**를 타므로 패스 목록도
+                        // 짝의 것 그대로다. 🔴 else 낙하로 처리하지 않는다 — 흘리면 8·9패스
+                        // arm의 서술에서 패스가 통째로 사라진다(위 else -> drago 함정과 같은 부류).
+                        RenderArm.DRAGO_CLAHE_CHAIN_1Q -> CHAIN_STAGE2_PASSES
+                        RenderArm.DRAGO_CLAHE_CHAIN_BF_1Q ->
+                            CHAIN_STAGE2_PASSES + bilateralPass("FBO_B (처리 해상도. 핑퐁)")
                         else -> emptyList()
                     }
                     listOf(
@@ -1599,6 +1735,12 @@ object SessionWriter {
                         ),
                     )
                 }
+            // 🔴 **패스와 열이 1:1인 것은 패스별 계측 arm뿐이다.** 프레임 단일 query arm은
+            //    렌더 패스가 3~9개인데 열은 gpu_frame_ms 하나이고, 그 하나가 **패스 하나가
+            //    아니라 프레임 전체**를 잰다. 그래서 그 arm에서는 어느 패스에도 열을 매달지
+            //    않고(gpu_column = null) covered_by로 "이 패스는 프레임 query 안에 들어 있다"만
+            //    말한다 — i번째 열을 집으면 '패스1 = gpu_frame_ms'라는 거짓 매핑이 나간다.
+            val singleFrameQuery = facts.arm.usesSingleFrameQuery
             for (i in names.indices) {
                 val (name, target, shader) = names[i]
                 passes.put(
@@ -1609,13 +1751,34 @@ object SessionWriter {
                         .put("shader", shader)
                         .put(
                             "gpu_column",
-                            if (i < columns.size) columns[i] else JSONObject.NULL
+                            when {
+                                singleFrameQuery -> JSONObject.NULL
+                                i < columns.size -> columns[i]
+                                else -> JSONObject.NULL
+                            }
                         )
+                        .apply {
+                            if (singleFrameQuery) {
+                                put("covered_by", RenderArm.SINGLE_FRAME_QUERY_COLUMN)
+                            }
+                        }
                         .put("instrumented", instrumented)
                 )
             }
         }
         json.put("passes", passes)
+        if (facts.arm.usesSingleFrameQuery) {
+            json.put(
+                "pass_column_mapping_note",
+                "🔴 **이 arm에서 패스와 GPU 열은 1:1이 아니다.** 렌더 패스 " +
+                    "${facts.arm.renderPassCount}개 전부를 query **하나**로 감쌌고 그 값이 " +
+                    "${RenderArm.SINGLE_FRAME_QUERY_COLUMN} 한 열로 나간다 — 그래서 위 " +
+                    "passes[]의 gpu_column은 전부 null이고 covered_by가 대신 그 열을 가리킨다. " +
+                    "어느 패스가 비싼지는 이 런에서 나오지 않는다(짝 arm " +
+                    "${facts.arm.singleFrameQueryPeer?.id}의 열이 그 질문에 답한다). " +
+                    RenderArm.SINGLE_QUERY_NOT_A_SUM
+            )
+        }
         json.put(
             "pass_boundary_note",
             "패스마다 glBindFramebuffer + glClear를 명시한다. 타일 기반 GPU(Mali)에서 " +

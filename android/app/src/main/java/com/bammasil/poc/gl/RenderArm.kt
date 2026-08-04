@@ -256,6 +256,56 @@ enum class RenderArm(
         "highlight_boxes_stress",
         listOf("blit_2pass", "stage4_highlight"),
         listOf("stage_b_ms", "stage_d_ms", "stage_i_ms", "gpu_present_ms"),
+    ),
+
+    // ── 프레임 단일 query arm(`*_1q`) ──────────────────────────────────────
+    // 🔴 **알고리즘이 아니라 계측 방식이 다른 arm이다**([SINGLE_QUERY_WHAT_DIFFERS]).
+    // 렌더 경로는 짝 arm과 **글자 그대로 같다** — `PassthroughRenderer.dispatchDraw`가
+    // 짝과 같은 draw 함수로 보내고(uses* 판별식에 이 arm들을 함께 넣었다), 그래야 두 계측의
+    // 차분이 곧 패스별 계측의 중복 계상량이 된다. 렌더가 다르면 그 차분은 아무 뜻이 없다.
+    //
+    // ⚠ 목록에 **뒤에** 붙인다. 스피너는 entries 순서라 중간에 끼우면 기존 arm의 위치가
+    //   전부 밀린다(측정자가 손으로 고르는 UI다).
+    // ⚠ 열 이름을 companion의 상수로 쓰지 않는다 — enum 상수가 companion보다 먼저
+    //   초기화되므로 여기서 companion의 val을 인자로 쓰면 초기화 순서 함정에 걸린다
+    //   ([GAMMA_ONLY]의 같은 주석). 값의 대조는 [SINGLE_FRAME_QUERY_COLUMN]이 맡는다.
+
+    /**
+     * [BLIT_2PASS]와 **렌더가 같고 계측 방식만 다른** arm. 3패스 골격을 그대로 돌되
+     * timer query를 패스마다 걸지 않고 **프레임 전체에 하나만** 건다([GpuTimerRing]의
+     * 프레임 단일 query 모드).
+     *
+     * 열은 `gpu_frame_ms` **1개**이고 렌더 패스는 **3개**다 — 이 arm에서 둘은 1:1이
+     * 아니며, 패스 수는 [renderPassCount]가 따로 낸다.
+     *
+     * 이 arm의 뜻과 읽는 법은 [SINGLE_QUERY_WHAT_DIFFERS] · [SINGLE_QUERY_NOT_A_SUM] ·
+     * [SINGLE_QUERY_HOW_TO_COMPARE] · [SINGLE_QUERY_LOWER_BOUND_NOTE]에 있고 같은 문장이
+     * `session.json`으로 나간다.
+     */
+    BLIT_2PASS_1Q(
+        "blit_2pass_1q",
+        // 짝(blit_2pass)과 **같은 목록**이다. 두 arm을 가르는 것은 render_arm 문자열뿐이다.
+        listOf("blit_2pass"),
+        listOf("gpu_frame_ms"),
+    ),
+
+    /** [DRAGO_CLAHE_CHAIN]의 프레임 단일 query 판. 렌더 8패스, 열 1개. */
+    DRAGO_CLAHE_CHAIN_1Q(
+        "drago_clahe_chain_1q",
+        listOf("blit_2pass", "stage2_drago", "stage2_clahe"),
+        listOf("gpu_frame_ms"),
+    ),
+
+    /**
+     * [DRAGO_CLAHE_CHAIN_BF]의 프레임 단일 query 판. 렌더 9패스, 열 1개.
+     *
+     * 🔴 **이 arm이 이번 라운드의 본진이다.** 패스별 계측에서 `gpu_sum`이 물리적으로 불가능한
+     * 값을 낸 arm이 짝(`drago_clahe_chain_bf`)이다 — [SINGLE_QUERY_WHAT_DIFFERS] 참고.
+     */
+    DRAGO_CLAHE_CHAIN_BF_1Q(
+        "drago_clahe_chain_bf_1q",
+        listOf("blit_2pass", "stage2_drago", "stage2_clahe", "stage2_bilateral"),
+        listOf("gpu_frame_ms"),
     );
 
     /**
@@ -280,9 +330,13 @@ enum class RenderArm(
     /**
      * ② 자리가 **컴퓨트 3단 두 벌**(조합)인 arm인가.
      * **`PassthroughRenderer.drawChainedComputeStage2`(8패스) 경로 선택 전용**이다.
+     *
+     * 🔴 [DRAGO_CLAHE_CHAIN_1Q]가 **여기 함께 들어 있다.** 그 arm은 계측 방식만 다르고
+     * 렌더는 같아야 하므로 짝과 **같은 draw 함수**를 타야 한다 — 여기서 빼면 `dispatchDraw`가
+     * 3패스 골격으로 떨어뜨려 실험이 통째로 무의미해진다.
      */
     val usesChainedComputeStage2: Boolean
-        get() = this == DRAGO_CLAHE_CHAIN
+        get() = this == DRAGO_CLAHE_CHAIN || this == DRAGO_CLAHE_CHAIN_1Q
 
     /**
      * ② 자리가 **융합**(통계 두 벌 + 적용 한 벌)인 arm인가.
@@ -299,7 +353,7 @@ enum class RenderArm(
      * bf 패스가 조용히 사라진다(`usesComputeStage2` 겸업 함정과 같은 부류다).
      */
     val usesChainedBilateral: Boolean
-        get() = this == DRAGO_CLAHE_CHAIN_BF
+        get() = this == DRAGO_CLAHE_CHAIN_BF || this == DRAGO_CLAHE_CHAIN_BF_1Q
 
     /**
      * ② 자리가 **융합 + bilateral**인 arm인가.
@@ -318,6 +372,42 @@ enum class RenderArm(
     /** ② 자리에 bilateral 한 패스가 붙는 arm인가(체인이든 융합이든). */
     val usesBilateral: Boolean
         get() = usesChainedBilateral || usesFusedBilateral
+
+    /**
+     * 이 arm이 **프레임 단일 query** arm이면 그 짝(패스별 계측 arm), 아니면 null.
+     *
+     * 🔴 **짝의 정의는 "렌더 경로가 글자 그대로 같은 arm"이다.** 여기서 이어 둔 덕에
+     * [renderPassCount]가 짝의 열 수에서 자동으로 따라오고(손으로 센 숫자가 두 곳에 생기지
+     * 않는다), `SessionWriter`가 짝의 서술을 그대로 재사용한다.
+     */
+    val singleFrameQueryPeer: RenderArm?
+        get() = when (this) {
+            BLIT_2PASS_1Q -> BLIT_2PASS
+            DRAGO_CLAHE_CHAIN_1Q -> DRAGO_CLAHE_CHAIN
+            DRAGO_CLAHE_CHAIN_BF_1Q -> DRAGO_CLAHE_CHAIN_BF
+            else -> null
+        }
+
+    /**
+     * 프레임 하나를 timer query **하나**로 감싸는 arm인가.
+     * **[GpuTimerRing]의 모드 선택 전용**이다(`PassthroughRenderer.setArm`이 넘긴다).
+     */
+    val usesSingleFrameQuery: Boolean
+        get() = singleFrameQueryPeer != null
+
+    /**
+     * draw 함수가 프레임당 부르는 `beginPass`/`endPass` 횟수 = **렌더 패스 수**.
+     *
+     * 🔴 **[gpuColumns]의 개수(= CSV 열 수)와 같지 않을 수 있다.** 패스별 계측 arm에서는
+     * 둘이 같지만(패스 하나 = 열 하나), 프레임 단일 query arm은 **열 1개 · 렌더 패스 3~9개**다.
+     * 두 수를 한 값으로 쓰면 링이 첫 패스만 감싸고도 그럴듯한 숫자를 낸다 — 이 저장소가 가장
+     * 경계하는 실패다. 그래서 [GpuTimerRing.setPassPlan]은 두 수를 **따로** 받아 대조한다.
+     *
+     * 단일 query arm의 값은 짝의 열 수에서 온다([singleFrameQueryPeer]) — 손으로 센 숫자를
+     * 두 번째로 만들지 않기 위해서다. 짝의 패스 수가 바뀌면 이 값도 따라 바뀐다.
+     */
+    val renderPassCount: Int
+        get() = singleFrameQueryPeer?.gpuColumns?.size ?: gpuColumns.size
 
     /**
      * 조합 arm인가(체인이든 융합이든, bf가 붙었든). 둘의 계수를 나란히 낼 때 쓴다.
@@ -1272,6 +1362,88 @@ enum class RenderArm(
                 "지어내지 않았다 — 클래스가 늘면 그 자체가 렌더 규약 변경이고(§A-4 불변 규칙) " +
                 "이 오버레이도 함께 고쳐야 한다. 색은 픽셀 비용에 영향이 없다(어느 색이든 같은 " +
                 "면적을 채운다)"
+
+        // ── 프레임 단일 query arm(`*_1q`) ─────────────────────────────────
+        // 🔴 **이 arm들은 알고리즘이 아니라 계측 방식이 다르다.** 아래 네 문장이 그 사실과
+        //   읽는 법을 담고, `session.json`의 gpu_timer / stage2_params 양쪽으로 나간다.
+        //   한쪽만 읽어도 오독하지 않도록 두 자리에 함께 싣는다.
+
+        /**
+         * 이 arm들이 싣는 유일한 GPU 열. 하네스 어휘(`lib/frame_log.py`의 `GPU_FRAME_COLUMN`)와
+         * **글자까지** 같아야 한다.
+         *
+         * ⚠ enum 상수의 생성자 인자로는 쓸 수 없다(초기화 순서). 그쪽에는 같은 문자열을
+         * 직접 적었고, 어긋나면 [SINGLE_FRAME_QUERY_COLUMN_MISMATCH]가 잡는다.
+         */
+        const val SINGLE_FRAME_QUERY_COLUMN = "gpu_frame_ms"
+
+        /**
+         * 열 이름 사본이 어긋났는가. null이면 일치한다.
+         * **선언과 실제가 조용히 갈라지는 것을 막는 자기검사**이며 `session.json`에 나간다.
+         */
+        val SINGLE_FRAME_QUERY_COLUMN_MISMATCH: String?
+            get() {
+                val wrong = entries
+                    .filter { it.usesSingleFrameQuery }
+                    .filter { it.gpuColumns != listOf(SINGLE_FRAME_QUERY_COLUMN) }
+                    .map { it.id }
+                return if (wrong.isEmpty()) {
+                    null
+                } else {
+                    "프레임 단일 query arm의 gpuColumns가 [$SINGLE_FRAME_QUERY_COLUMN] 하나가 " +
+                        "아니다: $wrong — 열과 query 개수가 어긋난 채로 숫자가 나간다"
+                }
+            }
+
+        const val SINGLE_QUERY_WHAT_DIFFERS =
+            "🔴 **이 arm은 알고리즘이 아니라 계측 방식이 다르다.** 렌더 경로는 짝 arm과 " +
+                "**글자 그대로 같다** — 같은 draw 함수를 타고(RenderArm.uses* 판별식에 이 arm을 " +
+                "함께 넣었다) 셰이더·패스 수·파라미터가 전부 같다. 다른 것은 GPU timer query를 " +
+                "거는 방식 하나뿐이다: 패스마다 하나씩(짝 arm) 대신 **프레임 전체를 query " +
+                "하나로** 감싼다(GL_TIME_ELAPSED는 중첩되지 않아 둘을 같이 걸 수 없다 — 그래서 " +
+                "arm으로 갈랐다). 그러므로 두 arm의 프레임타임·지연 분포는 **같아야 하고**, " +
+                "다르면 그것 자체가 계측 오버헤드의 증거다. " +
+                "왜 만들었는가: 직전 라운드의 패스별 계측에서 gpu_sum(패스별 query의 합)이 " +
+                "**물리적으로 불가능한 값**을 냈다 — chain_bf가 29.92fps × 43.794ms = 1초에 " +
+                "1.31초의 GPU 작업이고, 30fps는 스톨·드롭 없이 유지됐으며 행 단위로 95.8%의 " +
+                "행에서 gpu_sum이 그 프레임의 출력 간격을 넘었다. 원인 후보는 " +
+                "**gpu_present_ms가 마지막 전체화면 패스의 타일 해결을 흡수해 중복 계상**하는 " +
+                "것이다(present는 전 arm에서 같은 셰이더인데 query 값이 1.862 → 15.078로 " +
+                "부풀었고, 부풀림이 마지막 전체화면 패스 비용의 73~88%다. 마지막 패스가 얇은 " +
+                "quad인 ④ 오버레이 arm은 +0.010(2%)로 대조군이 된다). " +
+                "⚠️ 여기 적힌 수치는 **이 문자열이 쓰인 시점의 사본**이며 출처는 그 런의 " +
+                "summary.json과 그 라운드 팀 보고서다 — 어긋나면 그쪽이 맞다"
+
+        const val SINGLE_QUERY_NOT_A_SUM =
+            "🔴 **gpu_frame_ms는 gpu_sum_ms와 다른 물리량이다.** 프레임 하나를 query 하나로 " +
+                "감싼 값이고, 패스별 열의 합이 아니다 — **둘을 더하지 말 것**(더하면 같은 " +
+                "프레임을 두 번 세는 것이다). 같은 이유로 D 계열도 아니고" +
+                "(stage_d_total_ms에 들어가지 않는다) **버짓 칸도 없다** — 단계 비용이 아니라 " +
+                "프레임 전체 GPU 시간이므로 칸 라벨을 붙이면 그 숫자가 D칸으로 인용된다. " +
+                "한 런에 이 열과 패스별 열이 **함께 있을 수 없다**(GL_TIME_ELAPSED가 중첩되지 " +
+                "않는다) — 그래서 이 arm의 CSV에는 패스별 열이 아예 없다"
+
+        const val SINGLE_QUERY_HOW_TO_COMPARE =
+            "🔴 **비교는 같은 세션·같은 빌드의 짝 arm과 나란히 놓고 한다.** " +
+                "gpu_frame_ms(이 arm) 대 gpu_sum_ms(짝 arm)의 **차가 곧 패스별 계측의 중복 " +
+                "계상량**이다 — 그것이 이 arm의 존재 이유다. " +
+                "⚠ 짝은 렌더가 같은 arm 하나뿐이다: blit_2pass_1q↔blit_2pass · " +
+                "drago_clahe_chain_1q↔drago_clahe_chain · " +
+                "drago_clahe_chain_bf_1q↔drago_clahe_chain_bf. 다른 arm과 짝지으면 렌더가 " +
+                "달라 그 차분은 아무 뜻이 없다. " +
+                "⚠ **다른 세션의 짝과 비교하지 말 것** — 발열·조명·AE 상태가 다르면 그 차이가 " +
+                "중복 계상량으로 둔갑한다. " +
+                "⚠ 이 arm은 **패스별 분해를 낼 수 없다.** 어느 패스가 비싼지는 짝 arm의 열이 " +
+                "말하고, 그 열들이 얼마나 부풀어 있는지는 이 arm이 말한다 — 둘 다 필요하다"
+
+        const val SINGLE_QUERY_LOWER_BOUND_NOTE =
+            "🔴 **프레임 단일 query로도 이 값은 여전히 하한이다.** 마지막 패스는 기본 " +
+                "프레임버퍼에 그리는데 그 타일 해결은 eglSwapBuffers에서 일어나고 " +
+                "GLSurfaceView는 그것을 onDrawFrame 반환 **후에** 부른다 — 프레임 단일 query의 " +
+                "**바깥**이다(GLSurfaceView를 쓰는 한 옮길 수 없다. 패스별 계측의 " +
+                "attribution_note와 같은 이유다). 그러므로 이 실험이 재는 것은 **'중복 계상량의 " +
+                "하한'이지 '진짜 GPU 시간'이 아니다** — gpu_frame_ms를 '이 arm의 실제 프레임 " +
+                "GPU 시간'으로 옮겨 적지 말 것"
 
         const val HIGHLIGHT_HOW_TO_COMPARE =
             "🔴 **이 arm의 stage_i_ms를 '박스 하나의 비용'으로 읽지 말 것** — 개수는 우리가 " +

@@ -497,15 +497,22 @@ class PassthroughRenderer(
             blitVertex = VERTEX_SHADER_2D,
             blitFragment = FRAGMENT_SHADER_BLIT,
         )
+        val chainSites = ColorTransformCensus.countByPass(chainSources)
+        val chainBfSites = ColorTransformCensus.countByPass(
+            BilateralStage.withDenoisePass(chainSources)
+        )
         colorTransformSites = mapOf(
-            RenderArm.DRAGO_CLAHE_CHAIN.id to ColorTransformCensus.countByPass(chainSources),
+            RenderArm.DRAGO_CLAHE_CHAIN.id to chainSites,
             RenderArm.DRAGO_CLAHE_FUSED.id to ColorTransformCensus.countByPass(fusedSources),
-            RenderArm.DRAGO_CLAHE_CHAIN_BF.id to ColorTransformCensus.countByPass(
-                BilateralStage.withDenoisePass(chainSources)
-            ),
+            RenderArm.DRAGO_CLAHE_CHAIN_BF.id to chainBfSites,
             RenderArm.DRAGO_CLAHE_FUSED_BF.id to ColorTransformCensus.countByPass(
                 BilateralStage.withDenoisePass(fusedSources)
             ),
+            // 프레임 단일 query arm은 짝과 **같은 셰이더 문자열**을 컴파일한다(계측 방식만
+            // 다르다) → 같은 계수를 그 id로도 찾을 수 있게 둔다. **다시 세지 않고 짝의 결과를
+            // 그대로 가리킨다** — 두 키의 값이 갈라질 수 없다.
+            RenderArm.DRAGO_CLAHE_CHAIN_1Q.id to chainSites,
+            RenderArm.DRAGO_CLAHE_CHAIN_BF_1Q.id to chainBfSites,
             // ④ arm 둘은 같은 셰이더를 쓴다(개수만 다르다). 여기 계수는 전부 0이어야 하고,
             // 그 0이 "오버레이가 색공간 변환을 하지 않는다"는 기계 확증이다.
             RenderArm.HIGHLIGHT_BOXES.id to ColorTransformCensus.countByPass(overlaySources),
@@ -518,7 +525,11 @@ class PassthroughRenderer(
 
         // 컨텍스트가 재생성됐는데 이미 계측 arm이면 여기서 다시 준비한다.
         if (arm != RenderArm.PASSTHROUGH) {
-            gpuTimer.setPassCount(arm.gpuColumns.size)
+            gpuTimer.setPassPlan(
+                renderPasses = arm.renderPassCount,
+                queryColumns = arm.gpuColumns.size,
+                singleFrameQuery = arm.usesSingleFrameQuery,
+            )
             gpuTimer.prepare()
         }
 
@@ -627,9 +638,15 @@ class PassthroughRenderer(
             }
             offscreenStatus = "arm=passthrough — 오프스크린을 만들지 않는다(기존 1패스 재현)"
         } else {
-            // 패스 수는 arm이 정한다(RenderArm.gpuColumns). prepare 전에 알려 줘야
-            // 링이 이번 arm의 개수로 엔트리를 건다.
-            gpuTimer.setPassCount(next.gpuColumns.size)
+            // 패스 수와 계측 모드는 arm이 정한다(RenderArm.renderPassCount / gpuColumns /
+            // usesSingleFrameQuery). prepare 전에 알려 줘야 링이 이번 arm의 계획으로
+            // 엔트리를 건다. ⚠ **렌더 패스 수와 열 수를 따로 넘긴다** — 프레임 단일 query
+            // arm은 렌더 패스 3~9개에 열이 1개라 한 값으로 뭉치면 링이 첫 패스만 감싼다.
+            gpuTimer.setPassPlan(
+                renderPasses = next.renderPassCount,
+                queryColumns = next.gpuColumns.size,
+                singleFrameQuery = next.usesSingleFrameQuery,
+            )
             // 일회성 프로브와 query 객체 생성을 **측정 전에** 끝내 둔다. 지연 초기화에
             // 맡기면 그 비용이 측정 첫 프레임에 얹힌다.
             gpuTimer.prepare()
