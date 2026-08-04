@@ -17,10 +17,12 @@
   세션 오케스트레이터(`run_session.py`) · 런별 회수 · arm 조건 대조 · BuildConfig git 스탬프 ·
   **앱 내부 폴백 검사**(`frames_fell_back_to_passthrough != 0` → 어긋남).
 - **런타임** — CameraX `Preview` → OES `SurfaceTexture` → GL 다패스 → `GLSurfaceView`.
-  **arm 8개**: `passthrough` / `blit_2pass` / `gamma_only` / `drago` / `clahe_gamma` / `agcwd` /
-  **`drago_clahe_chain`(8패스)** / **`drago_clahe_fused`(7패스)**.
-  ⚠️ 체인이 `GpuTimerRing.MAX_PASS_COUNT = 8`을 **정확히 소진**한다 — `bf`나 ④ 오버레이를 얹으면
-  계측이 꺼진다(명시적 거부라 조용히 틀리진 않는다).
+  **arm 12개**: `passthrough` / `blit_2pass` / `gamma_only` / `drago` / `clahe_gamma` / `agcwd` /
+  **`drago_clahe_chain`(8패스)** / **`drago_clahe_fused`(7패스)** /
+  **`drago_clahe_chain_bf`(9패스)** / **`drago_clahe_fused_bf`(8패스)** /
+  **`highlight_boxes`·`highlight_boxes_stress`(4패스, ④ 오버레이)**. 뒤 4개는 **미측정**이다.
+  ⚠️ `GpuTimerRing.MAX_PASS_COUNT`를 **8 → 12로 올렸다** — 8일 때는 체인 하나가 슬롯을 정확히
+  소진해서 `bf`나 ④ 오버레이를 얹으면 계측이 꺼졌다(명시적 거부라 조용히 틀리진 않았다).
 - **색공간 변환 자동 계수** — 앱이 셰이더 소스에서 토큰을 세어 `session.json`에 싣는다
   (`color_transform_sites`). 주장이 아니라 텍스트와 어긋날 수 없는 값이다.
 - **GPU 계측** — `GL_TIME_ELAPSED_EXT`를 코어 `glBeginQuery`로. A34에서 동작.

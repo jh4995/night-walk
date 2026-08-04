@@ -476,6 +476,7 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 | `gl` | GL 구현 정보(vendor·renderer·version·확인한 확장 목록). 같은 숫자를 다른 GPU에서 낸 것인지 나중에 되물을 근거 |
 | `gpu_timer` | `supported` 등 timer query 선언. **하네스가 유일하게 해석하는 키가 `supported`다** (아래 모순 검사) |
 | `stage2_params` | ② 저조도의 파라미터(알고리즘·clip limit·타일·감마 등). 파라미터가 다르면 D 실측끼리 비교가 성립하지 않는다 |
+| `overlay` | ④ 강조 오버레이의 조건(**박스 개수**·두께·색·기하). `stage_i_ms`가 무슨 조건의 값인지가 여기 있다. **④ arm에만 실린다**(v4 — 아래) |
 | `render` | 표시 경로·셰이더·패스 수. v1에도 있었고 v2에서 항목이 는다 |
 
 **하네스는 이 블록들을 해석하지 않고 `summary.json`의 `session`에 그대로 싣는다.**
@@ -491,6 +492,52 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 못했을 수도 있다. 어느 쪽이든 그 런으로 단계 비용을 말할 수 없다.
 선언은 `source.gpu_timer_supported_declared`에 그대로 남는다.
 **판정(`meets_*_target`)·종료 코드는 바꾸지 않는다.**
+
+#### `overlay` — ④ 강조의 조건 (v4). `stage_i_ms`를 읽는 데 필요하다
+
+**생산자는 앱이다** — `SessionWriter.buildOverlay()`가 내며, 값은 전부
+`RenderArm`의 상수에서 온다. **`arm.usesHighlightOverlay`인 런에만 실린다**
+(다른 arm에 빈 블록을 내면 "잰 적 없는 칸"이 있는 것처럼 보인다).
+아래는 앱이 **실제로 내는 키**다(하네스가 정한 것이 아니다 — 앱이 키를 늘리면 여기를 고친다).
+
+| 키 | 담는 것 |
+|---|---|
+| `stage` | `"④ 선택적 강조 (버짓 I칸)"` — 사람이 읽는 라벨 |
+| `gpu_column` | `"stage_i_ms"`. 이 arm의 오버레이 비용이 들어가는 CSV 열 |
+| `box_count` | 🔴 **이 런의 박스 개수.** `highlight_boxes`=4 / `highlight_boxes_stress`=32 |
+| `box_count_provenance` | 그 개수를 그렇게 정한 근거(상류 대조) |
+| `box_source` | 🔴 **정적 더미 박스이며 ③ 탐지 결과가 아니다**(③ 미구현). 프레임마다 같아서 재현 가능하다 |
+| `shape` · `fill` | 이중 스트로크(검정 밑선 + 대비색 본선) / **비채움**. `fill`은 "박스 **내부**는 건드리지 않는다"만 주장하며, 스트로크가 경계 밖을 덮는 사실은 `upstream_deviation`에 있다 |
+| `upstream_deviation` | 🔴 상류 스펙 문구와 기하가 어긋나는 지점의 전문. 스트로크가 경계선 **가운데 맞춤**이라 경계 밖 일부를 덮는데, 스펙 문구는 "경계선 밖은 일절 안 건드림"이다. 픽셀 대조(`INTERFACES.md` §B-6의 골든 이미지)를 하는 날 이 문장이 없으면 막힌다 — 그 골든 이미지가 아직 없어 **어느 쪽이 맞는지는 미확인**이다 |
+| `stroke_px_at_720p` · `underline_margin_px_at_720p` · `stroke_formula` | 두께와 그 계산식 |
+| `process_resolution` · `short_side_px` | 실제로 두께를 계산한 처리 해상도. 없으면 `process_resolution=null` + `resolution_note`(값을 지어내지 않는다) |
+| `colors` (`stairs`·`person`·`underline`) · `class_note` · `no_red_reason` | 색 세 개와 클래스 2종(`stairs`·`person`)의 범위, **빨강을 쓰지 않는 이유**(야간 배경에 묻히고 적록색약에서 무너진다). `class_note`는 `INTERFACES.md` §A-4의 클래스 2번이 아직 `☐`라 3번째 색을 지어내지 않았다는 사실을 담는다 |
+| `no_blink_reason` · `blink_not_a_perf_claim` | 깜빡이지 않는 이유(광과민 — 상류가 '항상 정적 윤곽'으로 못 박았다)와, 🔴 **그 사실을 성능·안전 근거로 쓰지 말라는** 명시(이 런은 깜빡임을 시험하지 않았다) |
+| `geometry` | 스트로크 quad 정점 수·드로우콜 수, 전체화면 SDF로 그리지 않은 이유(그러면 I칸이 다른 물리량이 된다) |
+| `tile_reload_note` | ⚠ 이 패스는 `glClear`를 부르지 않아 **컬러 어태치먼트 재-load 비용이 `stage_i_ms`에 섞여 있다**. 빼낼 수단이 없다 |
+| `how_to_compare` | 🔴 **`stage_i_ms`를 '박스 하나의 비용'으로 읽지 말 것** — 개수는 선언된 조건이고 그 개수에서의 값이다. 개당 기울기는 두 arm(4개·32개)의 **차분을 개수 차로 나눠** 얻는다 |
+| `upstream_reference` · `spec_provenance` | 명세 출처(`scripts/emphasize.py`)와 그 인용 근거 |
+| `gpu_status` | ④ 오버레이 **자원의 현재 상태**(사람이 읽는 문장, `PassthroughRenderer.overlayStatus`). ② 자리 상태(`stage2_params`)와 **일부러 분리**돼 있다 — 오버레이 컴파일 실패가 ② 문장 뒤에 묻히지 않게 하기 위해서다 |
+
+🔴 **`box_count`는 필수 조건이다.** 이 값이 없으면 `stage_i_ms`가 무슨 조건의 값인지 사라진다
+— 오버레이 비용은 박스 개수에 딸린 양이고, 개수를 모르는 `stage_i_ms`는 I칸에 옮길 수 없다.
+
+🔴 **박스 개수가 다르면 arm id를 갈라야 한다.** 개수는 `baseline_diff.py`의 `CONDITION_KEYS`에
+담기는 키가 **하나도 없다**(`pipeline_stages`는 `highlight_boxes`와
+`highlight_boxes_stress`가 동일하고, `overlay` 블록은 조건 비교에 쓰이지 않는다). 그래서 같은
+id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통과한다** —
+`blit_2pass`/`clahe_gamma`가 둘 다 `["blit_2pass"]`여서 무경고로 "회귀 없음"이 나온 실패와
+동형이다(그 실패는 반사실 검증으로 실증됐다). 그래서 개수 조건은 arm id로 가른다.
+
+🔴 **`stage_i_ms`를 인용할 때 박스 개수를 함께 옮긴다.** 이 저장소에는 열 이름을 함께 옮기지
+않아 정반대 결론이 나온 전례가 있고(앱 `RenderArm.COLUMN_RANK_INVERSION_NOTE`: 같은 런에서
+`stage_d_total_ms` 순위와 `gpu_sum` 차분 순위가 뒤집혔다), **박스 개수도 같은 성질의
+조건이다** — 개수 없는 `stage_i_ms`는 "④의 비용"이 아니라 출처를 잃은 숫자다.
+`highlight_boxes`(4개)와 `highlight_boxes_stress`(32개)의 값을 개수 표기 없이 나란히 놓으면
+읽는 사람이 그것을 같은 조건의 재측정으로 읽는다.
+
+⚠ **하네스는 이 블록을 해석하지 않는다** — 개수를 검증하지도, 개수로 arm을 묶지도 않는다
+(`render_arm` 표의 규약과 같다). `summary.json`의 `session`에 그대로 실려 나간다.
 
 ### `lighting_condition` — 어휘를 고정한다
 
@@ -538,6 +585,8 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 | `drago` · `reinhard` · `lime` | 톤매핑·조도추정 계열 |
 | `drago_clahe_chain` · `drago_clahe_fused` | **조합 arm** (v4). ② 자리에서 톤커브 스테이지를 **두 번** 돈다 → `stage_d_*2_ms` 슬롯 |
 | `highlight_boxes` | ④ 강조 (v4) |
+| `drago_clahe_chain_bf` · `drago_clahe_fused_bf` | 위 조합 + **bilateral**(1패스 joint gather. **`d=7`(반경 3)의 원형 이웃 29탭이며 7×7 사각형 49탭이 아니다** — 앱 `RenderArm.BF_D=7` / `BF_RADIUS=3` / `BF_TAP_COUNT=29`, 조건은 `i²+j² ≤ radius²`. ⚠ 이 줄은 앞서 "1패스 7×7 joint gather"라고 적혀 있었다 — 그 서술을 인용하면 탭 수가 49로 전파된다. `RenderArm.kt`·`BilateralStage.kt`가 세 곳에서 "7×7 사각형 49탭이 아니다"라고 명시적으로 부정한다). 이름은 `clahe_gamma_bf`·`agcwd_bf`의 `<arm>_bf` 규약을 따른다 → `stage_d_denoise_ms` 슬롯. **새 열을 만들지 않는다**(그 열은 v3부터 bilateral 전용으로 예약돼 있다) |
+| `highlight_boxes_stress` | ④ 강조를 **박스 개수만 다르게** 재는 조건(개당 기울기용). 개수는 `CONDITION_KEYS`에 담기지 않으므로(`pipeline_stages`가 `highlight_boxes`와 동일하다) 같은 id로 개수만 바꾸면 **조건 차이가 무경고로 통과**한다 — `blit_2pass`/`clahe_gamma`가 둘 다 `["blit_2pass"]`여서 무경고로 "회귀 없음"이 나온 실패와 동형이다. 개수 자체는 하네스가 해석하지 않는다 |
 
 **어휘에 있다는 것은 "그 문자열을 안다"는 뜻일 뿐이다.** 하네스는 여전히 arm의 의미를
 해석하지 않으며, 어느 arm이 어느 패스에 무엇을 그렸는지는 판단하지 않는다.
@@ -572,8 +621,9 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 | `stage2_drago` | ② Drago 톤매핑(리덕션+계수+적용 3패스) | 앱 `RenderArm.DRAGO` |
 | `stage2_clahe` | ② CLAHE+감마, LAB `L`(타일 히스토그램+CDF+보간) | 앱 `RenderArm.CLAHE_GAMMA` |
 | `stage2_agcwd` | ② AGCWD, LAB `L`(전역 히스토그램+가중 LUT) | 앱 `RenderArm.AGCWD` |
+| `stage2_bilateral` | ② 노이즈 억제(bilateral). `+bf` arm이 ② 자리에서 한 번 더 도는 패스 → `stage_d_denoise_ms` | 앱 (`+bf` arm) / 생성기 `--stage_d_denoise_ms` |
 | `detect` | ③ 탐지. **앱 미구현** — 현재는 합성 로그만 낸다 | 생성기 `--detect_every_n` |
-| `stage4_highlight` | ④ 강조. **앱 미구현** — 현재는 합성 로그만 낸다 | 생성기 `--stage_i_ms` |
+| `stage4_highlight` | ④ 강조 오버레이 패스(② 출력 위에 스트로크 박스를 덧그린다) → `stage_i_ms` | 앱 `RenderArm.HIGHLIGHT_BOXES` · `HIGHLIGHT_BOXES_STRESS`(둘 다 `["blit_2pass","stage4_highlight"]`) / 생성기 `--stage_i_ms` |
 
 > **조합 arm에는 새 토큰을 만들지 않는다** (v4). ② 자리에서 스테이지를 두 번 도는 arm은
 > 실제로 위 토큰을 **두 개 나열**한다(예: `["blit_2pass","stage2_drago","stage2_clahe"]`) —
