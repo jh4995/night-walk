@@ -219,8 +219,18 @@ STAGE2_GAMMA = "stage2_gamma"          # ② 자리 감마 패스. 앱 생산
 STAGE2_DRAGO = "stage2_drago"          # ② Drago 톤매핑(리덕션+계수+적용 3패스). 앱 생산
 STAGE2_CLAHE = "stage2_clahe"          # ② CLAHE+감마, LAB L (타일 히스토그램+CDF+보간). 앱 생산
 STAGE2_AGCWD = "stage2_agcwd"          # ② AGCWD, LAB L (전역 히스토그램+가중 LUT). 앱 생산
+# ② 노이즈 억제 스테이지(bilateral 계열, `+bf` arm이 ② 자리에서 한 번 더 도는 패스). 앱 생산.
+# STAGE2_DRAGO·STAGE2_CLAHE와 **같은 취급**이다 — 생산자는 앱이고 여기 등록은 "이 문자열을
+# 안다"는 뜻일 뿐이다. `+bf` arm은 이 토큰을 기존 토큰 뒤에 **나열**한다
+# (예: ["blit_2pass","stage2_drago","stage2_clahe","stage2_bilateral"]) — 조합 arm에 새 토큰을
+# 만들지 않는 규칙과 같은 이유로, bf 전용 합성 토큰을 지으면 같은 구조가 두 이름으로 갈린다.
+STAGE2_BILATERAL = "stage2_bilateral"  # ② 노이즈 억제(bilateral). 앱 생산
 STAGE_DETECT = "detect"                # ③ 탐지. **앱 미구현** — 현재는 합성 로그만 낸다
-STAGE4_HIGHLIGHT = "stage4_highlight"  # ④ 강조. **앱 미구현** — 현재는 합성 로그만 낸다
+# ④ 강조 오버레이 패스(② 출력 위에 스트로크 박스를 덧그린다) → `stage_i_ms`. **앱 생산**이다 —
+# `RenderArm.kt`의 `highlight_boxes`·`highlight_boxes_stress`가 둘 다 이 토큰을 선언하고
+# (`["blit_2pass","stage4_highlight"]`) `SessionWriter`가 `overlay.gpu_column="stage_i_ms"`를
+# 낸다. 합성 생성기(`--stage_i_ms`)도 같은 토큰을 쓴다 — 생산자가 생성기뿐이던 시기는 끝났다.
+STAGE4_HIGHLIGHT = "stage4_highlight"  # ④ 강조. 앱 생산 + 생성기
 
 # ⚠ 여기에 **아직 없는 arm의 토큰을 미리 만들지 않는다.** 생산자가 앱이므로, 앱이 그 arm을
 #   실제로 내기 전에 하네스가 이름을 지으면 앱이 다른 이름을 쓰는 날 같은 구조가 두 이름으로
@@ -231,6 +241,7 @@ PIPELINE_STAGES = (
     STAGE2_DRAGO,
     STAGE2_CLAHE,
     STAGE2_AGCWD,
+    STAGE2_BILATERAL,
     STAGE_DETECT,
     STAGE4_HIGHLIGHT,
 )
@@ -273,6 +284,20 @@ RENDER_ARM_LIME = "lime"
 RENDER_ARM_DRAGO_CLAHE_CHAIN = "drago_clahe_chain"
 RENDER_ARM_DRAGO_CLAHE_FUSED = "drago_clahe_fused"
 RENDER_ARM_HIGHLIGHT_BOXES = "highlight_boxes"
+# ② 조합 arm + bilateral(1패스 joint gather). 이름은 위 `clahe_gamma_bf`·`agcwd_bf`의
+# `<arm>_bf` 규약을 그대로 따른다. **위 블록과 같은 취지다** — 팀원2 쪽 명명이지 계약값이
+# 아니고, 생산자는 앱이므로 앱이 다른 id를 쓰기로 하면 앱이 정답이며 여기를 고친다.
+# 등록은 "이 문자열을 안다"는 뜻일 뿐이고, 하네스는 arm의 의미를 해석하지 않는다.
+RENDER_ARM_DRAGO_CLAHE_CHAIN_BF = "drago_clahe_chain_bf"
+RENDER_ARM_DRAGO_CLAHE_FUSED_BF = "drago_clahe_fused_bf"
+# ④ 강조를 **박스 개수만 다르게** 재는 조건. 같은 arm id로 개수만 바꾸면 안 되는 이유:
+# 박스 개수가 다르면 측정 조건이 다른데 `baseline_diff.py`의 CONDITION_KEYS에는 개수를 담을
+# 키가 없어서(`pipeline_stages`는 둘 다 ["blit_2pass","stage4_highlight"]다) 조건 차이가
+# **무경고로 통과**한다. `blit_2pass`와 `clahe_gamma`가 둘 다 ["blit_2pass"]로 기록되어
+# 처리량이 완전히 다른데도 "회귀 없음"이 나온 실패와 **동형**이며, 그때의 처방이 arm을
+# 조건 키에 넣는 것이었다 — 그러므로 개수 차이도 arm id로 갈라 둔다.
+# ⚠ 개수 자체를 하네스가 해석하지는 않는다(그 값은 앱이 session.json에 적는다).
+RENDER_ARM_HIGHLIGHT_BOXES_STRESS = "highlight_boxes_stress"
 
 RENDER_ARMS = (
     RENDER_ARM_PASSTHROUGH,
@@ -288,6 +313,9 @@ RENDER_ARMS = (
     RENDER_ARM_DRAGO_CLAHE_CHAIN,
     RENDER_ARM_DRAGO_CLAHE_FUSED,
     RENDER_ARM_HIGHLIGHT_BOXES,
+    RENDER_ARM_DRAGO_CLAHE_CHAIN_BF,
+    RENDER_ARM_DRAGO_CLAHE_FUSED_BF,
+    RENDER_ARM_HIGHLIGHT_BOXES_STRESS,
     RENDER_ARM_SYNTHETIC,
 )
 
