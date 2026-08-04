@@ -1,0 +1,561 @@
+{
+  "device": {
+    "available": false,
+    "reason": "--no_device 로 건너뜀"
+  },
+  "frametime": {
+    "capture_to_render_ms": {
+      "count": 4875,
+      "max": 87.449,
+      "mean": 76.938,
+      "min": 65.994,
+      "p50": 77.076,
+      "p95": 81.273,
+      "p99": 82.895
+    },
+    "output_interval_ms": {
+      "count": 4874,
+      "max": 46.897,
+      "mean": 33.422,
+      "min": 28.644,
+      "p50": 32.802,
+      "p95": 38.053,
+      "p99": 40.571
+    },
+    "pinned_to_camera_supply": {
+      "out_p50": 32.802,
+      "out_p95": 38.053,
+      "recv_p50": 32.394,
+      "recv_p95": 38.271,
+      "rel_diff_p50": 0.012594924986108577,
+      "rel_diff_p95": 0.0056962190692692516,
+      "tail_pinned": true
+    },
+    "primary": {
+      "count": 4874,
+      "max": 46.897,
+      "mean": 33.422,
+      "min": 28.644,
+      "p50": 32.802,
+      "p95": 38.053,
+      "p99": 40.571
+    },
+    "primary_source": "output_interval_ms (t_render_end_ns 간격)",
+    "recv_interval_ms": {
+      "count": 4874,
+      "max": 46.596,
+      "mean": 33.422,
+      "min": 29.015,
+      "p50": 32.394,
+      "p95": 38.271,
+      "p99": 40.57
+    },
+    "recv_to_render_ms": {
+      "count": 4875,
+      "max": 6.148,
+      "mean": 3.787,
+      "min": 1.246,
+      "p50": 3.796,
+      "p95": 4.703,
+      "p99": 5.087
+    },
+    "render_latency_ms": {
+      "count": 4875,
+      "max": 5.819,
+      "mean": 3.597,
+      "min": 1.111,
+      "p50": 3.606,
+      "p95": 4.475,
+      "p99": 4.825
+    }
+  },
+  "label": "s5_bf #5",
+  "run_ts": "20260804_144045",
+  "safety_regression": {
+    "evaluated": false,
+    "reason": "탐지 단계 미구현 — 위험물 강조 누락률을 아직 잴 수 없다"
+  },
+  "schema_version": 4,
+  "session": {
+    "app_version_name": "0.1-poc",
+    "build": {
+      "git_commit": "c2d747e",
+      "git_dirty": "false",
+      "note": "gradle 구성 시점에 git rev-parse --short HEAD / git status --porcelain을 읽어 BuildConfig에 박은 값이다. 측정 시각이 아니라 **빌드 시각**의 저장소 상태이며, git_dirty=true면 이 APK의 소스는 어느 커밋에도 없다"
+    },
+    "build_type": "release",
+    "camera": {
+      "requested_fps": 30,
+      "resolution": "1280x720"
+    },
+    "camera_actual": {
+      "frame_rate_range": "30-30",
+      "resolution": "1280x720"
+    },
+    "camera_frames_offered": null,
+    "capture_clock_base": "boottime",
+    "capture_clock_base_reason": "취득~콜백 지연 중위값: monotonic 기준 -653995178394543ns / boottime 기준 68780032ns, 허용범위 [-5000000, 1000000000]ns, 두 시계 오프셋 653995247174268ns",
+    "capture_clock_probe": [
+      {
+        "boottime_ns": 1974179029317032,
+        "monotonic_ns": 1320183782142995,
+        "t_capture_ns": 1974178964306000
+      },
+      {
+        "boottime_ns": 1974179068564725,
+        "monotonic_ns": 1320183821390688,
+        "t_capture_ns": 1974178997638000
+      },
+      {
+        "boottime_ns": 1974179100197032,
+        "monotonic_ns": 1320183853022457,
+        "t_capture_ns": 1974179031417000
+      },
+      {
+        "boottime_ns": 1974179132102032,
+        "monotonic_ns": 1320183884927918,
+        "t_capture_ns": 1974179065196000
+      },
+      {
+        "boottime_ns": 1974179164528109,
+        "monotonic_ns": 1320183917353841,
+        "t_capture_ns": 1974179098528000
+      },
+      {
+        "boottime_ns": 1974179200445109,
+        "monotonic_ns": 1320183953270995,
+        "t_capture_ns": 1974179131860000
+      },
+      {
+        "boottime_ns": 1974179235115571,
+        "monotonic_ns": 1320183987941226,
+        "t_capture_ns": 1974179165192000
+      },
+      {
+        "boottime_ns": 1974179272558340,
+        "monotonic_ns": 1320184025383995,
+        "t_capture_ns": 1974179198524000
+      }
+    ],
+    "clock_offset_boottime_minus_monotonic_ns": 653995247174268,
+    "draws_without_new_frame": 0,
+    "drop_accounting_note": "표시 경로 2-C에는 ImageProxy가 없어 버려진 프레임 수를 셀 수 없다. frames.csv의 dropped_since_last는 전부 -1이며, camera_frames_offered/frames_dropped는 0이 아니라 null이다(0은 '드롭 없음'이라는 적극적 주장이다). 아래 surface_frames_available은 카메라 출력 수가 아니라 우리 SurfaceTexture 큐에 도착한 수이므로 드롭의 하한 단서일 뿐이다",
+    "frames_coalesced_lower_bound": 0,
+    "frames_dropped": null,
+    "frames_emitted": 5773,
+    "generated_by": "android/app (com.bammasil.poc)",
+    "gl": {
+      "context_version_actual": "3.2",
+      "egl_context_client_version_requested": 3,
+      "gl_extension_count": 110,
+      "gl_extensions": "GL_EXT_debug_marker GL_ARM_rgba8 GL_ARM_mali_shader_binary GL_ARM_debug_assert GL_OES_depth24 GL_OES_depth_texture GL_OES_depth_texture_cube_map GL_OES_packed_depth_stencil GL_OES_rgb8_rgba8 GL_EXT_read_format_bgra GL_OES_compressed_paletted_texture GL_OES_compressed_ETC1_RGB8_texture GL_OES_standard_derivatives GL_OES_EGL_image GL_OES_EGL_image_external GL_OES_EGL_image_external_essl3 GL_OES_EGL_sync GL_OES_texture_npot GL_OES_vertex_half_float GL_OES_required_internalformat GL_OES_vertex_array_object GL_OES_mapbuffer GL_EXT_texture_format_BGRA8888 GL_EXT_texture_rg GL_EXT_texture_type_2_10_10_10_REV GL_OES_fbo_render_mipmap GL_OES_element_index_uint GL_EXT_shadow_samplers GL_OES_texture_compression_astc GL_KHR_texture_compression_astc_ldr GL_KHR_texture_compression_astc_hdr GL_KHR_texture_compression_astc_sliced_3d GL_EXT_texture_compression_astc_decode_mode GL_EXT_texture_compression_astc_decode_mode_rgb9e5 GL_KHR_debug GL_EXT_occlusion_query_boolean GL_EXT_disjoint_timer_query GL_EXT_blend_minmax GL_EXT_discard_framebuffer GL_OES_get_program_binary GL_OES_texture_3D GL_EXT_texture_storage GL_EXT_multisampled_render_to_texture GL_EXT_multisampled_render_to_texture2 GL_OES_surfaceless_context GL_OES_texture_stencil8 GL_EXT_shader_pixel_local_storage GL_ARM_shader_framebuffer_fetch GL_ARM_shader_framebuffer_fetch_depth_stencil GL_ARM_mali_program_binary GL_EXT_sRGB GL_EXT_sRGB_write_control GL_EXT_texture_sRGB_decode GL_EXT_texture_sRGB_R8 GL_EXT_texture_sRGB_RG8 GL_KHR_blend_equation_advanced GL_KHR_blend_equation_advanced_coherent GL_OES_texture_storage_multisample_2d_array GL_OES_shader_image_atomic GL_EXT_robustness GL_EXT_draw_buffers_indexed GL_OES_draw_buffers_indexed GL_EXT_texture_border_clamp GL_OES_texture_border_clamp GL_EXT_texture_cube_map_array GL_OES_texture_cube_map_array GL_OES_sample_variables GL_OES_sample_shading GL_OES_shader_multisample_interpolation GL_EXT_shader_io_blocks GL_OES_shader_io_blocks GL_EXT_tessellation_shader GL_OES_tessellation_shader GL_EXT_primitive_bounding_box GL_OES_primitive_bounding_box GL_EXT_geometry_shader GL_OES_geometry_shader GL_ANDROID_extension_pack_es31a GL_EXT_gpu_shader5 GL_OES_gpu_shader5 GL_EXT_texture_buffer GL_OES_texture_buffer GL_EXT_copy_image GL_OES_copy_image GL_EXT_shader_non_constant_global_initializers GL_EXT_color_buffer_half_float GL_EXT_unpack_subimage GL_EXT_color_buffer_float GL_EXT_float_blend GL_EXT_YUV_target GL_OVR_multiview GL_OVR_multiview2 GL_OVR_multiview_multisampled_render_to_texture GL_KHR_robustness GL_KHR_robust_buffer_access_behavior GL_EXT_draw_elements_base_vertex GL_OES_draw_elements_base_vertex GL_EXT_protected_textures GL_EXT_buffer_storage GL_EXT_external_buffer GL_EXT_EGL_image_array GL_EXT_clear_texture GL_ARM_shader_core_properties GL_EXT_texture_filter_anisotropic GL_OES_texture_float_linear GL_ARM_texture_unnormalized_coordinates GL_EXT_shader_framebuffer_fetch GL_EXT_clip_control GL_EXT_polygon_offset_clamp GL_EXT_EGL_image_storage ",
+      "gl_renderer": "Mali-G68 MC4",
+      "gl_shading_language_version": "OpenGL ES GLSL ES 3.20",
+      "gl_vendor": "ARM",
+      "gl_version": "OpenGL ES 3.2 v1.r49p1-03bet0.3666fcaacb504f548df1f5efc729b42d.I3709bd948b52e72feea0b835da3d6ff20",
+      "has_ext_disjoint_timer_query": "true",
+      "has_oes_egl_image_external_essl3": "true",
+      "probe_note": "앱 EGL 컨텍스트에서 onSurfaceCreated 1회 실측. 확장 판별은 glGetString(GL_EXTENSIONS)를 공백으로 쪼갠 토큰 완전일치다(부분 문자열 검색이 아니다). 다른 프로세스(SurfaceFlinger 등)의 드라이버 문자열은 근거로 쓰지 않았다",
+      "supports_compute_shader_es31": "true"
+    },
+    "gpu_timer": {
+      "attribution_note": "query가 패스 시퀀스의 모든 GL **명령**을 빈틈없이 덮는다. 그러나 타일 기반 GPU(Mali-G68)에서 '명령을 덮는 것'은 '그 명령이 유발한 GPU 작업을 덮는 것'이 아니다 — 어느 작업이 어느 query 구간에 담기는지는 드라이버가 정한다. 확실한 것: 마지막 패스는 기본 프레임버퍼에 그리는데 그 타일 해결은 eglSwapBuffers에서 일어나고 GLSurfaceView는 그것을 onDrawFrame 반환 **후에** 부른다 — 모든 query의 바깥이다(GLSurfaceView를 쓰는 한 옮길 수 없다). 그래서 두 갈래이고 어느 쪽이든 '합은 정확하다'가 성립하지 않는다: (1) 드라이버가 glEndQuery에서 렌더패스를 쪼갠다 → **계측이 측정 대상 워크로드를 바꾸고 있다**, (2) 쪼개지 않는다 → **온스크린 해결 비용이 gpu_present_ms 밖으로 떨어져 gpu_sum_ms가 과소가 된다**. **우리는 이 기기에서 둘 중 어느 쪽인지 판별하지 못했다.** 따라서 개별 열의 경계는 ±1패스만큼 흐리고 **합도 하한으로 읽어야 한다** — B·D 칸을 이 값으로 채울 때 이 단서를 함께 옮길 것. 🔴 **정량 근거(독립 검증 실측): gpu_present_ms는 present 패스를 재고 있지 않다.** 적용 패스 열과 바로 다음 present 열의 차(gpu_present_ms − 적용 열; 3패스 arm은 stage_d_ms, 컴퓨트 arm은 stage_d_apply_ms)가 arm별로 blit_2pass 0.692 · gamma_only 0.717 · drago 1.430 · agcwd 1.400 · clahe_gamma 1.403 (ms)다. 컴퓨트 arm 셋에서 **적용 패스 값이 1.24ms 벌어지는 동안 이 차는 ±0.03ms 상수**다 — 적용 패스(FBO_B)의 프래그먼트 실행이 자기 query 창이 아니라 **다음 패스(present)의 창에 앉는다**는 뜻이다(타일러가 FBO_B 렌더패스를 pass5에서 해소한다). 그러므로 **stage_d_apply_ms를 '적용 패스의 비용'으로 인용하면 틀린다** — 개별 D 열은 약 한 패스 밀려 있고, **이 런에서 신뢰할 수 있는 것은 합(gpu_sum)뿐이다.** 그 합도 위 이유로 여전히 하한이다",
+      "columns_emitted": [
+        "stage_b_ms",
+        "stage_d_ms",
+        "stage_i_ms",
+        "gpu_present_ms"
+      ],
+      "discard_note": "disjoint가 세워진 프레임의 in-flight query는 전량 버렸고, 정지 시점에 안 끝난 tail query도 버렸다(각각 discarded_disjoint_queries / unresolved_queries). 버린 자리는 CSV에 -1로 남는다 — 0으로 채우면 '그 패스가 0ms였다'는 거짓 주장이 된다. 하네스는 -1을 below_min 폐기로 세므로 개수가 조용히 사라지지 않는다. ⚠ skipped_ring_full_frames의 편향 방향: 링이 차는 것은 회수가 밀렸을 때, 즉 **GPU가 느린 구간**이므로 버려지는 쪽이 가장 비싼 프레임이다 — 0이 아니면 stage_* 분포의 p95/p99가 낙관 쪽으로 치우친다",
+      "discarded_disjoint_queries": 0,
+      "disjoint_accounting_note": "GL_GPU_DISJOINT_EXT는 '지난 읽기 이후 누적'이고 읽으면 리셋된다. 계측하지 않는 기간(프리뷰·arm 전환·앱 시작 직후)에 선 플래그가 이 런의 것으로 계상되지 않도록, 런의 **첫 읽기는 기준선으로만 쓰고 세지 않는다**. 런 도중의 읽기는 전부 센다 — 그 구간은 in-flight query가 실제로 걸쳐 있는 구간이다",
+      "disjoint_frames": 0,
+      "extension": "GL_EXT_disjoint_timer_query",
+      "extension_present": "true",
+      "instrumentation_overhead_note": "계측 on/off A/B는 이 빌드로 할 수 없다 — 패스스루가 아닌 arm은 항상 계측하고 패스스루 arm은 절대 계측하지 않으므로, 두 arm의 차이에서 '패스 비용'과 'query 비용'을 분리할 수단이 없다(구조적 한계이며 토글을 새로 만들지 않았다). 즉 여기 값에 query 자체의 오버헤드가 얼마나 섞였는지는 미측정이다",
+      "instrumented": true,
+      "instrumented_frames": 5773,
+      "malformed_frames": 0,
+      "max_passes_per_frame": 12,
+      "method": "GL_TIME_ELAPSED_EXT(0x88BF) via core glBeginQuery/glEndQuery + glGetQueryObjectuiv(GL_QUERY_RESULT_AVAILABLE) 비차단 폴링. android.opengl에 glQueryCounterEXT/glGetQueryObjectui64vEXT 진입점이 없어 타임스탬프 방식은 쓸 수 없다(JNI 필요). 결과는 32비트로만 받으므로 약 4.29초까지 담기고, 그보다 큰 결과가 어떻게 되는지는 **구현 정의**다",
+      "note": "패스스루 arm에는 query를 하나도 걸지 않는다 — query 자체가 GPU 동작과 드라이버 스케줄링을 바꾸므로, 승격 베이스라인을 재현하는 경로에 넣으면 그 기준이 기준이 아니게 된다. stage_i_ms는 ④ 오버레이 arm(highlight_boxes / highlight_boxes_stress)이 낸다",
+      "positive_samples": 23092,
+      "queries_per_frame": 4,
+      "resolved_frames": 5773,
+      "resolved_queries": 23092,
+      "ring_depth_frames": 4,
+      "skipped_ring_full_frames": 0,
+      "supported": true,
+      "target_enum": "GL_TIME_ELAPSED_EXT=0x88BF, GL_GPU_DISJOINT_EXT=0x8FBB",
+      "unresolved_queries": 0,
+      "zero_result_queries": 0
+    },
+    "lighting_condition": "indoor_bright",
+    "log_clock": "SystemClock.elapsedRealtimeNanos() (CLOCK_BOOTTIME)",
+    "measurement": {
+      "duration_ns": 192959691165,
+      "started_elapsed_realtime_ns": 1974179001815494,
+      "stopped_elapsed_realtime_ns": 1974371961506659
+    },
+    "overlay": {
+      "blink_not_a_perf_claim": "🔴 **이 arm에 깜빡임이 없다는 사실을 성능·안전 근거로 쓰지 말 것.** 박스가 정적 더미라 구조적으로 없을 뿐이고, 이 런은 깜빡임을 **시험하지 않았다.** 실제 깜빡임 위험은 ③을 N프레임마다 돌릴 때 박스가 튀는 것이고(버짓 H칸: 좌표 IIR 평활·hold) **미구현**이다. 상류가 그것을 안전 이슈로 규정했다(RESEARCH_20260803_UPSTREAM.md §5)",
+      "box_count": 4,
+      "box_count_provenance": "🔴 **박스 개수와 배치는 사양이 아니라 우리가 선언한 측정 조건이다.** 실제 개수는 장면마다 다르므로(상류도 '몇 개 기준인지 함께 적을 것'이라는 단서를 달았다 — FRAME_BUDGET.md §3 주5) 이 값을 사양으로 옮기지 말 것. arm 두 개로 갈라 잰다: highlight_boxes = 4개(stairs 1 + person 3) / highlight_boxes_stress = 32개(개당 비용 기울기용). 배치는 8x4 셀 격자에서 **서로 겹치지 않는 같은 크기**의 박스를 stride 7로 뽑은 것이다(gcd(7,32)=1이라 순열이고, 개수가 적어도 화면 전체에 퍼진다). **박스 크기가 두 arm에서 같으므로** 두 값을 나란히 놓아 개당 기울기로 쓸 수 있다 — 격자를 개수에 맞춰 바꾸면 박스마다 둘레가 달라져 그 기울기가 깨진다. 박스는 **정적 더미**이고 ③ 탐지 결과가 아니다(③ 미구현)",
+      "box_source": "🔴 **정적 더미 박스다.** ③ 탐지 결과가 아니다(③ 미구현). 난수를 쓰지 않으므로 프레임마다 완전히 같고, 그래서 재현 가능하다",
+      "class_note": "클래스는 `stairs`(index 0) · `person`(index 1) 두 종만 그린다. 🔴 INTERFACES.md §A-4의 **클래스 2번은 ☐(미정)**이라 3번째 클래스의 색을 지어내지 않았다 — 클래스가 늘면 그 자체가 렌더 규약 변경이고(§A-4 불변 규칙) 이 오버레이도 함께 고쳐야 한다. 색은 픽셀 비용에 영향이 없다(어느 색이든 같은 면적을 채운다)",
+      "colors": {
+        "person": "시안 (0, 1, 1)",
+        "stairs": "노랑 (1, 1, 0)",
+        "underline": "검정 (0, 0, 0)"
+      },
+      "fill": "비채움 — 박스 **내부**(스트로크보다 더 안쪽)는 한 픽셀도 건드리지 않는다. ⚠ 다만 이 문장은 **내부에 대한 것뿐이다**: 스트로크 자체는 경계선 위에 가운데 맞춤이라 **경계 밖 3.0px(720p 기준)을 덮는다** — 스펙 문구('경계선 밖은 일절 안 건드림')와 어긋나는 지점이고, 전문은 upstream_deviation에 있다",
+      "geometry": "얇은 사각형 스트로크 quad(GL_TRIANGLES). 박스당 정점 48개(띠 4개 × 삼각형 2개 × 3정점 × 스트로크 2벌)이고 드로우콜은 프레임당 **1회**다. 🔴 전체화면 프래그먼트 SDF로 그리지 않았다 — 그러면 픽셀 셰이더가 화면 전체를 돌아 오버레이 비용이 화면 전체 비용으로 부풀고 I칸이 **다른 물리량**이 된다(FRAME_BUDGET.md §5가 I칸을 GL 드로우콜 계측으로 못 박았다)",
+      "gpu_column": "stage_i_ms",
+      "gpu_status": "준비 완료 — ④ 오버레이 **1패스**(얇은 사각형 스트로크 quad, glDrawArrays GL_TRIANGLES 1회). 이중 스트로크(검정 밑선 + 대비색 본선) · 비채움 · 정적 더미 박스(난수 없음). 두께는 **처리 해상도의 짧은 변에서 계산**한다 (720p 기준 4.0px). 텍스처를 읽지 않으므로 셰이더는 GLSL ES 1.00이다",
+      "how_to_compare": "🔴 **이 arm의 stage_i_ms를 '박스 하나의 비용'으로 읽지 말 것** — 개수는 우리가 선언한 조건이고(box_count) 그 개수에서의 값이다. 개당 기울기는 highlight_boxes(4개)와 highlight_boxes_stress(32개)의 **차분을 개수 차로 나눠** 얻는다(박스 크기가 두 arm에서 같아 성립한다). ⚠ stage_i_ms에는 **컬러 어태치먼트를 다시 load하는 비용이 섞여 있다** — 오버레이는 ② 출력 위에 얹으므로 glClear를 부를 수 없고, 타일 GPU는 그때 이전 내용을 타일로 다시 읽어 온다. 그게 오버레이 패스의 실제 비용이며 빼낼 수단이 없다(패스 경계·귀속의 일반 주의사항은 gpu_timer.attribution_note). ⚠ 이 arm의 ② 자리는 **단순 복사**다 — blit_2pass와 같은 골격이므로 gpu_sum 차분의 짝은 blit_2pass다",
+      "no_blink_reason": "🔴 **깜빡임 금지 — 안전 이슈다.** 대상 사용자가 광과민이므로 상류가 '항상 정적 윤곽'으로 못 박았다(RESEARCH_20260803_UPSTREAM.md §5). 그래서 이 오버레이는 난수를 쓰지 않고 박스가 프레임마다 **완전히 같다**(재현성도 그 덕에 유지된다)",
+      "no_red_reason": "🔴 **빨강 금지.** 빨강은 휘도가 낮아 야간 배경에 묻히고 적록색약에서 무너진다 (RESEARCH_20260803_UPSTREAM.md §5). 그래서 이 오버레이의 색은 노랑·시안·검정 셋뿐이고 빨강 단색 스트로크는 코드에 존재하지 않는다",
+      "process_resolution": "1280x720",
+      "shape": "이중 스트로크 (검정 밑선 + 대비색 본선)",
+      "short_side_px": 720,
+      "spec_provenance": "상류(모델링 담당 kty2001/KDT_Hackathon) scripts/emphasize.py로 **확정된 ④ 명세**다 — 이중 스트로크(검정 밑선 + 대비색 본선) · 비채움 · stairs=노랑 / person=시안 · 빨강 금지 · 깜빡임 금지 · 두께는 짧은 변 비례로 720p 기준 4.0px. 출처는 docs/research/RESEARCH_20260803_UPSTREAM.md §5이고 FRAME_BUDGET.md §3 주5에 같은 내용이 있다. 즉 I칸은 '임의 더미의 비용 봉투'가 아니라 **실제 사양으로 잰 값**이다. ⚠ 다만 밑선이 본선보다 얼마나 넓은지는 상류에 기록이 없어 우리가 정했다(stroke_formula의 underline_margin_px_at_720p)",
+      "stage": "④ 선택적 강조 (버짓 I칸)",
+      "stroke_formula": "scale = min(처리폭, 처리높이) / 720.0 ; 본선 = 4.0 * scale ; 검정 밑선 = (4.0 + 2 * 1.0) * scale. 두 띠는 경계선 위에 **가운데를 맞춘다**(cv2.rectangle(thickness=t)와 같은 배치라 안쪽·바깥쪽으로 t/2씩 채운다). 픽셀 값을 하드코딩하지 않고 **처리 해상도에서 계산**하므로 640×360으로 내려도 비례가 유지된다",
+      "stroke_px_at_720p": 4,
+      "tile_reload_note": "⚠ 이 패스는 **glClear를 부르지 않는다** — ② 출력 위에 얹기 때문이다. 그래서 타일 GPU가 컬러 어태치먼트를 다시 load하고, **stage_i_ms에는 그 비용이 섞여 있다.** 오버레이 패스의 실제 비용이며 빼낼 수단이 없다. 게다가 패스2(복사)와 패스3의 타깃이 같은 FBO_B라 드라이버가 두 렌더패스를 병합하면 두 열의 경계가 흐려진다 — 일반 주의사항은 gpu_timer.attribution_note와 같다",
+      "underline_margin_px_at_720p": 1,
+      "upstream_deviation": "🔴 **(1) 스펙 문구와 이 구현의 스트로크 기하가 다르다.** 스펙은 '비채움 — 경계선 밖은 일절 안 건드림'인데(FRAME_BUDGET.md:258 · docs/research/RESEARCH_20260803_UPSTREAM.md:114 §5 표의 '채움' 행) 이 구현은 두 띠를 경계선 위에 **가운데 맞춤**해서 경계 **밖으로 나간다.** 720p 기준 실제 값(정점의 NDC 반폭 = 두께/처리폭이고 NDC 1 = 처리폭/2 px이므로 **한쪽 = 두께/2 px**이다): 본선은 밖으로 4.0 / 2 = 2.0px, 검정 밑선은 (4.0 + 2 * 1.0) / 2 = 3.0px — 즉 **경계 밖 3.0px을 덮는다**(가장 바깥 1.0px이 검정, 그 안 2.0px이 대비색). 안쪽도 대칭으로 같은 폭이며, **그보다 더 안쪽(박스 내부)은 한 픽셀도 건드리지 않는다**(overlay.fill). **(2) 왜 고치지 않았는가**: `cv2.rectangle(img, p1, p2, color, thickness=t)`가 스트로크를 경계선 **가운데**에 놓고(안쪽 t/2 · 바깥 t/2), 상류 scripts/emphasize.py가 쓰는 함수가 바로 그것이다. 그러므로 **이 구현이 오히려 상류 동작과 일치할 가능성이 높고**, 스펙 문구가 '비채움'(= 박스 내부를 칠하지 않는다)을 느슨하게 표현한 것일 수 있다. 문구에 맞춰 기하를 안쪽 맞춤으로 고치면 상류와 어긋날 위험이 오히려 커진다. 🔴 **(3) 어느 쪽이 맞는지 확인할 수 없다.** 상류 원문에 `thickness` 인자와 좌표 규약(경계선을 어느 쪽에 포함하는지)이 기록돼 있지 않고, **INTERFACES.md §B-6 골든 이미지가 없어 픽셀 단위 대조가 불가능하다.** 그러므로 (2)는 **추론이지 상류 코드 인용이 아니다** — BF_DEVIATION이 cv2.bilateralFilter의 내부 정의에 대해 한 것과 같은 처지다. **(4) 어디서 걸리는가**: 골든 이미지가 생겨 **픽셀 단위 대조를 하는 날 이 항목을 먼저 의심할 것.** 그리고 경계 밖으로 나가므로 **박스가 프레임 가장자리에 붙으면 밑선이 잘린다**(뷰포트 밖은 조용히 버려진다). ⚠ 사실 확인: **이 arm의 배치는 그 경우를 만들지 않는다** — 셀 격자의 가장자리 여백이 최소 CELL_INSET/CELL_COLS = 폭의 1.5%(720p에서 x 19.2px) · CELL_INSET/CELL_ROWS = 높이의 3%(y 21.6px)라 3.0px보다 훨씬 크다. 그러므로 **이 라운드의 stage_i_ms는 잘림의 영향을 받지 않는다** — 잘림은 ③의 실제 탐지 박스를 그리기 시작하는 날의 문제다. **(5) 비용에 대한 영향**: 드로우콜(프레임당 1회)과 정점 수(박스당 48개)는 이 선택과 무관하게 같다. 다만 **채우는 프래그먼트 수는 완전히 같지 않다** — 두께 t 띠 하나의 면적이 가운데 맞춤이면 2t(W+H)이고 안쪽 맞춤이면 2t(W+H) - 4t²이라 **띠마다 4t²만큼 더 채운다**(720p에서 본선 t=4.0 → 64px, 밑선 t=6.0 → 144px, 합 박스당 208px). 이 격자의 720p 박스가 121.6x136.8px이고 박스당 총 5168px을 채우므로 **약 4%**다. 작지만 **0이 아니다** — '그린 픽셀 수가 안 바뀐다'로 적지 말 것",
+      "upstream_reference": "scripts/emphasize.py"
+    },
+    "pipeline_stages": [
+      "blit_2pass",
+      "stage4_highlight"
+    ],
+    "render": {
+      "arm": "highlight_boxes",
+      "display_path": "2-C: CameraX Preview -> 우리 SurfaceTexture(OES) -> GL",
+      "draw_call": "패스1·2·4는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), 패스3(④ 오버레이)은 glDrawArrays(GL_TRIANGLES, 0, 192) **1회**다 — 박스 4개의 스트로크 quad를 한 버퍼에 담는다",
+      "egl_context_client_version": 3,
+      "gl_surface_size": "1080x2340",
+      "note": "표시 방향·화면비 보정을 하지 않는다. 센서 방향 그대로 GL 서피스 전체에 늘려 그리므로 세로 화면에서 프리뷰가 누워 보인다 — 픽셀 비용에는 영향이 없고 이번 측정 범위 밖이다",
+      "pass_boundary_note": "패스마다 glBindFramebuffer + glClear를 명시한다. 타일 기반 GPU(Mali)에서 드라이버가 렌더패스를 병합하면 timer query 귀속이 흐려진다 (gpu_timer.attribution_note 참고)",
+      "passes": [
+        {
+          "gpu_column": "stage_b_ms",
+          "index": 1,
+          "instrumented": true,
+          "name": "oes_to_fbo_a",
+          "shader": "OES 패스스루 + uTexMatrix",
+          "target": "FBO_A (처리 해상도)"
+        },
+        {
+          "gpu_column": "stage_d_ms",
+          "index": 2,
+          "instrumented": true,
+          "name": "stage2_slot_copy",
+          "shader": "② 자리이며 **단순 복사**다(이 arm이 재는 것은 ④다)",
+          "target": "FBO_B (처리 해상도)"
+        },
+        {
+          "gpu_column": "stage_i_ms",
+          "index": 3,
+          "instrumented": true,
+          "name": "stage4_highlight",
+          "shader": "④ 이중 스트로크 박스 4개(검정 밑선 + 대비색 본선, 비채움). 얇은 사각형 스트로크 quad를 GL_TRIANGLES **드로우콜 1회**로 그린다. 두께는 처리 해상도의 짧은 변에서 계산한다(720p 기준 4.0px). 박스는 정적 더미이고 ③ 결과가 아니다 — 자세한 것은 session.json의 overlay 블록",
+          "target": "FBO_B (처리 해상도. **clear하지 않고 덧그린다**)"
+        },
+        {
+          "gpu_column": "gpu_present_ms",
+          "index": 4,
+          "instrumented": true,
+          "name": "present",
+          "shader": "단순 복사",
+          "target": "default framebuffer (surface 크기)"
+        }
+      ],
+      "processing": {
+        "frames_fell_back_to_passthrough": 0,
+        "offscreen_status": "FBO 2장 준비 완료 1280x720 (RGBA8, 처리 해상도 = 협상된 카메라 해상도)",
+        "resolution": "1280x720",
+        "source": "SurfaceRequest.resolution (= camera_actual.resolution). 하드코딩이 아니다",
+        "stage2_status": "② 자리는 단순 복사다(3패스 골격 그대로). 이 arm이 재는 것은 stage_i_ms(④ 오버레이)이며, 오버레이 자원 상태는 overlay 블록에 있다"
+      },
+      "render_mode": "RENDERMODE_WHEN_DIRTY (onFrameAvailable에서 requestRender)",
+      "shader_language": "GLSL ES 1.00 (전 패스 공통)"
+    },
+    "render_arm": "highlight_boxes",
+    "render_latency_meaning": "render_latency_ms(t_render_end - t_render_start)는 glDrawArrays가 즉시 반환하므로 **CPU 제출 비용이고 GPU 실행 시간이 아니다.** '렌더가 사실상 무료'로 읽으면 틀린다 — 실제 GPU 비용은 stage_*_ms / gpu_present_ms 열에 따로 있고 그건 **다른 시계(GPU)**다. 반면 output_interval_ms는 swapBuffers가 다음 사이클 앞에서 블록하므로 실제 표시 주기(=프레임타임)가 된다",
+    "schema_version": 4,
+    "source_kind": "camera",
+    "stage2_params": {
+      "algorithm": "copy",
+      "gpu_status": "② 자리는 단순 복사다(3패스 골격 그대로). 이 arm이 재는 것은 stage_i_ms(④ 오버레이)이며, 오버레이 자원 상태는 overlay 블록에 있다",
+      "note": "④ 오버레이 arm이라 ② 자리는 단순 복사다 — 여기서 나오는 stage_d_ms는 ②의 비용이 아니라 **골격 자체(오프스크린 왕복)의 비용**이며 blit_2pass의 같은 자리와 같은 것이다. 이 arm이 재는 것은 **stage_i_ms(④ 오버레이)**이고 그 서술은 session.json의 overlay 블록에 있다",
+      "temporal_state": "none (stateless) — INTERFACES.md §B-4 미확정(☐)이라 상태를 두지 않는다"
+    },
+    "surface_frames_available": 5773,
+    "timestamp_sites": {
+      "t_capture_ns": "SurfaceTexture.getTimestamp() 원본. 앱이 보정하지 않는다",
+      "t_recv_ns": "SurfaceTexture.OnFrameAvailableListener.onFrameAvailable 진입 직후 (전용 신호 스레드). 2-C에는 분석 콜백이 없어 이것이 프레임 도착 신호다",
+      "t_render_end_ns": "onDrawFrame 반환 직전(드로우콜 제출 완료). swapBuffers는 프레임워크가 onDrawFrame 반환 후에 하므로 우리가 잴 수 없다",
+      "t_render_start_ns": "GLSurfaceView.Renderer.onDrawFrame 진입 직후, updateTexImage 전 (도착 시각 AtomicLong을 먼저 소비한 뒤 찍는다 — 순서를 뒤집으면 t_recv > t_render_start 가 되어 하네스 교차검사 A가 거짓 위반을 낸다)"
+    }
+  },
+  "source": {
+    "capture_clock_base_contradicted": false,
+    "capture_clock_base_declared": "boottime",
+    "clock_check": {
+      "consistent": true,
+      "dwell_vs_interval": {
+        "consistent": true,
+        "ratio": 0.116,
+        "ratio_limit": 20.0,
+        "recv_to_render_p50_ms": 3.796,
+        "reference_p50_ms": 32.802,
+        "reference_series": "output_interval_ms",
+        "rule": "p50(recv_to_render_ms) <= 20x p50(output_interval_ms) — 진단용 임계이며 판정선(lib/targets.py)이 아니다"
+      },
+      "render_start_after_recv": {
+        "checked": 4875,
+        "consistent": true,
+        "rule": "render_latency_ms <= recv_to_render_ms (t_render_start_ns >= t_recv_ns)",
+        "violations": 0
+      },
+      "suspect_columns": []
+    },
+    "discarded_samples": {},
+    "discarded_total": 0,
+    "dropped_total": 0,
+    "frames_csv": "C:\\dev\\side\\night-walk\\outputs\\poc_pull\\20260804_143936\\20260804_131707\\frames.csv",
+    "gpu_timer_contradicted": false,
+    "gpu_timer_supported_declared": true,
+    "lighting_condition": "indoor_bright",
+    "lighting_condition_comparable": true,
+    "pipeline_stages_contradicted": false,
+    "pipeline_stages_measured_columns": [
+      "stage_b_ms",
+      "stage_d_ms",
+      "stage_i_ms",
+      "gpu_present_ms"
+    ],
+    "pipeline_stages_unknown_tokens": [],
+    "pipeline_stages_vocab_ok": true,
+    "rows_accounted": true,
+    "rows_read": 5773,
+    "rows_skipped": {
+      "before_t0": 0,
+      "unparsable_t_recv": 0,
+      "warmup": 898
+    },
+    "rows_skipped_anomalous": 0,
+    "rows_skipped_total": 898,
+    "rows_used": 4875,
+    "schema_version_declared": 4,
+    "schema_version_harness": 4,
+    "schema_version_matches_harness": true,
+    "session_json": "C:\\dev\\side\\night-walk\\outputs\\poc_pull\\20260804_143936\\20260804_131707\\session.json",
+    "unknown_columns": [],
+    "warmup_sec": 30.0
+  },
+  "stages": {
+    "budget_cell": {
+      "gpu_present_ms": null,
+      "stage_b_ms": "B",
+      "stage_d_analyze2_ms": "D",
+      "stage_d_analyze_ms": "D",
+      "stage_d_apply2_ms": "D",
+      "stage_d_apply_ms": "D",
+      "stage_d_build2_ms": "D",
+      "stage_d_build_ms": "D",
+      "stage_d_denoise_ms": "D",
+      "stage_d_ms": "D",
+      "stage_d_total_ms": "D",
+      "stage_i_ms": "I"
+    },
+    "clock": "GPU 시계 (GL_EXT_disjoint_timer_query). t_*_ns(CLOCK_BOOTTIME)와 다른 시계이므로 frametime 값과 더하거나 빼지 않으며, 시계 교차검사(A/B) 대상도 아니다",
+    "columns_present": [
+      "stage_b_ms",
+      "stage_d_ms",
+      "stage_i_ms",
+      "gpu_present_ms"
+    ],
+    "gpu_present_ms": {
+      "count": 4875,
+      "max": 8.342,
+      "mean": 1.944,
+      "min": 1.582,
+      "p50": 1.87,
+      "p95": 2.391,
+      "p99": 3.019
+    },
+    "gpu_sum_columns": [
+      "stage_b_ms",
+      "stage_d_ms",
+      "stage_i_ms",
+      "gpu_present_ms"
+    ],
+    "gpu_sum_columns_defined": [
+      "stage_b_ms",
+      "stage_d_ms",
+      "stage_d_analyze_ms",
+      "stage_d_build_ms",
+      "stage_d_apply_ms",
+      "stage_d_denoise_ms",
+      "stage_d_analyze2_ms",
+      "stage_d_build2_ms",
+      "stage_d_apply2_ms",
+      "stage_i_ms",
+      "gpu_present_ms"
+    ],
+    "gpu_sum_ms": {
+      "count": 4875,
+      "max": 15.858,
+      "mean": 4.413,
+      "min": 3.319,
+      "p50": 4.237,
+      "p95": 5.729,
+      "p99": 7.138
+    },
+    "gpu_sum_note": "gpu_sum_columns는 이 런에서 실제로 더해진 열이다(헤더에 있는 것만). 행별로 유효한 값을 먼저 더한 뒤 백분위를 냈다(p50(B)+p50(D) != p50(B+D)). 유효한 열이 하나도 없는 행은 기여하지 않는다",
+    "gpu_sum_partial_rows": 0,
+    "has_gpu_timings": true,
+    "render_arm": "highlight_boxes",
+    "render_arm_known": true,
+    "render_arm_note": "budget_cell은 '이 열이 어느 칸을 채울 열인가'라는 스키마 사실이지, 이 arm이 그 단계를 실제로 돌렸다는 주장이 아니다. 어느 패스에 무엇이 들어갔는지는 render_arm이 정한다 — 아래 분포를 FRAME_BUDGET.md의 칸에 옮길 때 arm을 함께 옮길 것. render_arm_known=false면 그 숫자는 인용 대상이 아니다",
+    "skipped_ring_full_frames": 0,
+    "stage_b_ms": {
+      "count": 4875,
+      "max": 4.748,
+      "mean": 0.665,
+      "min": 0.462,
+      "p50": 0.616,
+      "p95": 0.965,
+      "p99": 1.236
+    },
+    "stage_d_ambiguous": false,
+    "stage_d_analyze2_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_analyze_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_apply2_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_apply_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_build2_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_build_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_columns": [
+      "stage_d_ms"
+    ],
+    "stage_d_columns_defined": [
+      "stage_d_ms",
+      "stage_d_analyze_ms",
+      "stage_d_build_ms",
+      "stage_d_apply_ms",
+      "stage_d_denoise_ms",
+      "stage_d_analyze2_ms",
+      "stage_d_build2_ms",
+      "stage_d_apply2_ms"
+    ],
+    "stage_d_denoise_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_ms": {
+      "count": 4875,
+      "max": 5.413,
+      "mean": 1.228,
+      "min": 0.863,
+      "p50": 1.159,
+      "p95": 1.697,
+      "p99": 2.213
+    },
+    "stage_d_total_ms": {
+      "count": 4875,
+      "max": 5.413,
+      "mean": 1.228,
+      "min": 0.863,
+      "p50": 1.159,
+      "p95": 1.697,
+      "p99": 2.213
+    },
+    "stage_d_total_note": "stage_d_total_ms = stage_d_columns의 **행별 합**이며 이 런의 D칸이다(감마 arm은 stage_d_ms 하나, 다패스 arm은 하위 슬롯들 — 어느 쪽이든 이 키가 D다). 백분위의 합이 아니다: p50(hist)+p50(cdf) != p50(hist+cdf). ⚠ gpu_sum_ms와 다르다 — gpu_sum_ms는 모든 GPU 열(B + D계열 + I + present)의 합이고 이 값은 D 계열만의 합이다. stage_d_ambiguous=true면 stage_d_ms가 합계일 가능성이 남아 있어 이 값이 D를 두 번 셌을 수 있다(warnings 참고)",
+    "stage_d_total_partial_rows": 0,
+    "stage_i_ms": {
+      "count": 4875,
+      "max": 4.495,
+      "mean": 0.576,
+      "min": 0.394,
+      "p50": 0.525,
+      "p95": 0.875,
+      "p99": 1.223
+    }
+  },
+  "targets": {
+    "frame_budget_ms": 66.7,
+    "p95_budget_ms": 80.0,
+    "target_fps": 15.0
+  },
+  "verdict": {
+    "clock_consistent": true,
+    "data_complete": true,
+    "fps_mean": 29.92,
+    "meets_fps_target": true,
+    "meets_p95_target": true,
+    "primary_samples_discarded": 0,
+    "rows_skipped_anomalous": 0,
+    "samples_discarded": 0
+  },
+  "warnings": [
+    "프레임타임이 카메라 공급에 묶여 있다 — p50(output_interval_ms)=32.802ms가 p50(recv_interval_ms)=32.394ms와 사실상 같다(차이 1.26%, 진단 임계 5%) [참고: 카메라 요청 주기 33.3ms]. 처리 단계 ['blit_2pass', 'stage4_highlight']가 붙어 있는데도 그렇다. tail도 마찬가지다(p95: 38.053 vs 38.271ms, 차이 0.57%). 이는 단계 비용의 합이 공급 주기보다 **작다**는 뜻일 뿐, 그 비용이 0이라는 뜻이 아니다. 이 런에서 프레임타임은 단계 비용의 **미터가 아니라 임계 검출기**다 — '단계를 얹었는데 프레임타임 회귀가 없다'는 관측은 'D=0'이 아니라 'D < 공급 주기'로만 읽어야 한다. 단계 비용은 stages 블록(GPU timer)으로만 말할 것. ⚠ 이 임계는 진단용이며 판정선(lib/targets.py)이 아니다",
+    "capture_to_render_ms는 t_render_end_ns 기준인데, 이 시각은 드로우콜 **제출** 시점이지 GPU가 그 프레임을 다 그린 시점이 아니다(glDrawArrays는 즉시 반환한다). 즉 이 지연에는 GPU 실행 시간이 **들어 있지 않다** — ② 저조도 패스를 얹은 뒤 '지연이 그대로다'라고 읽으면 틀린다. 셰이더를 얹어 늘어난 GPU 비용은 여기가 아니라 stages 블록(GL_EXT_disjoint_timer_query)에 나타난다. render_latency_ms에도 같은 한계가 있다"
+  ]
+}
