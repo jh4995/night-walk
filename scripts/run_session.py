@@ -1395,44 +1395,43 @@ def build_report(state: dict, args, run_ts: str) -> dict:
             report["safety_regression"]["per_run"][str(n)] = a.get("safety_regression")
 
     # ── 노이즈 바닥. **이걸 먼저 확정하지 않으면 arm 차분을 신호로 읽을 수 없다.**
-    floor_lookup: dict[str, dict[str, float]] = {}
+    #
+    # 🔴 **바닥은 arm마다 따로 귀속시킨다.** 계획은 반복 쌍을 여럿 담을 수 있고
+    #    (`s5_bf`는 chain_bf 9패스 / fused_bf 8패스 / highlight_boxes 4패스 세 쌍이다),
+    #    패스 수·SSBO 구성이 다르면 실행 간 변동 성질도 다르다. 옛 구현은 `pairs[:1]`로
+    #    **첫 쌍만** 쓰고 그 폭을 모든 arm 차분에 붙였다 — 4패스 오버레이 arm에 9패스 arm의
+    #    바닥이 **무표시로** 붙었고, 거기서 나온 '바닥 초과 → 신호'는 근거가 없었다.
+    #    그래서 (1) 모든 쌍을 쓰고, (2) 차분에는 **그 arm 자신의** 바닥만 붙이고,
+    #    (3) 그 arm의 바닥이 없으면 다른 arm의 것으로 갈음하지 않고 판정 불가로 둔다.
+    #
+    # ⚠ 여기서 하는 대조는 **arm 문자열이 같은가**까지다. "4패스니까 비슷하다" 같은 판단을
+    #   넣지 않는다 — 하네스는 arm의 의미를 해석하지 않는다(`lib/frame_log.py`).
+    floor_by_arm: dict[str, dict] = {}
+    pair_blocks: list[dict] = []
+    duplicate_arm_pairs: list[dict] = []
     pairs = [
         (n, rows[n]["noise_pair"]) for n in sorted(rows)
         if rows[n].get("noise_pair") is not None and rows[n]["noise_pair"] > n
     ]
-    if len(pairs) > 1:
-        report["caveats"].append(
-            f"반복 쌍이 여러 개다({pairs}) — 바닥은 **첫 쌍**({pairs[0]})으로 잡았다. "
-            "쌍마다 바닥이 다르면 arm 차분의 판정도 달라진다"
-        )
-    if not pairs:
-        report["noise_floor"] = {
-            "available": False,
-            "reason": (
-                "계획에 반복 쌍(noise_pair)이 없다 — 같은 arm을 두 번 찍지 않으면 열별 "
-                "노이즈 바닥이 없고, arm 차분이 신호인지 판단할 수 없다"
-            ),
-        }
-    for n, pair in pairs[:1]:
+    for n, pair in pairs:
+        arm = rows[n]["arm"]
         a, b = done.get(n), done.get(pair)
         if not a or not b:
-            report["noise_floor"] = {
+            pair_blocks.append({
                 "available": False,
                 "pair": [n, pair],
+                "arm": arm,
                 "reason": (
-                    f"반복 런 #{n}·#{pair} 중 통과한 것이 부족하다 — 노이즈 바닥이 없으면 "
-                    "arm 차분이 신호인지 판단할 수 없다"
+                    f"반복 런 #{n}·#{pair} 중 통과한 것이 부족하다 — 이 arm({arm})의 노이즈 "
+                    "바닥이 없으면 이 arm의 차분이 신호인지 판단할 수 없다"
                 ),
-            }
+            })
             continue
         d = diff_metrics(a["metrics"], b["metrics"])
-        floor_lookup = {
-            col: {p: v["abs_delta_ms"] for p, v in cols.items()} for col, cols in d.items()
-        }
-        report["noise_floor"] = {
+        block = {
             "available": True,
             "pair": [n, pair],
-            "arm": rows[n]["arm"],
+            "arm": arm,
             "lighting": rows[n]["lighting"],
             "device_runs": [a["device_run"], b["device_run"]],
             "columns": d,
@@ -1440,31 +1439,91 @@ def build_report(state: dict, args, run_ts: str) -> dict:
             #    반복 쌍이 같은 코드 경로를 두 번 잰 것이 아니다 — 이 블록의 숫자와 그것을
             #    쓰는 모든 '바닥 초과' 판단이 근거를 잃는다.
             "passthrough_fallback": fallback_integrity(
-                fb_by_run, [n, pair], "이 노이즈 바닥",
+                fb_by_run, [n, pair], f"이 노이즈 바닥(arm={arm})",
                 "그 런은 그 arm을 그리지 않았으므로 이 폭은 같은 코드 경로를 두 번 잰 것이 "
                 "아니고, 이 바닥을 쓰는 '바닥 초과/이내' 판단 전체가 근거를 잃는다",
             ),
             "note": (
-                f"같은 arm({rows[n]['arm']})·같은 조명({rows[n]['lighting']})을 두 번 찍은 "
-                "차이다. **이 폭 안의 arm 차분은 신호가 아니다.** 다만 반대는 성립하지 "
+                f"같은 arm({arm})·같은 조명({rows[n]['lighting']})을 두 번 찍은 "
+                "차이다. **이 폭 안의 (이 arm의) 차분은 신호가 아니다.** 다만 반대는 성립하지 "
                 "않는다 — 이 바닥은 **차이를 한 번 관측한 것**이므로 실제 실행 간 변동의 "
                 "하한이고(반복을 더 하면 커질 수 있다), 바닥을 넘었다는 것은 신호의 "
-                "필요조건이지 충분조건이 아니다. 다른 arm·다른 조명에 그대로 적용하는 것도 "
-                "근사다(분산이 arm마다 다르다). 야간 런에는 특히 그렇다"
+                "필요조건이지 충분조건이 아니다. **다른 arm에 물려 쓰지 않는다** "
+                "(분산이 arm마다 다르다). 다른 조명에 적용하는 것도 근사이며 야간 런에는 "
+                "특히 그렇다"
             ),
         }
+        pair_blocks.append(block)
+        if arm in floor_by_arm:
+            # 같은 arm의 쌍이 둘 이상이다. 첫 쌍을 쓰고 **그 사실을 남긴다** — 조용히
+            # 덮어쓰면 어느 쌍이 판정에 쓰였는지 사라진다.
+            duplicate_arm_pairs.append({
+                "arm": arm, "used_pair": floor_by_arm[arm]["pair"], "ignored_pair": [n, pair],
+            })
+            continue
+        floor_by_arm[arm] = {
+            "arm": arm,
+            "pair": [n, pair],
+            "device_runs": [a["device_run"], b["device_run"]],
+            "lighting": rows[n]["lighting"],
+            "floors": {
+                col: {p: v["abs_delta_ms"] for p, v in cols.items()}
+                for col, cols in d.items()
+            },
+            # 바닥을 잡은 런 자체가 폴백됐으면 그 바닥을 쓰는 모든 '바닥 초과' 판단도
+            # 근거가 없다. 차분 블록에 **함께 싣기 위해** 요약을 여기 보관한다.
+            "integrity_brief": {
+                k: block["passthrough_fallback"][k]
+                for k in (
+                    "runs", "quotable", "runs_with_fallback",
+                    "runs_fallback_unknown", "note",
+                )
+            },
+        }
 
-    # ── arm 간 차분. 노이즈 바닥과 **나란히** 낸다.
-    # 바닥을 잡은 런 자체가 폴백됐으면 아래 모든 블록의 '바닥 초과' 판단도 근거가 없다.
+    measured_pairs = [b for b in pair_blocks if b.get("available")]
+    if not pairs:
+        report["noise_floor"] = {
+            "available": False,
+            "pairs": [],
+            "arms_measured": [],
+            "reason": (
+                "계획에 반복 쌍(noise_pair)이 없다 — 같은 arm을 두 번 찍지 않으면 열별 "
+                "노이즈 바닥이 없고, arm 차분이 신호인지 판단할 수 없다"
+            ),
+        }
+    else:
+        report["noise_floor"] = {
+            "available": bool(measured_pairs),
+            # arm → 그 arm의 열별 바닥. **판정에 쓰이는 것은 이 표뿐이다.**
+            "by_arm": floor_by_arm,
+            "arms_measured": sorted(floor_by_arm),
+            "pairs": pair_blocks,
+            "duplicate_arm_pairs": duplicate_arm_pairs,
+            "note": (
+                "바닥은 **arm마다 그 arm의 반복 쌍에서** 나온다. 한 arm의 바닥을 다른 arm에 "
+                "물려 쓰지 않는다 — 패스 수·SSBO 구성이 다르면 실행 간 변동 성질도 다르다. "
+                "바닥이 없는 arm의 차분은 '판정 불가'로 남고, 다른 arm의 바닥으로 갈음하지 "
+                "않는다"
+            ),
+        }
+        if not measured_pairs:
+            report["noise_floor"]["reason"] = (
+                f"반복 쌍 {[b['pair'] for b in pair_blocks]}에서 통과한 쌍이 하나도 없다 — "
+                "arm 차분이 신호인지 판단할 수 없다"
+            )
+
+    # ── arm 간 차분. 그 arm의 노이즈 바닥과 **나란히** 낸다.
+    # 바닥을 잡은 런 자체가 폴백됐으면 그 바닥을 쓰는 '바닥 초과' 판단도 근거가 없다.
     # 그 사실을 각 블록에 **함께 싣는다** — 바닥 블록에만 두면 여기 Δ만 인용된다.
-    floor_integrity = (
-        report["noise_floor"].get("passthrough_fallback")
-        if report["noise_floor"].get("available") else None
-    )
-    floor_integrity_brief = {
-        k: floor_integrity[k]
-        for k in ("runs", "quotable", "runs_with_fallback", "runs_fallback_unknown", "note")
-    } if floor_integrity else None
+    #
+    # 🔴 참고용으로 다른 arm의 바닥 **목록**을 함께 싣지만(사람이 "같은 구조의 다른 arm은
+    #    이만큼이었다"를 읽을 수 있게), 그 값은 판정에 들어가지 않는다. 어느 arm이 어느
+    #    arm과 "구조가 같은지"는 하네스가 판단하지 않는다.
+    other_floors_ref = {
+        arm: {"pair": e["pair"], "quotable": e["integrity_brief"]["quotable"]}
+        for arm, e in floor_by_arm.items()
+    }
     for n in sorted(rows):
         ref_n = rows[n].get("compare_to")
         if ref_n is None:
@@ -1476,18 +1535,55 @@ def build_report(state: dict, args, run_ts: str) -> dict:
                 "reason": "두 런 중 하나가 아직 계획을 통과하지 못했다",
             })
             continue
+        arm = rows[n]["arm"]
+        # **그 arm 자신의 바닥만 쓴다.** 없으면 없는 것이다(다른 arm의 것으로 갈음하지 않음).
+        floor_entry = floor_by_arm.get(arm)
+        floor_source = {
+            "available": True,
+            "arm": floor_entry["arm"],
+            "pair": floor_entry["pair"],
+            "device_runs": floor_entry["device_runs"],
+            "lighting": floor_entry["lighting"],
+            "note": (
+                f"이 Δ에 붙은 noise_floor_ms는 **arm={floor_entry['arm']}의 반복 쌍 "
+                f"#{floor_entry['pair'][0]}·#{floor_entry['pair'][1]}**에서 나온 값이다"
+            ),
+        } if floor_entry else {
+            "available": False,
+            "arm": arm,
+            "pair": None,
+            "reason": (
+                f"**이 arm({arm})의 노이즈 바닥은 이 세션에서 재지 않았다** — 계획에 이 arm의 "
+                "반복 쌍(noise_pair)이 없거나 그 쌍이 통과하지 못했다. 다른 arm의 바닥으로 "
+                "갈음하지 않으므로 이 Δ는 **신호 여부 판정 불가**다(exceeds_noise_floor=null)"
+            ),
+            # 판정에 쓰지 않는다. 사람이 읽을 참고 목록일 뿐이다.
+            "other_arms_measured_in_session": other_floors_ref,
+            "other_arms_note": (
+                "이 세션에서 바닥을 잰 arm 목록이다. **판정에 쓰지 않았다** — arm이 다르면 "
+                "변동 성질이 같다고 말할 근거가 없고(박스 개수·패스 구성 등 이 하네스가 "
+                "해석하지 않는 조건이 다를 수 있다), 하네스는 arm의 의미를 해석하지 않는다"
+            ),
+        }
         d = diff_metrics(ref["metrics"], cur["metrics"])
         cols: dict[str, dict] = {}
         for col, per_p in d.items():
             cols[col] = {}
             for p, v in per_p.items():
-                floor = (floor_lookup.get(col) or {}).get(p)
+                floor = (
+                    (floor_entry["floors"].get(col) or {}).get(p) if floor_entry else None
+                )
                 cols[col][p] = {
                     "reference_ms": v["a_ms"],
                     "current_ms": v["b_ms"],
                     "delta_ms": v["delta_ms"],
                     "pct": v["pct"],
                     "noise_floor_ms": floor,
+                    # 🔴 **바닥의 출처를 숫자와 같은 블록에 둔다.** `noise_floor_ms`만 있으면
+                    #    어느 arm의 폭인지 알 수 없고, 그게 이 파일이 폴백 표시에서 이미 한 번
+                    #    고친 실패 양식이다(사람은 Δ 줄만 복사해 간다).
+                    "noise_floor_arm": floor_entry["arm"] if floor_entry else None,
+                    "noise_floor_pair": floor_entry["pair"] if floor_entry else None,
                     # 바닥보다 작은 차분은 **신호가 아니다.** 바닥이 없으면 판단하지 않는다.
                     "exceeds_noise_floor": (
                         None if floor is None else abs(v["delta_ms"]) > floor
@@ -1497,10 +1593,12 @@ def build_report(state: dict, args, run_ts: str) -> dict:
             "run": n,
             "reference_run": ref_n,
             "available": True,
-            "arm": rows[n]["arm"],
+            "arm": arm,
             "reference_arm": rows[ref_n]["arm"],
             "lighting": rows[n]["lighting"],
             "columns": cols,
+            # 이 Δ의 '바닥 초과' 판정이 어느 arm의 어느 쌍에서 나온 바닥을 썼는가.
+            "noise_floor_source": floor_source,
             # 🔴 **숫자가 인용되는 자리에 표시를 둔다.** 이 두 런 중 하나라도 폴백이 0이
             #    아니면 아래 Δ는 arm 차이가 아니다. 런 표와 caveats에만 표시가 있으면
             #    사람은 이 블록만 복사해 간다(그게 6c2ecab이 남긴 갭이다).
@@ -1508,7 +1606,11 @@ def build_report(state: dict, args, run_ts: str) -> dict:
                 fb_by_run, [n, ref_n], f"arm 차분 #{n} vs #{ref_n}",
                 "그 런의 분포는 그 arm의 분포가 아니므로 이 Δ는 arm 차이가 아니다",
             ),
-            "noise_floor_fallback": floor_integrity_brief,
+            # 이 Δ에 붙은 바닥을 잡은 쌍의 폴백 사실. **그 arm의 쌍**이며, 바닥이 없으면
+            # None이다(없는 바닥의 폴백 사실을 만들어 내지 않는다).
+            "noise_floor_fallback": (
+                floor_entry["integrity_brief"] if floor_entry else None
+            ),
             "gpu_present_note": (
                 "gpu_present_ms는 arm이 달라도 **같은 코드**가 도는 최종 표시 패스인데 "
                 "실측에서 arm마다 움직인다. 그래서 arm 간 비교에 항상 함께 낸다 — 이 열의 "
@@ -1587,9 +1689,29 @@ def build_report(state: dict, args, run_ts: str) -> dict:
         )
     else:
         report["caveats"].append(
-            "노이즈 바닥은 반복 **1쌍**에서 나온 값이라 실행 간 변동의 하한이다 — "
-            "'바닥 초과'는 신호의 필요조건이지 충분조건이 아니다. 특히 열별 바닥이 "
-            "0.0x ms로 작게 나오면 그 열은 이 세션에서 사실상 판별력이 없다"
+            f"노이즈 바닥은 **arm마다** 그 arm의 반복 1쌍에서 나왔다 "
+            f"(바닥을 잰 arm: {report['noise_floor']['arms_measured']}). 한 쌍에서 나온 값이라 "
+            "실행 간 변동의 하한이며 — '바닥 초과'는 신호의 필요조건이지 충분조건이 아니다. "
+            "특히 열별 바닥이 0.0x ms로 작게 나오면 그 열은 이 세션에서 사실상 판별력이 없다. "
+            "**한 arm의 바닥을 다른 arm에 물려 쓰지 않았다**"
+        )
+        if report["noise_floor"].get("duplicate_arm_pairs"):
+            report["caveats"].append(
+                f"같은 arm에 반복 쌍이 둘 이상이다 — 첫 쌍을 판정에 썼고 나머지는 쓰지 "
+                f"않았다: {report['noise_floor']['duplicate_arm_pairs']}"
+            )
+    # 🔴 바닥 없이 판정 불가로 남은 차분을 **caveats에도** 이름으로 적는다. 블록 안 표시만
+    #    있으면 통과한 차분 목록만 훑는 사람에게는 보이지 않는다.
+    unfloored = [
+        (ad["run"], ad["arm"]) for ad in report["arm_deltas"]
+        if ad.get("available") and not (ad.get("noise_floor_source") or {}).get("available")
+    ]
+    if unfloored:
+        report["caveats"].append(
+            "🔴 그 arm의 노이즈 바닥이 이 세션에 없어 **신호 여부 판정 불가**인 차분: "
+            + ", ".join(f"#{n}({arm})" for n, arm in unfloored)
+            + " — 다른 arm의 바닥으로 갈음하지 않았다(exceeds_noise_floor=null). 이 Δ를 "
+            "'신호'로도 '신호 아님'으로도 쓰지 말 것. 이 arm의 반복 쌍을 찍어야 판정된다"
         )
     if state.get("allow_dirty_build"):
         report["caveats"].append(
@@ -1652,23 +1774,43 @@ def print_report(report: dict) -> None:
     nf = report["noise_floor"]
     LOG.info("-" * 66)
     if nf.get("available"):
+        # **쌍마다 따로 찍는다.** 한 덩어리로 찍으면 어느 arm의 폭인지 사라진다.
         LOG.info(
-            "노이즈 바닥 — 런 %s 반복 [arm=%s, 조명=%s]. **이 폭 안은 신호가 아니다**",
-            nf["pair"], nf["arm"], nf["lighting"],
+            "노이즈 바닥 — arm마다 따로 잰다. 바닥을 잰 arm: %s", nf["arms_measured"],
         )
-        print_fallback_integrity(nf.get("passthrough_fallback"))
-        for col, per_p in nf["columns"].items():
-            for p in COMPARE_PERCENTILES:
-                v = per_p.get(p)
-                if not v:
-                    continue
-                LOG.info(
-                    "  %-24s %s: %8s vs %8s ms  |Δ|=%-8s (%+.2f%%) [arm=%s]",
-                    col, p, v["a_ms"], v["b_ms"], v["abs_delta_ms"],
-                    v["pct"] if v["pct"] is not None else 0.0, nf["arm"],
+        for blk in nf["pairs"]:
+            if not blk.get("available"):
+                LOG.warning(
+                    "  arm=%s 쌍 %s: 바닥 없음 — %s",
+                    blk.get("arm"), blk.get("pair"), blk.get("reason"),
                 )
+                continue
+            LOG.info(
+                "  [arm=%s] 런 %s 반복 (조명=%s). **이 폭 안은 이 arm의 신호가 아니다**",
+                blk["arm"], blk["pair"], blk["lighting"],
+            )
+            print_fallback_integrity(blk.get("passthrough_fallback"), indent="    ")
+            for col, per_p in blk["columns"].items():
+                for p in COMPARE_PERCENTILES:
+                    v = per_p.get(p)
+                    if not v:
+                        continue
+                    LOG.info(
+                        "    %-24s %s: %8s vs %8s ms  |Δ|=%-8s (%+.2f%%) [arm=%s, 쌍=%s]",
+                        col, p, v["a_ms"], v["b_ms"], v["abs_delta_ms"],
+                        v["pct"] if v["pct"] is not None else 0.0, blk["arm"], blk["pair"],
+                    )
+        if nf.get("duplicate_arm_pairs"):
+            LOG.warning(
+                "  ⚠ 같은 arm의 쌍이 둘 이상이다 — 첫 쌍만 판정에 썼다: %s",
+                nf["duplicate_arm_pairs"],
+            )
     else:
         LOG.warning("노이즈 바닥 없음 — %s", nf.get("reason", "반복 런이 통과하지 않았다"))
+        for blk in nf.get("pairs") or []:
+            if not blk.get("available"):
+                LOG.warning("  arm=%s 쌍 %s: %s", blk.get("arm"), blk.get("pair"),
+                            blk.get("reason"))
 
     for ad in report["arm_deltas"]:
         LOG.info("-" * 66)
@@ -1684,6 +1826,18 @@ def print_report(report: dict) -> None:
         )
         # 🔴 이 두 줄이 Δ보다 위에 있어야 한다 — 표·caveats의 표시는 여기까지 따라오지 않는다.
         print_fallback_integrity(ad.get("passthrough_fallback"))
+        # 🔴 **바닥의 출처를 Δ보다 위에 찍는다.** 어느 arm의 폭인지 없으면 '바닥 초과'는
+        #    근거가 없는 문장이고, 옛 구현이 정확히 그 상태였다(첫 쌍의 바닥이 무표시로 붙었다).
+        nfs = ad.get("noise_floor_source") or {}
+        if nfs.get("available"):
+            LOG.info("  ↳ 바닥 출처: %s", nfs.get("note"))
+        else:
+            LOG.error("  ↳ %s", nfs.get("reason"))
+            if nfs.get("other_arms_measured_in_session"):
+                LOG.warning(
+                    "  ↳ 참고(판정에 쓰지 않았다): 이 세션에서 바닥을 잰 arm = %s. %s",
+                    nfs["other_arms_measured_in_session"], nfs.get("other_arms_note"),
+                )
         nf_fb = ad.get("noise_floor_fallback")
         if nf_fb and nf_fb.get("quotable") is not True:
             # 바닥이 무효면 아래 '바닥 초과/이내' 태그도 근거가 없다.
@@ -1694,12 +1848,17 @@ def print_report(report: dict) -> None:
                 if not v:
                     continue
                 floor = v["noise_floor_ms"]
+                src = (
+                    f"{v['noise_floor_arm']} #{v['noise_floor_pair'][0]}·"
+                    f"#{v['noise_floor_pair'][1]}"
+                    if v.get("noise_floor_pair") else "?"
+                )
                 if v["exceeds_noise_floor"] is None:
-                    tag = "바닥 없음 — 신호 여부 판단 불가"
+                    tag = f"이 arm({ad['arm']})의 바닥 없음 → **판정 불가**"
                 elif v["exceeds_noise_floor"]:
-                    tag = f"바닥 {floor}ms 초과 → 신호"
+                    tag = f"바닥 {floor}ms({src}) 초과 → 신호"
                 else:
-                    tag = f"바닥 {floor}ms 이내 → **신호가 아니다**"
+                    tag = f"바닥 {floor}ms({src}) 이내 → **신호가 아니다**"
                 LOG.info(
                     "  %-24s %s: %s(%s) → %s(%s) ms  Δ=%+.3f  %s",
                     col, p, v["reference_ms"], ad["reference_arm"],
