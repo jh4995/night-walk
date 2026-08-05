@@ -148,7 +148,8 @@
 |---|---|
 | 읽는 현황 · 알려진 이슈 · 막힘 | [STATUS.md](STATUS.md) |
 | ms 숫자 · 판정선 · 칸별 담당 | [FRAME_BUDGET.md](../FRAME_BUDGET.md) |
-| 측정 원본 24건 | [baselines/](baselines/) |
+| 측정 원본 45건 | [baselines/](baselines/) |
 | 측정 계획 (질문·불변식·한계) | [plans/](plans/) |
 | 상류 대조 (최신) | [RESEARCH_20260803_UPSTREAM.md](research/RESEARCH_20260803_UPSTREAM.md) |
-| 팀 보고 (동결 스냅샷) | [REPORT_20260803_TEAM.md](REPORT_20260803_TEAM.md) |
+| 팀 보고 (최신 · 계측 결함) | [REPORT_20260804B_TEAM.md](REPORT_20260804B_TEAM.md) |
+| 팀 보고 (동결 스냅샷) | [REPORT_20260803_TEAM.md](REPORT_20260803_TEAM.md) · [REPORT_20260804_TEAM.md](REPORT_20260804_TEAM.md) |
