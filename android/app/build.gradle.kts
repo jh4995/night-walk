@@ -35,6 +35,67 @@ val gitDirty: String = when {
     else -> "true"
 }
 
+// ── ③ 탐지 런타임 좌표 ────────────────────────────────────────────────────
+// 🔴 **full 패키지(`onnxruntime-android`)다. `onnxruntime-mobile`이 아니다** — 그쪽은
+//   `.ort` 포맷·축소 연산자셋이라 우리가 받은 `.onnx`(opset 12, FP32)를 못 열 수 있다.
+// 좌표를 BuildConfig에도 박는 이유: session.json이 "어느 ORT로 잰 숫자인가"에 답할
+// 유일한 수단이다. 여기 한 곳에서 의존성과 로그가 함께 나온다(사본을 만들지 않는다).
+val ortPackage = "com.microsoft.onnxruntime:onnxruntime-android"
+val ortVersion = "1.28.0"
+
+// ── ③ 모델의 **선언값**을 커밋된 metadata.json에서 읽어 BuildConfig에 박는다 ──────
+// `.onnx`는 gitignore라 APK에 동봉하지 않고 adb push로 배포한다. 그러면 "앱이 연 파일이
+// 정말 그 모델인가"를 대조할 기준값이 필요한데, 그 기준값의 출처는 **git이 추적하는 계약
+// 문서**여야 나중에 되물을 수 있다 — `models/det_c4b_loli0_640/metadata.json`이 그 문서다
+// (README.md와 함께 커밋돼 있다). BuildConfig.GIT_COMMIT이 이미 박히므로 "어느 시점의
+// metadata.json이었나"까지 추적된다.
+//
+// ⚠ 읽지 못해도 **빌드를 죽이지 않는다**(위 git 블록과 같은 규약). "unknown"으로 남기고,
+//   그 상태에서는 앱이 sha256을 대조할 수 없으므로 **③ arm의 런 자체를 거부한다**
+//   (DetectRuntime). 거짓값을 넣는 것보다 런이 안 도는 쪽이 낫다.
+val detectMetadataRelPath = "models/det_c4b_loli0_640/metadata.json"
+val detectMetadataFile = File(repoDir.parentFile, detectMetadataRelPath)
+
+@Suppress("UNCHECKED_CAST")
+val detectMeta: Map<String, Any?>? = try {
+    if (detectMetadataFile.isFile) {
+        groovy.json.JsonSlurper().parse(detectMetadataFile, "UTF-8") as? Map<String, Any?>
+    } else {
+        null
+    }
+} catch (t: Exception) {
+    null
+}
+
+val detectModelBlock = detectMeta?.get("model") as? Map<*, *>
+val detectGraphBlock = detectMeta?.get("graph") as? Map<*, *>
+
+/** `graph.inputs[0].shape` 같은 목록을 `"1,3,640,640"` 문자열로. 못 읽으면 "unknown". */
+val detectShapeOf: (String, String) -> String = { section, key ->
+    val entries = detectGraphBlock?.get(section) as? List<*>
+    val first = entries?.firstOrNull() as? Map<*, *>
+    when (key) {
+        "shape" -> (first?.get("shape") as? List<*>)
+            ?.joinToString(",") { it.toString() }
+            ?: "unknown"
+        else -> (first?.get(key) as? String) ?: "unknown"
+    }
+}
+
+val detectModelSha256: String = (detectModelBlock?.get("sha256") as? String) ?: "unknown"
+val detectModelFileName: String = (detectModelBlock?.get("file") as? String) ?: "unknown"
+// `{"0": "person", "1": "stairs"}` → `"0=person,1=stairs"`. 인덱스 순으로 정렬한다 —
+// JSON 객체의 순서에 기대면 파서가 바뀌는 날 조용히 뒤집힌다.
+val detectModelClasses: String = (detectMeta?.get("classes") as? Map<*, *>)
+    ?.entries
+    ?.sortedBy { (it.key as? String)?.toIntOrNull() ?: Int.MAX_VALUE }
+    ?.joinToString(",") { "${it.key}=${it.value}" }
+    ?: "unknown"
+// ⚠ "unavailable"은 앱의 `DetectContract.SOURCE_UNAVAILABLE`과 **같은 문자열이어야 한다** —
+//   갈리면 앱의 declaredMissing 검사가 조용히 통과해 대조 없는 런이 돈다.
+val detectDeclaredSource: String =
+    if (detectMeta != null) detectMetadataRelPath else "unavailable"
+
 android {
     namespace = "com.bammasil.poc"
 
@@ -54,6 +115,46 @@ android {
 
         buildConfigField("String", "GIT_COMMIT", "\"$gitCommit\"")
         buildConfigField("String", "GIT_DIRTY", "\"$gitDirty\"")
+
+        // ③ 탐지: 실제로 링크한 ORT 좌표. session.json의 detect.runtime으로 그대로 나간다.
+        buildConfigField("String", "ORT_PACKAGE", "\"$ortPackage\"")
+        buildConfigField("String", "ORT_VERSION", "\"$ortVersion\"")
+
+        // ③ 탐지: metadata.json이 **선언한** 값들. 앱은 이것을 실측(파일 sha256 / 그래프
+        // TensorInfo / 임베드 names)과 대조하고, 어긋나면 런을 시작하지 않는다.
+        // ⚠ 값 자체가 아니라 **대조 기준**이다 — 앱이 이 값을 그대로 로그에 베껴 쓰지 않는다.
+        buildConfigField("String", "DETECT_DECLARED_SOURCE", "\"$detectDeclaredSource\"")
+        buildConfigField("String", "DETECT_MODEL_FILE", "\"$detectModelFileName\"")
+        buildConfigField("String", "DETECT_MODEL_SHA256", "\"$detectModelSha256\"")
+        buildConfigField("String", "DETECT_MODEL_CLASSES", "\"$detectModelClasses\"")
+        buildConfigField(
+            "String", "DETECT_INPUT_NAME", "\"${detectShapeOf("inputs", "name")}\""
+        )
+        buildConfigField(
+            "String", "DETECT_INPUT_SHAPE", "\"${detectShapeOf("inputs", "shape")}\""
+        )
+        buildConfigField(
+            "String", "DETECT_OUTPUT_NAME", "\"${detectShapeOf("outputs", "name")}\""
+        )
+        buildConfigField(
+            "String", "DETECT_OUTPUT_SHAPE", "\"${detectShapeOf("outputs", "shape")}\""
+        )
+
+        ndk {
+            // 측정 기기는 A34(arm64-v8a) 하나다. ORT AAR은 ABI 4종의 네이티브 라이브러리를
+            // 들고 오는데(arm64-v8a의 libonnxruntime.so만 28.6MB), 나머지 셋은 이 저장소의
+            // 어떤 측정에도 쓰이지 않는다 → APK에서 뺀다.
+            // ⚠ 이 필터는 **다른 ABI 기기에 설치가 안 된다**는 뜻이다. 측정 기기가 바뀌면
+            //   여기를 먼저 본다.
+            //
+            // 실측(release APK, 2026-08-05):
+            //   ORT 전            2,482,025 B
+            //   ORT + 필터 없음 121,201,115 B  (ABI 4종)
+            //   ORT + arm64만    31,104,432 B  (+28.6MB = libonnxruntime.so 그 자체)
+            // 네이티브 라이브러리가 APK에 **무압축**으로 들어가므로(extractNativeLibs=false)
+            // .so 크기가 그대로 APK 크기다.
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
@@ -96,4 +197,8 @@ dependencies {
     implementation("androidx.camera:camera-core:1.4.2")
     implementation("androidx.camera:camera-camera2:1.4.2")
     implementation("androidx.camera:camera-lifecycle:1.4.2")
+
+    // ③ 위험 탐지 추론. **full 패키지다** (위 ortPackage 주석 참고).
+    // NNAPI·XNNPACK EP가 함께 빌드돼 있으므로 EP 요청은 코드에서만 고르면 된다.
+    implementation("$ortPackage:$ortVersion")
 }

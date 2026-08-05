@@ -306,6 +306,67 @@ enum class RenderArm(
         "drago_clahe_chain_bf_1q",
         listOf("blit_2pass", "stage2_drago", "stage2_clahe", "stage2_bilateral"),
         listOf("gpu_frame_ms"),
+    ),
+
+    // ── ③ 탐지 arm ────────────────────────────────────────────────────────
+    // 🔴 **이번 라운드에 이 arm들이 재는 것은 표시 경로뿐이다.** ONNX Runtime 세션을 열고
+    // EP를 판별하는 데까지가 이번 범위이고, `ImageAnalysis`·전처리·후처리는 **다음 라운드**다
+    // ([DETECT_ROUND_SCOPE]). 그래서 [gpuColumns]·[pipelineStages]가 짝 arm [BLIT_2PASS]와
+    // **글자 그대로 같다** — 렌더가 같아야 표시 경로 차분이 뜻을 갖는다(`_1q` arm과 같은 관행).
+    //
+    // ⚠ 다음 라운드에 프레임당 추론이 붙으면 `pipeline_stages`에 `detect` 토큰을 더할지가
+    //   결정 사항이 된다. 그 문자열은 `baseline_diff.py`의 비교 조건이라 **바꾸는 순간 이번
+    //   라운드의 런과 비교가 끊긴다** — 다음 라운드가 시작할 때 먼저 정할 것.
+    //
+    // ⚠ 목록에 **뒤에** 붙인다. 스피너는 entries 순서라 중간에 끼우면 기존 arm의 위치가
+    //   전부 밀린다(측정자가 손으로 고르는 UI다).
+
+    /**
+     * ③의 **분모**. `ImageAnalysis`를 바인딩만 하고 추론은 돌리지 않는다 — 이 arm과 짝 arm의
+     * 차이가 "use case를 하나 더 붙인 값"이고 그 **위의** 차이가 추론 비용이다.
+     *
+     * 🔴 **이번 라운드에는 `ImageAnalysis` 자체가 없다.** 어휘를 먼저 등록해 둔 것뿐이고,
+     * 이 arm으로 런을 시작하면 실제로 도는 것은 3패스 골격이라 `detect_bind_only`라는
+     * 라벨이 거짓이 된다 — 그래서 `MainActivity`가 **이 arm의 런을 거부한다.**
+     */
+    DETECT_BIND_ONLY(
+        "detect_bind_only",
+        listOf("blit_2pass"),
+        listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
+    ),
+
+    /** ORT **CPU EP**로 세션을 연다. */
+    DETECT_CPU(
+        "detect_cpu",
+        listOf("blit_2pass"),
+        listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
+    ),
+
+    /**
+     * ORT **NNAPI EP**로 세션을 연다.
+     *
+     * 🔴 **요청과 실제가 다를 수 있다.** NNAPI를 요청했는데 CPU로 떨어지는 것은 흔하고,
+     * 그것을 모르면 "MediaTek에서 NNAPI가 된다"는 틀린 결론이 나온다 — `session.json`의
+     * `detect.ep.requested`/`resolved`를 둘 다 내는 이유다.
+     */
+    DETECT_NNAPI(
+        "detect_nnapi",
+        listOf("blit_2pass"),
+        listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
+    ),
+
+    /** [DETECT_CPU] + **ORT 프로파일러**. 🔴 시간 인용 금지 ([DETECT_PROF_NOT_QUOTABLE]). */
+    DETECT_CPU_PROF(
+        "detect_cpu_prof",
+        listOf("blit_2pass"),
+        listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
+    ),
+
+    /** [DETECT_NNAPI] + **ORT 프로파일러**. 🔴 시간 인용 금지 ([DETECT_PROF_NOT_QUOTABLE]). */
+    DETECT_NNAPI_PROF(
+        "detect_nnapi_prof",
+        listOf("blit_2pass"),
+        listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
     );
 
     /**
@@ -408,6 +469,39 @@ enum class RenderArm(
      */
     val renderPassCount: Int
         get() = singleFrameQueryPeer?.gpuColumns?.size ?: gpuColumns.size
+
+    /**
+     * ③ 탐지 arm인가(분모 [DETECT_BIND_ONLY] 포함). **`session.json`에 `detect` 블록을 낼지의
+     * 판별식**이다 — 다른 arm에 빈 블록을 내면 "잰 적 없는 칸"이 있는 것처럼 보인다
+     * ([usesHighlightOverlay]가 `overlay` 블록에 대해 하는 일과 같다).
+     */
+    val isDetectArm: Boolean
+        get() = this == DETECT_BIND_ONLY || usesDetectSession
+
+    /**
+     * ORT **세션을 여는** arm인가. [DETECT_BIND_ONLY]는 여기 들어가지 않는다 — 그 arm은
+     * 추론을 돌리지 않는 분모이므로 세션을 열면 그 자체가 조건 오염이다.
+     */
+    val usesDetectSession: Boolean
+        get() = this == DETECT_CPU || this == DETECT_NNAPI ||
+            this == DETECT_CPU_PROF || this == DETECT_NNAPI_PROF
+
+    /**
+     * 이 arm이 **요청하는** 실행 공급자. 어휘는 `lib/frame_log.py`의 `DETECT_EPS`와 같다.
+     *
+     * 🔴 **요청값이지 결과값이 아니다.** 실제로 무엇이 실행했는지는 앱이 따로 판별해
+     * `detect.ep.resolved`로 낸다 — 한쪽만 적으면 조용한 폴백이 실패로 잡히지 않는다.
+     */
+    val detectEpRequested: String?
+        get() = when (this) {
+            DETECT_CPU, DETECT_CPU_PROF -> "cpu"
+            DETECT_NNAPI, DETECT_NNAPI_PROF -> "nnapi"
+            else -> null
+        }
+
+    /** ORT 프로파일러를 **측정 세션에** 켜는 arm인가. 🔴 [DETECT_PROF_NOT_QUOTABLE]. */
+    val detectProfilingEnabled: Boolean
+        get() = this == DETECT_CPU_PROF || this == DETECT_NNAPI_PROF
 
     /**
      * 조합 arm인가(체인이든 융합이든, bf가 붙었든). 둘의 계수를 나란히 낼 때 쓴다.
@@ -1457,5 +1551,39 @@ enum class RenderArm(
                 "없다(패스 경계·귀속의 일반 주의사항은 gpu_timer.attribution_note). " +
                 "⚠ 이 arm의 ② 자리는 **단순 복사**다 — blit_2pass와 같은 골격이므로 " +
                 "gpu_sum 차분의 짝은 blit_2pass다"
+
+        // ── ③ 탐지 arm 상수 ───────────────────────────────────────────────
+        // 모델 계약값·전처리 가정은 여기 두지 않는다 — `detect/DetectContract.kt`가 소유한다.
+        // 여기 있는 것은 **arm이라는 측정 조건**에 딸린 문장뿐이다.
+
+        /**
+         * 🔴 **`_prof` arm의 시간을 인용하지 않는다.**
+         *
+         * ORT 프로파일러는 노드마다 기록을 남기므로 F(그리고 그것을 포함하는 모든 값)에
+         * **자기 비용을 얹는다.** 이 arm은 "어느 노드가 어느 EP에 갔고 무엇이 비싼가"를 보는
+         * 장치이고, E·F·G 숫자와 버짓 칸은 **접미사 없는 짝(`detect_cpu`/`detect_nnapi`)에서만**
+         * 인용한다. `_1q` 접미사와 같은 취지로 arm을 가른 것이다 — 계측 방식이 다르면 같은
+         * 코드라도 같은 조건이 아니고, 그 사실을 담을 키가 `pipeline_stages`에는 없다.
+         */
+        const val DETECT_PROF_NOT_QUOTABLE =
+            "🔴 **이 arm의 시간을 인용하지 말 것.** ORT 프로파일러가 노드마다 기록을 남겨 " +
+                "추론 시간에 자기 비용을 얹는다. 이 arm이 답하는 질문은 '어느 노드가 어느 " +
+                "EP에 배치됐는가' 하나이고, E·F·G와 버짓 칸은 접미사 없는 짝 arm" +
+                "(detect_cpu / detect_nnapi)에서만 인용한다"
+
+        /**
+         * 🔴 **이번 라운드 ③ arm의 프레임타임은 탐지 비용을 포함하지 않는다.**
+         *
+         * 세션을 열고 EP를 판별하는 데까지가 이번 범위이고, `ImageAnalysis`도 프레임당 추론도
+         * 없다. 그래서 이 arm의 렌더는 [BLIT_2PASS]와 글자 그대로 같고 프레임타임도 그래야
+         * 한다 — 그 숫자를 "탐지를 켜도 프레임타임이 그대로다"로 읽으면 **정반대로 틀린다.**
+         */
+        const val DETECT_ROUND_SCOPE =
+            "🔴 **이 런의 프레임타임에는 탐지가 들어 있지 않다.** 이번 라운드는 ONNX Runtime " +
+                "세션을 열고 EP를 판별하는 데까지이며 ImageAnalysis·전처리·추론·후처리가 " +
+                "**하나도 붙어 있지 않다**(다음 라운드). 렌더 경로는 blit_2pass와 글자 그대로 " +
+                "같으므로 프레임타임도 그래야 하고, 그 사실을 '탐지를 켜도 프레임타임이 " +
+                "그대로다'로 읽으면 **정반대로 틀린다.** 이 런이 근거가 되는 것은 " +
+                "detect 블록의 ep·model·graph·classes 뿐이다"
     }
 }

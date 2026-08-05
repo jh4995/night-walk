@@ -20,6 +20,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import com.bammasil.poc.detect.DetectRuntime
 import com.bammasil.poc.gl.PassthroughRenderer
 import com.bammasil.poc.gl.RenderArm
 import com.bammasil.poc.log.FrameLogRecorder
@@ -54,6 +55,12 @@ class MainActivity : ComponentActivity() {
 
     private val recorder = FrameLogRecorder()
     private val uiHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * ③ 탐지 세션. **③ arm을 고를 때만** 준비하고, 준비가 안 됐거나 실패했으면
+     * [startRecording]이 **런을 거부한다** — 조용히 탐지 없이 도는 경로를 만들지 않는다.
+     */
+    private lateinit var detectRuntime: DetectRuntime
 
     /** `onFrameAvailable` 전용 스레드. 메인 루퍼를 쓰면 UI 지연이 `t_recv_ns`에 섞인다. */
     private var signalThread: HandlerThread? = null
@@ -98,6 +105,12 @@ class MainActivity : ComponentActivity() {
         // 없으면 10분 지속 런이 화면 꺼짐으로 중단된다.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+        // ③ 모델은 adb push로 외부 파일 디렉토리에 들어온다(APK 동봉이 아니다).
+        // 프로파일 JSON은 cacheDir에 쓴다 — 런 산출물이 아니라 판별용 원문이다.
+        // ⚠ **arm 스피너 리스너보다 먼저** 만든다. 스피너는 붙는 즉시 선택 콜백을 내고,
+        //   그 콜백이 ③ arm이면 여기를 만진다.
+        detectRuntime = DetectRuntime(getExternalFilesDir(null), cacheDir)
+
         statusText = findViewById(R.id.status_text)
         toggleButton = findViewById(R.id.toggle_button)
         lightingSpinner = findViewById(R.id.lighting_spinner)
@@ -140,6 +153,7 @@ class MainActivity : ComponentActivity() {
                 // GL 자원을 만지므로 GL 스레드에서 바꾼다.
                 val arm = RenderArm.fromId(armSpinner.getItemAtPosition(position)?.toString())
                 glView.queueEvent { renderer.setArm(arm) }
+                prepareDetectIfNeeded(arm)
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
@@ -173,7 +187,59 @@ class MainActivity : ComponentActivity() {
         uiHandler.removeCallbacks(statusTicker)
         signalThread?.quitSafely()
         signalThread = null
+        // ORT 세션은 네이티브 메모리를 잡고 있다. 프로세스가 살아 있는 채로 Activity만
+        // 재생성되면 새 세션이 또 열리므로 여기서 닫는다.
+        detectRuntime.shutdown()
         super.onDestroy()
+    }
+
+    // ── ③ 탐지 준비 ─────────────────────────────────────────────────────
+
+    /**
+     * ③ arm을 골랐으면 ORT 세션을 **미리** 준비한다. 세션 생성은 수백 ms~수 초가 걸리므로
+     * 런 시작 시점에 하면 그 비용이 측정 창 안으로 들어온다.
+     *
+     * ⚠ [DetectRuntime]이 자기 워커 스레드에서 돈다 — 여기서 블록하지 않는다.
+     */
+    private fun prepareDetectIfNeeded(arm: RenderArm) {
+        if (!arm.usesDetectSession) return
+        detectRuntime.prepareAsync(arm) { report ->
+            uiHandler.post {
+                // 🔴 실패를 조용히 넘기지 않는다. 여기서 안 보이면 측정자는 런을 시작하려다
+                //    거부당하고 나서야 이유를 알게 된다.
+                showMessage(report.oneLine())
+                updateStatus()
+            }
+        }
+    }
+
+    /**
+     * ③ arm의 런을 **거부해야 하는 이유**. 없으면 null.
+     *
+     * 🔴 이 게이트가 이 라운드의 안전장치다. 모델을 안 밀었거나 sha256이 어긋났거나 EP 준비가
+     * 실패한 상태로 런이 돌면, `render_arm=detect_*`라는 라벨만 붙은 **탐지 없는 런**이
+     * 남는다 — 이 저장소가 실제로 당한 실패 양식이다(조용한 폴백으로 11분 런 하나를 날렸다).
+     */
+    private fun detectGateMessage(arm: RenderArm): String? {
+        if (!arm.isDetectArm) return null
+        if (arm == RenderArm.DETECT_BIND_ONLY) {
+            return "🔴 detect_bind_only는 아직 못 쓴다 — ImageAnalysis가 이번 라운드에 " +
+                "붙지 않았다. 지금 재면 라벨은 detect_bind_only인데 실제로 도는 것은 " +
+                "3패스 골격이라 그 런은 거짓이다(다음 라운드)"
+        }
+        if (detectRuntime.preparing) {
+            return "③ ONNX Runtime 세션을 준비 중이다 — 끝난 뒤 다시 시작할 것"
+        }
+        val report = detectRuntime.report
+            ?: return "③ 세션이 준비되지 않았다 — arm 스피너에서 이 arm을 다시 고를 것"
+        if (report.arm != arm) {
+            return "③ 준비된 세션의 arm이 다르다 (준비=${report.arm.id}, 선택=${arm.id}) " +
+                "— arm을 다시 고를 것"
+        }
+        if (!report.ok) {
+            return "🔴 ③ 준비 실패라 런을 시작하지 않는다:\n${report.failure}"
+        }
+        return null
     }
 
     // ── 소스 준비 ────────────────────────────────────────────────────────
@@ -213,14 +279,20 @@ class MainActivity : ComponentActivity() {
             showMessage("카메라가 아직 준비되지 않았다 — 권한과 프리뷰를 먼저 확인할 것")
             return
         }
+        val arm = selectedArm()
+        // 🔴 ③ arm의 전제가 안 서면 **런을 시작하지 않는다.** 라벨만 detect_*인 탐지 없는
+        //    런을 만드는 것이 이 라운드가 막으려는 실패다.
+        detectGateMessage(arm)?.let {
+            showMessage(it)
+            return
+        }
         recording = true
         toggleButton.setText(R.string.stop)
         // 런 도중 조건이 바뀌면 그 분포는 오염된 것이다 → 둘 다 잠근다.
         lightingSpinner.isEnabled = false
         armSpinner.isEnabled = false
-        armAtStart = selectedArm()
+        armAtStart = arm
         runDirName = newRunDirName()
-        val arm = armAtStart
         val startedNs = SystemClock.elapsedRealtimeNanos()
         glView.queueEvent {
             // 스피너 콜백을 놓쳤을 가능성을 여기서 닫는다. 이 시점 이후로 arm은 고정이다.
@@ -321,6 +393,11 @@ class MainActivity : ComponentActivity() {
                     overlayStatus = renderer.overlayStatus,
                     colorTransformSites = renderer.colorTransformSites,
                     gpuTimer = gpuTimer,
+                    // ③ arm이 아니면 null이고 그때는 detect 블록 자체가 안 나간다.
+                    // ⚠ **런 시작 시점에 잠근 arm의 보고여야 한다** — 다른 arm의 보고가
+                    //   실리면 EP·모델이 이 런의 것이 아니게 된다(armAtStart를 잠근 것과
+                    //   같은 이유다). detectGateMessage가 시작 시점에 그 일치를 확인했다.
+                    detect = detectRuntime.report?.takeIf { it.arm == arm },
                 ),
             )
             lastRunPath = runDir.absolutePath
@@ -379,7 +456,8 @@ class MainActivity : ComponentActivity() {
         } else {
             "${negotiated.width}x${negotiated.height}"
         }
-        val arm = if (recording) armAtStart.id else selectedArm().id
+        val armNow = if (recording) armAtStart else selectedArm()
+        val arm = armNow.id
         val head = if (recording) {
             val elapsedSec =
                 (SystemClock.elapsedRealtimeNanos() - recorder.startedElapsedNs) / 1e9
@@ -393,9 +471,17 @@ class MainActivity : ComponentActivity() {
         }
         // 어느 런을 찍었는지 사용자가 알아야 한다(런별 디렉토리라 이름이 매번 다르다).
         val saved = lastRunPath?.let { "\n마지막 저장: $it" } ?: ""
+        // ③ arm이면 EP 판별 결과를 화면에도 낸다 — PC 없이 현장에서 "NNAPI가 잡혔나"를
+        // 바로 봐야 한다. ⚠ 이것도 진행 확인용이며 인용 근거는 session.json이다.
+        val detectLine = when {
+            !armNow.isDetectArm -> ""
+            detectRuntime.preparing -> "\n③ 준비 중…"
+            else -> detectRuntime.report?.let { "\n${it.oneLine()}" } ?: "\n③ 준비 안 됨"
+        }
         // ⚠ 화면 숫자는 인용 근거가 아니다. 인용 가능한 숫자는 파일로 남긴 것뿐이다.
         statusText.text =
-            head + saved + "\n(진행 확인용 — 인용은 frames.csv / session.json 으로만)"
+            head + detectLine + saved +
+                "\n(진행 확인용 — 인용은 frames.csv / session.json 으로만)"
     }
 
     private fun showMessage(message: String) {

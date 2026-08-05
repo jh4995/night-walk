@@ -7,6 +7,8 @@ import com.bammasil.poc.gl.GlCapabilities
 import com.bammasil.poc.gl.GlCapabilitiesProbe
 import com.bammasil.poc.gl.GpuTimerReport
 import com.bammasil.poc.gl.GpuTimerRing
+import com.bammasil.poc.detect.DetectContract
+import com.bammasil.poc.detect.DetectReport
 import com.bammasil.poc.gl.HighlightOverlay
 import com.bammasil.poc.gl.LabGlsl
 import com.bammasil.poc.gl.RenderArm
@@ -70,6 +72,11 @@ class SessionFacts(
     val colorTransformSites: Map<String, List<Pair<String, Map<String, Int>>>>,
     /** 이 런의 GPU timer 실적. 계측 arm이 아니면 전부 0이고 `instrumented=false`다. */
     val gpuTimer: GpuTimerReport,
+    /**
+     * ③ 탐지 세션 준비 결과. **③ arm이 아니면 null**이고 그때는 `detect` 블록을 내지 않는다
+     * (`overlay` 블록과 같은 규약 — 다른 arm에 빈 블록을 내면 "잰 적 없는 칸"이 생긴다).
+     */
+    val detect: DetectReport?,
 )
 
 object SessionWriter {
@@ -211,8 +218,19 @@ object SessionWriter {
      * 하네스는 이미 v5였고(`docs/FRAME_LOG_SCHEMA.md` §6대로 하네스가 먼저 들어간다),
      * 앱이 4를 선언한 채 v5 열을 실으면 "앱이 하네스보다 뒤처졌다 — `gpu_frame_ms`가 없을 수
      * 있다"는 **거짓 경고**가 그 열이 실제로 있는 로그에 붙는다.
+     *
+     * v6에서 ③ 탐지가 들어왔다: 별 파일 `detect.csv`(추론 1회당 1행)와 `session.json`의
+     * **`detect` 블록**, ③ arm 어휘 5종. 🔴 **`detect` 블록은 하네스가 값을 읽고 판정에
+     * 쓰는 유일한 세션 블록이다** — `enabled`가 회수 실패(exit 4)를, `ep.requested` ≠
+     * `ep.resolved`가 계획 어긋남을 만든다(`docs/FRAME_LOG_SCHEMA.md` §5).
+     *
+     * ⚠ **이 앱은 아직 `detect.csv`를 내지 않는다.** 이번 라운드는 ORT 세션을 열고 EP를
+     * 판별하는 데까지이고 `ImageAnalysis`·전처리·추론·후처리는 다음 라운드다. 그래서
+     * `detect.enabled`는 **false**이며(그래야 반쪽 회수 실패가 안 뜬다) 이 상수를 6으로
+     * 올린 이유는 `detect` **블록**을 실제로 내기 시작했기 때문이다 — v5를 선언한 채 v6
+     * 블록을 실으면 위 v5 사례와 똑같은 거짓 경고가 붙는다. 하네스는 이미 v6다.
      */
-    const val SCHEMA_VERSION = 5
+    const val SCHEMA_VERSION = 6
 
     fun write(file: File, facts: SessionFacts) {
         file.writeText(build(facts).toString(2) + "\n")
@@ -293,6 +311,11 @@ object SessionWriter {
         // ⚠ 0으로 채우면 "드롭 없음"이라는 거짓 주장이 된다. 모르므로 null이다.
         root.put("camera_frames_offered", JSONObject.NULL)
         root.put("frames_dropped", JSONObject.NULL)
+        // ⚠ **다음 라운드 대상 문장이다.** 아래 "표시 경로 2-C에는 ImageProxy가 없어…"는
+        //   ImageAnalysis가 붙는 순간 **부분적으로 거짓이 된다** — 그 use case는 ImageProxy를
+        //   주므로 탐지 경로에서는 드롭을 셀 수 있게 된다(표시 경로 2-C는 그때도 못 센다).
+        //   🔴 이번 라운드는 ImageAnalysis를 붙이지 않았으므로 **지금은 그대로 참이다.**
+        //   ③ 카메라 라운드가 이 문장을 두 경로로 갈라 쓸 것.
         root.put(
             "drop_accounting_note",
             "표시 경로 2-C에는 ImageProxy가 없어 버려진 프레임 수를 셀 수 없다. " +
@@ -374,6 +397,10 @@ object SessionWriter {
         // ④ 오버레이 arm만 낸다. 다른 arm에 빈 블록을 내면 "잰 적 없는 칸"이 있는 것처럼 보인다.
         if (facts.arm.usesHighlightOverlay) {
             root.put("overlay", buildOverlay(facts))
+        }
+        // ③ 탐지 arm만 낸다(위와 같은 규약). 🔴 **하네스가 값을 읽고 판정에 쓰는 블록이다.**
+        if (facts.arm.isDetectArm) {
+            root.put("detect", buildDetect(facts))
         }
         root.put("render", buildRender(facts))
         return root
@@ -741,6 +768,19 @@ object SessionWriter {
                 putBilateralOverrides(json, facts, RenderArm.DRAGO_CLAHE_CHAIN_BF)
                 putSingleFrameQueryNotes(json, RenderArm.DRAGO_CLAHE_CHAIN_BF_1Q)
             }
+            // ── ③ 탐지 arm ────────────────────────────────────────────────
+            // ② 자리는 **단순 복사**이고 렌더가 blit_2pass와 글자 그대로 같다.
+            // 🔴 짝의 서술을 그대로 재사용하고 `else` 낙하로 처리하지 않는다 — 사본을 만들면
+            //    한쪽만 고쳐지는 날 두 arm의 서술이 갈라진다(`_1q` arm과 같은 이유).
+            RenderArm.DETECT_BIND_ONLY,
+            RenderArm.DETECT_CPU,
+            RenderArm.DETECT_NNAPI,
+            RenderArm.DETECT_CPU_PROF,
+            RenderArm.DETECT_NNAPI_PROF -> {
+                putBlit2Pass(json)
+                // 🔴 ② 서술만 보고 "탐지가 프레임타임에 안 들어간다"를 유도하지 못하게 한다.
+                json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
+            }
             // ④ arm의 ② 자리는 **단순 복사**다. 오버레이 서술은 root의 overlay 블록에 있다.
             RenderArm.HIGHLIGHT_BOXES, RenderArm.HIGHLIGHT_BOXES_STRESS -> {
                 json.put("algorithm", "copy")
@@ -1011,6 +1051,355 @@ object SessionWriter {
         json.put("gpu_status", facts.overlayStatus)
         return json
     }
+
+    /**
+     * ③ 탐지 블록. 🔴 **하네스가 값을 읽고 판정에 쓰는 유일한 세션 블록이다**
+     * (`docs/FRAME_LOG_SCHEMA.md` §5): `enabled`는 반쪽 회수 실패(exit 4)를,
+     * `ep.requested` ≠ `ep.resolved`는 계획 어긋남을 만든다. 나머지 키는 해석하지 않고 싣는다.
+     *
+     * 🔴 **`enabled`는 false다.** 그 키의 뜻은 "이 런이 `detect.csv`를 내는가"이고, 이번
+     * 라운드는 `ImageAnalysis`가 없어 **추론 1회당 1행을 낼 원천 자체가 없다.** true로 두면
+     * `pull_frames.py`가 없는 파일을 요구해 회수가 exit 4로 죽는다 — 세션을 연 사실은
+     * 아래 `session_loaded`와 `ep` 블록이 말하므로 정보가 사라지지도 않는다.
+     */
+    private fun buildDetect(facts: SessionFacts): JSONObject {
+        val json = JSONObject()
+        val report = facts.detect
+
+        // 🔴 하네스의 회수 판정 기준. 이번 라운드는 detect.csv를 내지 않으므로 false다.
+        json.put("enabled", false)
+        json.put(
+            "enabled_reason",
+            "🔴 **false인 이유: 이 런은 detect.csv를 내지 않는다.** enabled의 뜻은 " +
+                "'③ 탐지를 켠 런인가'이자 pull_frames.py의 반쪽 회수 판정 기준이고" +
+                "(true인데 파일이 없으면 exit 4), 이번 라운드는 ImageAnalysis·전처리·추론· " +
+                "후처리가 붙지 않아 **추론 1회당 1행을 낼 원천이 없다.** ORT 세션을 열고 EP를 " +
+                "판별한 사실은 아래 session_loaded / ep 블록에 그대로 있다 — " +
+                "다음 라운드에 프레임당 추론이 붙으면 그때 true가 된다"
+        )
+        json.put("session_loaded", report?.ok == true)
+        json.put("round_scope", RenderArm.DETECT_ROUND_SCOPE)
+        json.put("arm", facts.arm.id)
+        if (facts.arm.detectProfilingEnabled) {
+            json.put("prof_arm_not_quotable", RenderArm.DETECT_PROF_NOT_QUOTABLE)
+        }
+
+        // 🔴 탐지 주기 N은 INTERFACES.md에서 아직 ☐다. **null이 정상이고 값을 지어내지 않는다.**
+        json.put("period_n", JSONObject.NULL)
+        json.put(
+            "period_n_reason",
+            "탐지 주기 N은 INTERFACES.md에서 아직 ☐ 미정이라 앱이 값을 지어내지 않는다. " +
+                "실제 주기는 하네스가 detect_cadence_ms 분포로 말한다 " +
+                "(이번 라운드는 추론이 없어 그 분포도 없다)"
+        )
+
+        if (report == null) {
+            json.put(
+                "note",
+                "③ arm인데 준비 보고가 없다 — 세션을 열지 않는 arm(detect_bind_only)이거나 " +
+                    "준비 전에 런이 시작된 것이다. 값을 지어내지 않는다"
+            )
+            json.put("model", JSONObject().put("sha256", JSONObject.NULL))
+            json.put(
+                "ep",
+                JSONObject()
+                    .put("requested", facts.arm.detectEpRequested ?: JSONObject.NULL)
+                    // 🔴 모름과 CPU는 다른 사실이다. 요청값을 베끼지 않는다.
+                    .put("resolved", DetectContract.EP_UNKNOWN)
+                    .put("resolution_method", DetectContract.METHOD_NONE)
+            )
+            json.put("padding_pixel_fraction", JSONObject.NULL)
+            return json
+        }
+
+        if (!report.ok) {
+            json.put("prepare_failure", report.failure ?: "사유 없음")
+        }
+        json.put("model", buildDetectModel(report))
+        json.put("ep", buildDetectEp(report))
+        json.put("graph", buildDetectGraph(report))
+        json.put("classes", buildDetectClasses(report))
+        json.put("runtime", buildDetectRuntime(report))
+        json.put("preprocess_assumptions", buildDetectPreprocess())
+        json.put("padding_pixel_fraction", detectPaddingFraction(facts, report))
+        json.put("padding_pixel_fraction_note", detectPaddingNote(facts, report))
+        json.put("prepare_timing", buildDetectPrepareTiming(report))
+        if (report.warnings.isNotEmpty()) {
+            val warnings = JSONArray()
+            for (w in report.warnings) warnings.put(w)
+            json.put("warnings", warnings)
+        }
+        return json
+    }
+
+    /**
+     * 🔴 **`sha256`은 앱이 로드한 파일 바이트에서 직접 계산한 값이다.** `metadata.json`의
+     * 값을 베껴 넣으면 그건 주장이지 사실이 아니다 — 선언값은 옆 칸에 따로 두고 대조 결과를
+     * 함께 낸다. 불일치면 앱이 애초에 런을 시작하지 않으므로 이 파일이 존재한다는 것 자체가
+     * `sha256_matches_declared=true`의 방증이지만, **그래도 값을 싣는다**(나중에 되물을 근거).
+     */
+    private fun buildDetectModel(report: DetectReport): JSONObject = JSONObject()
+        .put("sha256", report.sha256Computed ?: JSONObject.NULL)
+        .put("sha256_declared", report.sha256Declared)
+        .put(
+            "sha256_matches_declared",
+            report.sha256MatchesDeclared ?: JSONObject.NULL
+        )
+        .put(
+            "sha256_source",
+            "앱이 로드한 파일 바이트를 MessageDigest(SHA-256)로 직접 계산했다. " +
+                "metadata.json의 값을 베낀 것이 아니다"
+        )
+        .put("sha256_declared_source", DetectContract.declaredSource)
+        .put("file", DetectContract.declaredFileName)
+        .put("path", report.modelPath ?: JSONObject.NULL)
+        .put("bytes", report.modelBytes)
+        .put(
+            "delivery",
+            "adb push → getExternalFilesDir(null)/${DetectContract.MODELS_SUBDIR}/. " +
+                "APK에 동봉하지 않는 이유: .onnx가 gitignore라 동봉하면 **APK 빌드가 추적되지 " +
+                "않는 파일에 의존**하게 되고 모델 교체마다 재빌드가 필요해진다. " +
+                "🔴 푸시를 잊으면 앱이 그 arm의 런을 **거부한다** — 조용히 탐지 없이 도는 " +
+                "경로를 만들지 않는다"
+        )
+
+    /**
+     * EP 블록. 🔴 **`requested`와 `resolved`를 둘 다 낸다** — 한쪽만 적으면 조용한 폴백이
+     * 실패로 잡히지 않는다(하네스는 둘이 다르면 그 런을 계획 어긋남으로 만든다).
+     */
+    private fun buildDetectEp(report: DetectReport): JSONObject {
+        val json = JSONObject()
+        json.put("requested", report.epRequested)
+        json.put("resolved", report.epResolved)
+        json.put("resolution_method", report.resolutionMethod)
+        json.put(
+            "resolved_meaning",
+            "🔴 **판별하지 못했으면 unknown이며 그것은 'CPU였다'와 다른 사실이다.** " +
+                "요청값을 이 칸에 베끼지 않는다. 판별 규칙: 프로파일에 NNAPI 노드가 하나라도 " +
+                "있으면 nnapi, 없고 나머지가 전부 CPU면 cpu(=통째 폴백), 그 밖은 unknown"
+        )
+        val nodes = JSONObject()
+        for ((provider, count) in report.providerNodeCounts) nodes.put(provider, count)
+        json.put("node_counts", nodes)
+        val events = JSONObject()
+        for ((provider, count) in report.providerEventCounts) events.put(provider, count)
+        json.put("event_counts", events)
+        json.put(
+            "node_counts_meaning",
+            "ORT 프로파일의 `*_kernel_time` 이벤트를 provider 원문 문자열별로 센 것이다" +
+                "(event_counts는 provider가 붙은 **모든** 이벤트라 fence까지 포함한다 — " +
+                "kernel 집계가 비었을 때만 판정 근거로 쓴다). " +
+                "🔴 **노드 수는 작업량 비율이 아니다.** NNAPI가 잡은 서브그래프는 **융합 노드 " +
+                "하나**로 나타나므로 'NNAPI 1 : CPU 200'이 그래프의 99%를 NNAPI가 가져간 " +
+                "상태일 수도 있다. 이 숫자가 보여 주는 것은 **파티셔닝의 모양**이고, " +
+                "전 노드가 CPU면 **통째 폴백 확정**이다"
+        )
+        json.put("profile_json_probe", report.probeProfilePath ?: JSONObject.NULL)
+        json.put("profile_prefix_measured", report.measuredProfilePrefix ?: JSONObject.NULL)
+        json.put(
+            "profile_prefix_measured_note",
+            "⚠ **파일 경로가 아니라 경로 접두사다** — ORT가 타임스탬프를 붙여 파일명을 정한다. " +
+                "`_prof` arm이 아니면 null이고, 이번 라운드는 프레임당 추론이 없어 측정 세션 " +
+                "프로파일에 담길 것이 없다(세션을 닫을 때 확정 경로를 logcat에 남긴다). " +
+                "다음 라운드에는 이 파일이 런 디렉토리로 들어가야 한다"
+        )
+        json.put("nnapi_guard", report.nnapiGuard)
+        json.put(
+            "nnapi_deprecation_note",
+            "NNAPI는 Android 15(API 35)에서 deprecated로 공지됐고 측정 기기는 Android 16이다. " +
+                "벤더 드라이버가 살아 있는지 CPU 참조 구현으로 떨어지는지는 **이 기기에서 " +
+                "실측해야 안다** — 위 resolved와 node_counts가 그 실측이며, 문헌으로 단정하지 " +
+                "않는다"
+        )
+        val available = JSONArray()
+        for (p in report.availableProviders) available.put(p)
+        json.put("available_providers", available)
+        json.put(
+            "available_providers_note",
+            "⚠ **`OrtEnvironment.getAvailableProviders()`는 빌드에 컴파일된 EP 목록이고 " +
+                "'실제로 쓰였나'에 대해 아무것도 말하지 않는다.** 그래도 싣는 이유는 " +
+                "'무엇이 요청 가능했나'의 유일한 근거이기 때문이다. " +
+                "⚠ 목록에 QNN이 보여도 이 기기에서는 불가능하다 — A34는 MediaTek이다"
+        )
+        json.put(
+            "no_session_api_note",
+            "⚠ **`OrtSession`에는 '이 세션이 어느 EP를 썼는가'를 돌려주는 API가 없다.** " +
+                "(1.28.0의 OrtSession 공개 메서드를 확인했다: getInputInfo/getOutputInfo/" +
+                "getMetadata/run/endProfiling/getProfilingStartTimeInNs/close뿐이다.) " +
+                "그래서 판별을 프로파일러와 로그로 돌아서 한다 — 없는 API를 나중에 다시 찾지 " +
+                "말 것"
+        )
+        val log = JSONArray()
+        for (line in report.verboseLogLines) log.put(line)
+        json.put("verbose_log_lines", log)
+        json.put("verbose_log_note", report.verboseLogNote)
+        json.put(
+            "verbose_log_meaning",
+            "2순위 근거다. ORT 세션 생성 시 노드 배치 요약이 logcat에 찍히며 추론 오버헤드가 " +
+                "없다. 🔴 **문자열이라 버전마다 바뀌므로 파싱해서 판정하지 않는다** — " +
+                "원문을 그대로 보존해 사람이 위 resolved와 눈으로 대조하게 한다"
+        )
+        return json
+    }
+
+    /**
+     * 🔴 **그래프를 읽어 자기를 설정했다는 기록.** 해상도·클래스 수를 코드에 하드코딩하지
+     * 않았다는 사실이 이 블록으로 검증 가능해야 한다(`INTERFACES.md` 공통원칙 1).
+     */
+    private fun buildDetectGraph(report: DetectReport): JSONObject {
+        val json = JSONObject()
+        val input = JSONObject()
+            .put("name", report.inputName ?: JSONObject.NULL)
+            .put("shape", JSONArray(report.inputShape))
+            .put("dtype", report.inputType ?: JSONObject.NULL)
+            .put("declared_name", DetectContract.declaredInputName)
+            .put("declared_shape", DetectContract.declaredInputShape)
+        val output = JSONObject()
+            .put("name", report.outputName ?: JSONObject.NULL)
+            .put("shape", JSONArray(report.outputShape))
+            .put("dtype", report.outputType ?: JSONObject.NULL)
+            .put("declared_name", DetectContract.declaredOutputName)
+            .put("declared_shape", DetectContract.declaredOutputShape)
+        json.put("input", input)
+        json.put("output", output)
+        json.put(
+            "source",
+            "session.inputInfo / outputInfo의 TensorInfo.shape에서 읽었다. " +
+                "앱 코드에 640이나 8400 같은 숫자가 없다 — 선언값(declared_*)은 커밋된 " +
+                "${DetectContract.declaredSource}에서 빌드 시점에 읽어 BuildConfig에 박은 " +
+                "**대조 기준**이다"
+        )
+        json.put(
+            "validation",
+            "이름·shape·dtype을 선언과 대조하고, 동적 축(≤0)이 있으면 죽는다" +
+                "(INTERFACES.md §A-1: 동적 shape이면 EP가 서브그래프를 못 잡고 통째로 CPU로 " +
+                "떨어진다). 출력 채널이 **4 + 클래스 수**인지도 대조한다 — 그건 하드코딩이 " +
+                "아니라 두 실측(그래프 shape ↔ 임베드 names)의 정합성 검사다. " +
+                "어긋나면 런을 시작하지 않으므로 이 블록이 존재한다는 것은 전부 통과했다는 뜻이다"
+        )
+        return json
+    }
+
+    /**
+     * 클래스. 🔴 **1순위 출처는 모델 임베드 메타데이터다**(가중치와 어긋날 수 없다).
+     * `metadata.json`의 `classes`는 대조 대상이고, `INTERFACES.md` A-4와의 충돌은 기록만 한다.
+     */
+    private fun buildDetectClasses(report: DetectReport): JSONObject {
+        val json = JSONObject()
+        val names = JSONArray()
+        for (n in report.classNames) names.put(n)
+        json.put("names", names)
+        json.put("count", report.classNames.size)
+        json.put(
+            "source",
+            "모델 임베드 메타데이터(session.metadata.customMetadata['names'])가 **1순위 " +
+                "출처**다 — 가중치와 함께 export되므로 어긋날 수 없다. " +
+                "${DetectContract.declaredSource}의 classes와 대조해 다르면 런을 시작하지 않는다"
+        )
+        json.put("raw", report.classNamesRaw ?: JSONObject.NULL)
+        json.put(
+            "raw_note",
+            "⚠ 값이 **파이썬 dict 문자열**(작은따옴표)이라 JSON 파서가 못 먹는다. 정규식 " +
+                "관용 파서로 읽되 **파싱 실패를 조용히 넘기지 않는다**(실패하면 런을 시작하지 " +
+                "않는다). 원문을 그대로 싣는 이유는 파싱 결과만 남기면 나중에 되물을 수 없기 " +
+                "때문이다"
+        )
+        // 🔴 계약 충돌은 **고치지 않고 기록한다.**
+        json.put("contract_conflict", report.contractConflict ?: JSONObject.NULL)
+        json.put(
+            "contract_conflict_policy",
+            "충돌이 있어도 **고치지 않는다.** INTERFACES.md는 팀 합의 기록이라 런타임이 임의로 " +
+                "못 바꾸고, 모델은 가중치의 사실이라 코드로 뒤집으면 그게 곧 무음 버그다. " +
+                "런타임은 위 names(모델에서 읽은 것)를 1순위로 쓰고, 충돌 사실을 여기 기계로 " +
+                "남긴다. null이면 충돌이 없다는 뜻이다"
+        )
+        return json
+    }
+
+    /** 🔴 "어느 ORT로 잰 숫자인가"에 답할 유일한 수단. 값의 출처는 build.gradle.kts 한 곳이다. */
+    private fun buildDetectRuntime(report: DetectReport): JSONObject = JSONObject()
+        .put("package", report.ortPackage)
+        .put("version", report.ortVersion)
+        .put("abi_filters", "arm64-v8a")
+        .put(
+            "note",
+            "🔴 **full 패키지다(onnxruntime-mobile이 아니다).** mobile 쪽은 .ort 포맷·축소 " +
+                "연산자셋이라 이 .onnx(opset 12, FP32)를 못 열 수 있다. 좌표는 " +
+                "build.gradle.kts에서 BuildConfig로 박힌 값이며 실제 링크된 의존성과 같은 " +
+                "곳에서 나온다(사본이 아니다)"
+        )
+
+    /**
+     * 🔴 **기계로 읽을 수 없어 가정으로 남은 것.** `RenderArm`의 `*_PROVENANCE`/`*_DEVIATION`
+     * 관행 그대로다 — 조용히 굳으면 나중에 박스가 어긋날 때 원인을 못 찾는다.
+     */
+    private fun buildDetectPreprocess(): JSONObject = JSONObject()
+        .put("letterbox_align", DetectContract.LETTERBOX_ALIGN_ASSUMPTION)
+        .put("pad_value", DetectContract.PAD_VALUE_ASSUMPTION)
+        .put(
+            "used_this_round",
+            false
+        )
+        .put(
+            "used_this_round_note",
+            "이번 라운드는 전처리를 붙이지 않았으므로 위 가정을 **쓴 코드가 없다.** " +
+                "지금 기록해 두는 이유는 다음 라운드가 이 문장을 읽고 시작하게 하기 위해서다"
+        )
+
+    /**
+     * letterbox 패딩이 입력 텐서에서 차지하는 픽셀 비율. 🔴 **상수를 복사하지 않고 계산한다.**
+     * 협상된 해상도가 없거나 그래프 shape을 못 읽었으면 **값을 지어내지 않고 null**이다.
+     */
+    private fun detectPaddingFraction(facts: SessionFacts, report: DetectReport): Any {
+        val negotiated = facts.negotiated ?: return JSONObject.NULL
+        val shape = report.inputShape
+        if (shape.size != 4) return JSONObject.NULL
+        val fraction = DetectContract.paddingPixelFraction(
+            negotiated.width,
+            negotiated.height,
+            shape[3].toInt(),
+            shape[2].toInt(),
+        ) ?: return JSONObject.NULL
+        return fraction
+    }
+
+    private fun detectPaddingNote(facts: SessionFacts, report: DetectReport): String {
+        val negotiated = facts.negotiated
+        val shape = report.inputShape
+        if (negotiated == null || shape.size != 4) {
+            return "카메라 해상도나 입력 shape을 알 수 없어 계산하지 않았다 — 값을 지어내지 않는다"
+        }
+        return "1 − (내용 픽셀 수 / 입력 픽셀 수). 소스 " +
+            "${negotiated.width}x${negotiated.height}(camera_actual) → 입력 " +
+            "${shape[3]}x${shape[2]}(그래프에서 읽은 값)로 **계산한 값이며 상수 복사가 " +
+            "아니다.** 🔴 **F의 일부는 회색 패딩을 미는 비용**이라 이 값 없이 다른 입력 " +
+            "크기의 F와 비교하면 안 된다. " +
+            "⚠ 이번 라운드는 실제로 letterbox를 한 프레임이 하나도 없다 — 다음 라운드가 " +
+            "이 해상도 쌍으로 전처리할 것이라는 **선언**이다. " +
+            "⚠ 패딩을 어느 쪽에 붙이는지는 이 값에 영향이 없다(면적은 같다) — " +
+            "그 미확정은 preprocess_assumptions.letterbox_align에 있다"
+    }
+
+    /**
+     * 🔴 **인용 금지.** 준비 1회의 벽시계이고 표본이 1개이며, 첫 추론은 지연 초기화를
+     * 포함하고 입력도 실제 프레임이 아니다(0으로 채운 더미). E·F·G는 다음 라운드에
+     * `detect.csv`로 나온다 — 이 숫자를 F로 옮겨 적지 말 것.
+     */
+    private fun buildDetectPrepareTiming(report: DetectReport): JSONObject = JSONObject()
+        .put("env_init_ms", report.envInitMs)
+        .put("sha256_ms", report.sha256Ms)
+        .put("probe_session_create_ms", report.probeCreateMs)
+        .put("probe_dummy_infer_ms", report.probeInferMs)
+        .put("measured_session_create_ms", report.measuredCreateMs)
+        .put("measured_warmup_infer_ms", report.warmupInferMs)
+        .put(
+            "note",
+            "🔴 **인용 금지 — F가 아니다.** 준비 1회의 벽시계이고 표본이 1개다. 첫 추론은 " +
+                "EP 커널 준비·메모리 아레나 같은 지연 초기화를 포함하고, 입력도 실제 프레임이 " +
+                "아니라 **0으로 채운 더미**다. 여기서 확인한 것은 '세션이 실제로 도는가'와 " +
+                "'프로파일러가 노드 이벤트를 내는가' 둘뿐이다. E·F·G의 분포는 다음 라운드에 " +
+                "detect.csv로 나온다"
+        )
 
     /**
      * ② 조합 arm(`drago_clahe_chain`)의 서술.

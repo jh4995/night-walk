@@ -251,6 +251,15 @@ class HighlightOverlay {
             val ny1 = y1 * 2f - 1f
             // index 0만 stairs, 나머지는 person. 4개 arm이 "stairs 1 + person 3"이 되는
             // 규칙이며, 색은 픽셀 비용에 영향이 없다(어느 색이든 같은 면적을 채운다).
+            //
+            // 🔴 **이 'index 0 = stairs'는 INTERFACES.md 계약 A-4를 따른 가정이고, 실제
+            //    모델은 그 반대다**(임베드 메타 names = {0: 'person', 1: 'stairs'};
+            //    detect/DetectContract.contractConflictText가 그 충돌을 session.json에
+            //    기계로 남긴다). **지금은 정적 더미 박스라 무해하다** — 여기 i는 탐지 결과의
+            //    클래스 인덱스가 아니라 그냥 박스 순번이다.
+            //    ⚠ ③→④를 연결하는 순간 이 줄이 **사람과 계단의 색을 뒤바꾼다.** 연결하는
+            //    사람은 여기를 "탐지 결과의 클래스 이름"으로 고쳐야 하며, 인덱스로 색을
+            //    고르면 계약과 모델 중 어느 쪽이 확정되든 한쪽에서 틀린다.
             val color = if (i == 0) COLOR_STAIRS else COLOR_PERSON
             // 🔴 **검정 밑선을 먼저** 넣는다. 한 드로우콜 안에서도 프리미티브 순서는 보장되므로
             //    겹치는 부분은 나중에 오는 본선이 덮는다 = 밖으로 검정 테두리가 남는다.
