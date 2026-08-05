@@ -18,6 +18,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import device_meta, targets  # noqa: E402
 from lib.frame_log import (  # noqa: E402
     ANOMALOUS_SKIP_REASONS,
+    DETECT_CADENCE_SERIES,
+    DETECT_CUMULATIVE_COLUMNS,
+    DETECT_ENABLED_PATH,
+    DETECT_MODEL_SHA_PATH,
+    DETECT_PADDING_FRACTION_PATH,
+    DETECT_PERIOD_N_PATH,
+    DETECT_SCORE_COLUMNS,
+    DETECT_DISTRIBUTION_COUNT_COLUMNS,
+    DETECT_ROW_SKIP_REASON_TEXT,
+    DETECT_TIME_COLUMNS,
+    DETECT_WALL_SERIES,
     GPU_FRAME_COLUMN,
     GPU_SUM_COLUMNS,
     GPU_TIME_COLUMNS,
@@ -27,12 +38,15 @@ from lib.frame_log import (  # noqa: E402
     STAGE_D_FAMILY_COLUMNS,
     STAGE_D_TOTAL_COLUMN,
     FrameLogError,
+    check_detect_ep,
     check_lighting_condition,
     check_pipeline_stages,
     check_render_arm,
     check_schema_version,
+    read_detect,
     read_frames,
     read_session,
+    session_field,
 )
 from lib.run_utils import common_argparser, init_run  # noqa: E402
 from lib.stats import summarize  # noqa: E402
@@ -89,6 +103,51 @@ BUDGET_CELL_OF = {
     #    "매핑을 등록하는 것을 잊었다"가 구분되지 않는다.
     GPU_FRAME_COLUMN: None,
 }
+
+# ③ 탐지 열 → 버짓 칸. **위 BUDGET_CELL_OF와 별 dict다** (v6).
+#
+# 🔴 **섞지 않는다.** 위 dict는 GPU 시계 열(GL_EXT_disjoint_timer_query)의 열↔칸 매핑이고
+#   여기 열들은 **CPU 벽시계**(SystemClock.elapsedRealtimeNanos) 구간 길이다. 한 dict에 넣는
+#   순간 CPU 시계 열이 GPU 합산 경로(`gpu_sum_columns`·`_stage_series_order`·stages 블록의
+#   `budget_cell`)의 라벨 체계 안으로 들어가고, 그러면 두 시계의 숫자가 같은 표에서 더해진다.
+#   `lib/frame_log.py`의 v6 자기검사가 상수 수준에서 막는 사고를 소비자 쪽에서도 막는 자리다.
+#
+# ⚠ 위 dict와 **같은 성질**은 그대로다: 이 매핑은 "이 열이 어느 칸을 채울 열인가"라는 스키마
+#   사실이지, 그 런의 탐지가 실제로 그 단계를 돌았다는 주장이 아니다. 숫자를 옮길 때는 arm과
+#   EP(`detect.ep.resolved`)를 함께 옮긴다 — `_prof` arm의 시간은 아예 인용하지 않는다.
+DETECT_BUDGET_CELL_OF = {
+    "stage_e_ms": "E",   # letterbox + RGB + NCHW 텐서화
+    "stage_f_ms": "F",   # ORT session.run() 1회
+    "stage_g_ms": "G",   # conf 필터 + 좌표 변환 + NMS + letterbox 역변환
+    # 🔴 파생 시계열은 **칸 없음**이다. E+F+G의 합이 아니라 두 시각의 차(미계상분을 포함한다)
+    #   이므로 칸 라벨을 붙이면 그 숫자가 F칸 같은 자리에 인용된다. `gpu_present_ms`·
+    #   `gpu_frame_ms`와 같은 이유로 **키를 빼지 않고 명시적으로 None을 적는다** —
+    #   키가 없으면 "칸이 없다"와 "매핑 등록을 잊었다"가 구분되지 않는다.
+    DETECT_WALL_SERIES: None,
+    # 실행 주기도 칸이 없다. 단계 비용이 아니라 간격이다.
+    DETECT_CADENCE_SERIES: None,
+}
+
+# 🔴 두 매핑이 **한 열도 공유하지 않는지**를 import 시점에 확인한다. 위 주석이 정한 경계는
+#    사람이 지키는 것이라, 다음 사람이 detect 열을 BUDGET_CELL_OF에 넣어도 아무 일도
+#    일어나지 않으면 그 경계는 없는 것과 같다. `lib/frame_log.py`의 상수 자기검사와 같은 부류다.
+_cell_overlap = sorted(set(DETECT_BUDGET_CELL_OF) & set(BUDGET_CELL_OF))
+if _cell_overlap:
+    raise RuntimeError(
+        f"analyze_frames.py 상수 불일치 — {_cell_overlap}이 GPU 시계 매핑(BUDGET_CELL_OF)과 "
+        f"CPU 벽시계 매핑(DETECT_BUDGET_CELL_OF) 양쪽에 있다. 두 매핑은 물리량이 다른 열의 "
+        f"칸 라벨이며, 겹치면 CPU 시계 열이 GPU 합산 경로의 라벨 체계에 들어간다"
+    )
+_detect_cell_missing = [
+    c for c in tuple(DETECT_TIME_COLUMNS) + (DETECT_WALL_SERIES, DETECT_CADENCE_SERIES)
+    if c not in DETECT_BUDGET_CELL_OF
+]
+if _detect_cell_missing:
+    raise RuntimeError(
+        f"analyze_frames.py 상수 불일치 — detect 시계열 {_detect_cell_missing}이 "
+        f"DETECT_BUDGET_CELL_OF에 없다. 칸이 없는 열도 **명시적으로 None**을 적어야 "
+        f"'칸이 없다'와 '등록을 잊었다'가 구분된다"
+    )
 
 # 처리 단계가 하나도 없는 로그를 해석할 때 반드시 따라붙어야 하는 단서.
 # android-runtime 스킬 §5 — 이 숫자가 팀에 가장 오해받기 쉬운 지점이다.
@@ -363,10 +422,241 @@ def _stages_block(
     return block
 
 
+def _detect_status_clause(detect_block: Optional[dict], scope: str) -> str:
+    """안전 회귀 사유의 **탐지 현황 한 문장**을 그 런의 데이터에서 만든다.
+
+    🔴 이 문장을 [safety_regression_block]에 상수로 적으면 낡는다 — 그 함수 독스트링의
+    "두 번 났다"가 그 이력이다. 여기서 세는 것은 `detect.csv`의 **유효 표본 수**이지
+    "탐지가 구현됐는가"가 아니다. 하네스는 앱의 구현 여부를 알 수 없고 **알 필요도 없다** —
+    로그에 F 표본이 있으면 있는 것이고 없으면 없는 것이다.
+
+    `scope="session"`은 **런 하나가 아니라 세션 전체**를 덮는 자리다(`run_session.py`의
+    리포트 머리). 거기서 "이 런에서 재지 않았다"고 쓰면 탐지가 돈 세션에서도 그 문장이
+    나가므로, 런별 사실은 `per_run`을 가리키게 한다.
+    """
+    if scope == "session":
+        return (
+            "③ 탐지 현황은 **런마다 다르다** — 런별 사유는 아래 `per_run`에 있다."
+        )
+    if detect_block is None:
+        return (
+            "③ 탐지 계측(E·F·G)은 **이 런에서 재지 않았다**(`--detect`를 주지 않았다) — "
+            "'탐지 비용이 0이었다'가 아니라 **집계하지 않았다**는 뜻이다."
+        )
+    # `summarize()`가 내는 키는 `count`다(lib/stats.py — 값이 없어도 count=0으로 돌아온다).
+    n = (detect_block.get("stage_f_ms") or {}).get("count") or 0
+    if not n:
+        return (
+            "③ 탐지 로그를 읽었지만 **F(추론)의 유효 표본이 0개다** — 열이 없거나 값이 "
+            "전부 폐기됐다. '0ms였다'가 아니라 **재지 못한 것**이다."
+        )
+    return (
+        f"③ 탐지가 이 런에서 실제로 돌았고 F(추론) 표본 {n}개를 남겼다 — "
+        "**그러나 그것은 비용을 쟀다는 뜻이지 안전을 평가했다는 뜻이 아니다.**"
+    )
+
+
+def safety_regression_block(
+    detect_block: Optional[dict] = None, scope: str = "run"
+) -> dict:
+    """안전 회귀 결과. **이 문장의 사본을 다른 스크립트에 만들지 않는다.**
+
+    `run_session.py`가 이 함수를 import해서 쓴다 — 두 곳에 적으면 한쪽이 낡고, 낡은 쪽이
+    "탐지 미구현"처럼 **이미 거짓이 된 문장**을 계속 내보낸다(v6에서 실제로 그렇게 됐다).
+
+    🔴 **`evaluated`는 false 그대로다.** 탐지가 돈다는 것과 안전을 평가했다는 것은 다른
+    사실이다. 탐지 계측(E·F·G)이 붙었다고 이 값을 true로 올리면, "탐지가 도니까 안전이
+    확인됐다"는 오독을 하네스가 **직접** 하는 것이 된다.
+
+    🔴 **`detect_block`을 받는 이유: 탐지 현황을 정적 문장으로 적으면 반드시 낡는다.**
+    이 자리에서 같은 결함이 **두 번** 났다 — 처음엔 "탐지 단계 미구현"이 앱 라운드에서
+    거짓이 될 예정이었고, 그 다음엔 "③ 탐지는 돌지만"이 **앱이 미구현인데도** 거짓이었다.
+    두 번 다 원인이 같다: 문장이 그 런의 사실을 보지 않았다. 그래서 탐지 현황 한 문장만
+    **런 데이터에서 만들고**(`_detect_status_clause`), 나머지(정답 라벨이 없다)는 런과
+    무관한 사실이므로 고정 문장으로 둔다. 이 함수에 탐지 현황을 **손으로 적지 마라.**
+
+    `detect_block`이 None이면 `--detect`를 주지 않은 것이다 — "탐지가 0이었다"가 아니라
+    **재지 않았다**는 뜻이므로 그렇게 말한다.
+    """
+    return {
+        "evaluated": False,
+        "reason": (
+            f"{_detect_status_clause(detect_block, scope)} "
+            "그것과 별개로 **위험물 강조 누락률은 정답 라벨이 없어 잴 수 "
+            "없다.** 재려면 셋이 필요하다: (a) 같은 야간 클립 세트"
+            "(INTERFACES.md 계약 C의 녹화 입력), (b) 그 클립의 정답 박스 라벨, "
+            "(c) models/golden/의 골든 샘플(계약 §A-6: 야간 720p 입력 + 기대 박스, ±2px 판정) "
+            "— **현재 미전달**이다. "
+            "⚠ 그리고 stairs 재현율은 야간 거리 장면에서 **한 번도 측정된 적이 없다**"
+            "(models/det_c4b_loli0_640/README.md의 held-out 표는 person 클래스 기준이고 "
+            "stairs 칸은 오탐률뿐이다). ⚠ 학습 데이터 NightOwls는 **차량 대시캠**이라 "
+            "보행 시점과 카메라 높이·모션블러가 다르다 — 폰을 든 보행자 시점의 재현율은 "
+            "이 수치로 말할 수 없다. "
+            "이 두 사실 때문에 '탐지가 도니까 안전이 확인됐다'로 읽으면 틀린다"
+        ),
+        # 무엇이 생기면 evaluated=true가 되는가. 사람이 문장에서 추려내게 두지 않는다.
+        "blocked_on": [
+            "동일 야간 클립 세트 (INTERFACES.md 계약 C)",
+            "그 클립의 정답 박스 라벨",
+            "models/golden/ 골든 샘플 (계약 §A-6, 현재 미전달)",
+        ],
+    }
+
+
+def _detect_block(
+    dseries,
+    dstats: dict,
+    session: dict,
+    frames_rows_used: int,
+    analysis_window_sec: float | None,
+    render_arm: object,
+    render_arm_known: bool,
+    ep: dict,
+) -> dict:
+    """③ 탐지 비용 블록 (v6). **stages 블록과 별 블록이다.**
+
+    🔴 **`_stages_block`에 섞지 않는다.** 그 블록의 `clock` 문자열은 "GPU 시계"라고 선언하는데
+    E·F·G는 CPU 벽시계다. 한 블록에 담으면 그 선언이 절반에 대해 거짓이 되고, 블록만 떼어
+    읽는 소비자는 두 물리량을 같은 표에서 더하게 된다.
+
+    🔴 **아래 값들을 숫자와 **함께** 싣는다.** 없으면 F 숫자를 잘못 읽는다:
+      - `n`          : 표본 수 = 추론 횟수. **프레임 수가 아니다**
+      - `cadence_ms` : 실측 실행 주기(선언된 N이 아니라 관측값)
+      - `duty_cycle` : 탐지가 분석 창의 몇 %를 점유했나
+      - `ep`         : 요청/해소된 실행 공급자. F는 EP가 바뀌면 다른 숫자다
+    """
+    wall_sum_ms = sum(dseries.detect_wall_ms)
+    window_ms = (analysis_window_sec or 0.0) * 1000.0
+    duty_cycle = (
+        round(wall_sum_ms / window_ms, 4)
+        if dseries.detect_wall_ms and window_ms > 0 else None
+    )
+    model_sha, _ = session_field(session, DETECT_MODEL_SHA_PATH)
+    period_n, period_present = session_field(session, DETECT_PERIOD_N_PATH)
+    padding, _ = session_field(session, DETECT_PADDING_FRACTION_PATH)
+    enabled, enabled_present = session_field(session, DETECT_ENABLED_PATH)
+
+    block = {
+        # 🔴 이 문장이 이 블록의 계약이다. 떼어 읽는 소비자가 처음 보는 줄이어야 한다.
+        "clock": (
+            "CPU 벽시계(SystemClock.elapsedRealtimeNanos) 구간 길이. "
+            "**GPU 열(stage_b/d/i_ms·gpu_present_ms·gpu_frame_ms)·프레임타임과 더하지 않는다** "
+            "— 물리량이 다르다. gpu_sum_ms·stage_d_total_ms에도 들어가지 않는다"
+        ),
+        "columns_present": list(dseries.detect_columns_present),
+        "budget_cell": dict(DETECT_BUDGET_CELL_OF),
+        # ── 표본 수. **프레임 수와 다르다는 사실이 드러나야 한다** ──────────
+        "n": dseries.rows_used,
+        "frames_rows_used": frames_rows_used,
+        "n_note": (
+            f"n={dseries.rows_used}은 **추론 횟수**이고 프레임 수가 아니다"
+            f"(같은 분석 창의 프레임 행은 {frames_rows_used}개). detect.csv의 행 단위는 "
+            f"'추론 1회'이며 detect_idx는 frames.csv의 frame_idx와 조인할 수 없다 — "
+            f"두 파일을 잇는 것은 시각이다"
+        ),
+        # ── 실측 실행 주기 ────────────────────────────────────────────────
+        "cadence_note": (
+            f"{DETECT_CADENCE_SERIES}는 인접한 두 추론의 t_detect_recv_ns 차 = **실측 실행 "
+            f"주기**다. INTERFACES.md의 탐지 주기 N은 아직 미정(☐)이라 하네스가 값을 "
+            f"지어내지 않고 관측으로 말한다. ⚠ 분모가 프레임이 아니라 추론이므로 "
+            f"recv_interval_ms와 더하거나 빼지 않는다(모집단이 다르다)"
+        ),
+        # ── 분석 창과 점유율 ──────────────────────────────────────────────
+        "analysis_window_sec": (
+            round(analysis_window_sec, 3) if analysis_window_sec is not None else None
+        ),
+        "analysis_window_source": (
+            "frames.csv의 t_recv_ns **실제 span**(warmup 제외 후 첫 행 ~ 마지막 행). "
+            "p50 × n으로 유도하지 않았다 — 그 유도는 드롭·폐기만큼 창을 짧게 만들고, "
+            "짧아진 창이 duty_cycle의 분모가 되면 점유율이 실제보다 커진다"
+        ),
+        "duty_cycle": duty_cycle,
+        "duty_cycle_note": (
+            f"Σ({DETECT_WALL_SERIES}) / 분석 창 = 탐지가 시간의 몇 %를 점유했나"
+            f"(0.25 = 25%). Σ={round(wall_sum_ms, 1)}ms. "
+            f"⚠ **프레임타임에서 이만큼을 빼거나 더할 수 없다** — 탐지는 별 스레드에서 돌고, "
+            f"점유율이 100%를 넘지 않는다고 해서 렌더가 굶지 않았다는 뜻도 아니다"
+            if duty_cycle is not None else
+            f"Σ({DETECT_WALL_SERIES})를 낼 수 없어 계산하지 않았다 "
+            f"(t_detect_end_ns 열이 없거나 분석 창을 재지 못했다)"
+        ),
+        "detect_wall_note": (
+            f"{DETECT_WALL_SERIES} = t_detect_end_ns − t_detect_recv_ns. **E+F+G의 합이 "
+            f"아니다** — 그 셋 바깥의 비용(프레임 대기 해제·텐서 복사·콜백 디스패치)이 함께 "
+            f"들어가므로 span − (E+F+G) >= 0인 미계상분이 있다. **버짓 칸도 없다**"
+            f"(budget_cell=null)"
+        ),
+        # ── 누적 카운터. **백분위를 내지 않는다** ─────────────────────────
+        "skipped_while_busy_total": dseries.skipped_while_busy_total,
+        "skipped_while_busy_rows": dseries.skipped_while_busy_rows,
+        "skipped_while_busy_note": (
+            "이 값은 **그 시점까지의 누적**이라 마지막으로 관측한 값 하나만 싣는다"
+            "(단조 증가 수열의 백분위는 뜻이 없다). rows=0이면 total=0은 '건너뛴 프레임이 "
+            "없다'가 아니라 **재지 않았다**는 뜻이다"
+        ),
+        # ── 그 런의 조건. 숫자와 같은 블록에 있어야 한다 ──────────────────
+        "render_arm": render_arm,
+        "render_arm_known": render_arm_known,
+        "model_sha256": model_sha,
+        "ep_requested": ep.get("requested"),
+        "ep_resolved": ep.get("resolved"),
+        "ep_matches": ep.get("matches"),
+        "ep_vocab_ok": ep.get("vocab_ok"),
+        "ep_note": (
+            "F(추론)는 **EP가 바뀌면 다른 숫자다.** ep_matches=false면 요청한 EP로 세션이 "
+            "열리지 않은 것이므로 아래 F를 요청 EP의 비용으로 인용하면 틀린다. "
+            "ep_matches=null이면 대조할 수 없었다는 뜻이지 '같다'가 아니다. "
+            "⚠ 하네스는 EP를 해석하지 않는다 — 앱의 자진 신고 두 개를 대조했을 뿐이다"
+        ),
+        "declared_enabled": enabled,
+        "declared_enabled_present": enabled_present,
+        "period_n": period_n,
+        "period_n_note": (
+            "앱이 선언한 탐지 주기. **null이 정상이다**(INTERFACES.md에서 아직 ☐ 미정이라 "
+            f"앱이 값을 지어내지 않는다) — 실제 주기는 위 {DETECT_CADENCE_SERIES} 분포로 말한다"
+            + ("" if period_present else ". 이 로그에는 키 자체가 없다")
+        ),
+        "padding_pixel_fraction": padding,
+        "padding_note": (
+            "letterbox 패딩이 입력 텐서에서 차지하는 픽셀 비율. **F의 일부는 회색 패딩을 "
+            "미는 비용이다** — 720p를 640 정사각에 넣으면 세로 패딩만큼 연산이 는다"
+            "(models/det_c4b_loli0_640/README.md: 고정 shape을 택한 대가). 이 값 없이 "
+            "F를 다른 입력 크기의 F와 비교하면 안 된다"
+        ),
+        # ── 입력 완전성 (frames.csv 쪽 source 블록과 같은 규약) ───────────
+        "rows_read": dseries.rows_read,
+        "rows_skipped": dseries.rows_skipped,
+        "rows_skipped_anomalous": dseries.rows_skipped_anomalous,
+        "rows_accounted": dseries.accounting_ok,
+        "discarded_samples": dseries.discarded,
+        "discarded_total": dseries.discarded_total,
+        "unknown_columns": dseries.unknown_columns,
+        "has_detect_timings": dseries.has_detect_timings,
+        # t0를 frames.csv와 공유했는가 — 두 파일의 분석 창이 같다는 근거.
+        "t0_ns": dseries.t0_ns,
+        "t0_note": (
+            "이 t0는 **frames.csv의 첫 행**에서 왔다(detect.csv 자기 첫 행이 아니다). "
+            "warmup도 같은 값을 썼으므로 두 파일의 분석 창은 같다 — 호출자 책임이며 "
+            "analyze_frames가 한 스크립트인 이유가 이것이다"
+        ),
+    }
+    block.update(dstats)
+    return block
+
+
 def main() -> int:
     parser = common_argparser()
     parser.add_argument("--frames", required=True, help="프레임 로그 CSV 경로")
     parser.add_argument("--session", default="", help="session.json 경로 (없으면 생략)")
+    parser.add_argument(
+        "--detect",
+        default="",
+        help=(
+            "detect.csv 경로 (③ 탐지 계측. 없으면 생략). **frames.csv와 같은 스크립트에서 "
+            "읽는 이유는 t0 공유다** — read_frames가 낸 t0를 그대로 넘겨야 두 파일의 분석 "
+            "창이 같아진다. 별 스크립트로 쪼개면 그 연결이 끊어진다"
+        ),
+    )
     parser.add_argument(
         "--warmup_sec",
         type=float,
@@ -393,6 +683,20 @@ def main() -> int:
         return 2
 
     session = read_session(Path(args.session)) if args.session else {}
+
+    # ── ③ 탐지 (v6). **t0와 warmup을 frames.csv 쪽과 같은 값으로 넘긴다.**
+    #    🔴 `--detect`를 줬는데 읽지 못하면 **죽는다.** 사람이 명시적으로 지목한 파일을
+    #       조용히 건너뛰면 "탐지를 쟀는데 탐지 블록이 없는 요약"이 나오고, 그 요약은
+    #       "탐지를 안 잰 런"과 구분되지 않는다(이 하네스가 계속 닫아 온 실패 양식).
+    dseries = None
+    if args.detect:
+        try:
+            dseries = read_detect(
+                Path(args.detect), t0_ns=series.t0_ns, warmup_sec=args.warmup_sec
+            )
+        except FrameLogError as exc:
+            LOG.error("탐지 로그를 읽지 못했다: %s", exc)
+            return 2
 
     dev = {"available": False, "reason": "--no_device 로 건너뜀"}
     if not args.no_device:
@@ -473,6 +777,30 @@ def main() -> int:
         else None
     )
 
+    # ── ③ 탐지 비용 (CPU 벽시계). 판정선이 없으므로 verdict를 흔들지 않는다.
+    #    stages와 **다른 블록**이다 — 시계가 다르다(_detect_block 주석).
+    detect_block = None
+    detect_ep = check_detect_ep(session)
+    if dseries is not None:
+        detect_stats = {
+            name: summarize(getattr(dseries, name))
+            for name in tuple(DETECT_TIME_COLUMNS)
+            + tuple(DETECT_DISTRIBUTION_COUNT_COLUMNS)
+            + tuple(DETECT_SCORE_COLUMNS)
+        }
+        detect_stats[DETECT_WALL_SERIES] = summarize(dseries.detect_wall_ms)
+        detect_stats[DETECT_CADENCE_SERIES] = summarize(dseries.detect_cadence_ms)
+        detect_block = _detect_block(
+            dseries,
+            detect_stats,
+            session,
+            frames_rows_used=series.rows_used,
+            analysis_window_sec=series.analysis_window_sec,
+            render_arm=render_arm,
+            render_arm_known=render_arm_known,
+            ep=detect_ep,
+        )
+
     summary = {
         # ⚠ 이건 **하네스** 버전이다. 이 로그가 어느 스키마로 쓰였는지는
         #   source.schema_version_declared 쪽이며, 둘은 다를 수 있다.
@@ -542,6 +870,9 @@ def main() -> int:
         "stages": _stages_block(
             series, stage_stats, render_arm, render_arm_known, ring_full
         ),
+        # ③ 탐지. **stages와 다른 시계다**(CPU 벽시계) — 키를 나눈 이유가 그것이다.
+        # --detect를 주지 않았으면 null. "탐지가 0이었다"가 아니라 **재지 않았다**는 뜻이다.
+        "detect": detect_block,
         "targets": {
             "target_fps": targets.TARGET_FPS,
             "frame_budget_ms": round(targets.FRAME_BUDGET_MS, 1),
@@ -563,11 +894,7 @@ def main() -> int:
         },
         "warnings": list(series.warnings),
         # 성능만 보고하는 것은 불완전한 보고다 (nightwalk-conventions §6).
-        # 탐지가 아직 없으므로 미평가임을 명시한다 — 조용히 빠뜨리지 않는다.
-        "safety_regression": {
-            "evaluated": False,
-            "reason": "탐지 단계 미구현 — 위험물 강조 누락률을 아직 잴 수 없다",
-        },
+        "safety_regression": safety_regression_block(detect_block),
     }
 
     # ⚠ `list(pipeline_stages)`를 그냥 씌우지 않는다. int면 TypeError로 **집계 전체가 죽어
@@ -643,6 +970,13 @@ def main() -> int:
     if schema_warning:
         # 판정·종료 코드는 바꾸지 않는다. 옛 로그는 계속 읽혀야 한다(하위호환).
         summary["warnings"].append(schema_warning)
+    # ③ 탐지 경고. read_detect가 만든 것 + EP 대조.
+    # ⚠ EP 경고는 **detect.csv를 읽은 런에서만** 낸다. 탐지가 없는 런(승격본 45건 포함)에서
+    #   "EP를 대조할 수 없다"가 매번 뜨면 그 경고는 곧 아무도 안 보고, 정작 탐지 런에서
+    #   묻힌다. 어긋남을 크게 내는 것은 run_session의 계획 대조가 담당한다.
+    if dseries is not None:
+        summary["warnings"].extend(dseries.warnings)
+        summary["warnings"].extend(detect_ep["warnings"])
     if capture_clock_mismatch and declared_clock_base not in ("", "unknown", None):
         summary["warnings"].append(
             f"session.json은 capture_clock_base='{declared_clock_base}'라고 선언했지만 "
@@ -809,6 +1143,95 @@ def _print_stages(summary: dict) -> None:
             )
 
 
+def _detect_series_order() -> list[str]:
+    """리포트에 찍을 순서. 파생 시계열을 재료 뒤에, 조건 열(카운트·점수)을 맨 뒤에 둔다."""
+    return (
+        list(DETECT_TIME_COLUMNS)
+        + [DETECT_WALL_SERIES, DETECT_CADENCE_SERIES]
+        + list(DETECT_DISTRIBUTION_COUNT_COLUMNS)
+        + list(DETECT_SCORE_COLUMNS)
+    )
+
+
+def _print_detect(summary: dict) -> None:
+    """③ 탐지 비용 출력. **판정선이 없으므로 PASS/FAIL을 찍지 않는다.**
+
+    🔴 단계 비용(GPU) 표와 **줄을 섞지 않는다.** 절 제목에 시계를 적고, 숫자 줄마다 arm과
+    EP를 붙인다 — 한 줄만 복사해 옮겨도 그 숫자가 어느 시계·어느 EP의 것인지 남아야 한다.
+    """
+    dt = summary.get("detect")
+    if not dt:
+        return
+    arm = dt.get("render_arm")
+    arm_short = f"arm={arm}" if dt.get("render_arm_known") else f"arm={arm!r}(어휘 밖/미상)"
+    ep_short = f"EP={dt.get('ep_resolved')}"
+    LOG.info(
+        "③ 탐지 비용 — CPU 벽시계 [arm=%s, 요청 EP=%s → 해소 EP=%s] "
+        "(GPU 열·프레임타임과 다른 시계, 판정선 없음)",
+        arm, dt.get("ep_requested"), dt.get("ep_resolved"),
+    )
+    if dt.get("ep_matches") is False:
+        LOG.error("  🔴 EP 어긋남 — 아래 F는 요청한 EP의 비용이 아니다 (아래 경고 참고)")
+    elif dt.get("ep_matches") is None:
+        LOG.warning(
+            "  ⚠ EP를 대조할 수 없다 — 아래 F가 어느 실행 공급자의 값인지 말할 수 없다"
+        )
+    # 🔴 표본 수와 프레임 수를 **숫자 앞에** 낸다. 둘이 같다고 착각하면 duty cycle도
+    #    cadence도 전부 잘못 읽힌다.
+    LOG.info(
+        "  표본 n=%s (추론 횟수 — 같은 창의 프레임 행은 %s개). 분석 창 %s초 "
+        "(frames.csv t_recv_ns의 실제 span)",
+        dt.get("n"), dt.get("frames_rows_used"), dt.get("analysis_window_sec"),
+    )
+    duty = dt.get("duty_cycle")
+    if duty is not None:
+        LOG.info(
+            "  duty_cycle=%.1f%% — 탐지가 분석 창의 이만큼을 점유했다 (Σ%s / 창). "
+            "프레임타임에서 빼거나 더할 수 없다",
+            duty * 100.0, DETECT_WALL_SERIES,
+        )
+    else:
+        LOG.warning("  duty_cycle: 낼 수 없다 — %s", dt.get("duty_cycle_note"))
+    for name in _detect_series_order():
+        s = dt.get(name) or {}
+        if not s:
+            continue
+        cell = DETECT_BUDGET_CELL_OF.get(name)
+        label = f"{name}[{cell}칸]" if cell else name
+        if s.get("count"):
+            LOG.info(
+                "  %-26s p50=%-8s p95=%-8s p99=%-8s min=%-8s max=%-8s (n=%s, %s, %s)",
+                label, s["p50"], s["p95"], s["p99"], s["min"], s["max"],
+                s["count"], arm_short, ep_short,
+            )
+        elif name in (dt.get("columns_present") or []):
+            LOG.warning(
+                "  %-26s 유효 표본 0개 — '0ms'가 아니라 재지 못한 것이다 (%s)",
+                label, arm_short,
+            )
+    # 누적 카운터는 분포가 아니므로 줄을 따로 낸다(백분위 표에 섞으면 그 표가 거짓이 된다).
+    for col in DETECT_CUMULATIVE_COLUMNS:
+        rows = dt.get(f"{col}_rows")
+        if rows:
+            LOG.info(
+                "  %-26s %s (누적값의 마지막 관측치 — 백분위를 내지 않는다, 관측 %s행)",
+                col, dt.get(f"{col}_total"), rows,
+            )
+        elif col in (dt.get("columns_present") or []):
+            LOG.warning(
+                "  %-26s 열은 있는데 파싱된 행이 0개다 — 0은 '건너뛴 프레임 없음'이 아니라 "
+                "**재지 않았다**는 뜻이다", col,
+            )
+    # 입력 완전성 — frames.csv 쪽과 같은 규약. 이상 소실은 조용히 넘어가지 않는다.
+    if dt.get("rows_skipped_anomalous"):
+        LOG.warning(
+            "  ⚠ 추론 행 이상 소실 %s개 (rows_read=%s → n=%s): %s",
+            dt["rows_skipped_anomalous"], dt.get("rows_read"), dt.get("n"),
+            {k: v for k, v in (dt.get("rows_skipped") or {}).items()
+             if v and k in DETECT_ROW_SKIP_REASON_TEXT},
+        )
+
+
 def _print_report(summary: dict) -> None:
     ft = summary["frametime"]
     v = summary["verdict"]
@@ -831,6 +1254,7 @@ def _print_report(summary: dict) -> None:
         if s["count"]:
             LOG.info("  %-22s p50=%-8s p95=%-8s (n=%s)", name, s["p50"], s["p95"], s["count"])
     _print_stages(summary)
+    _print_detect(summary)
     LOG.info("-" * 62)
     LOG.info(
         "평균 %.2f FPS | %s: %s | %s: %s",

@@ -1,4 +1,4 @@
-# 프레임 로그 스키마 v5
+# 프레임 로그 스키마 v6
 
 > **작성:** 팀원2 · **상태:** 확정 (Android 트랙 ↔ 하네스 트랙 내부 규격)
 > **소유 주제:** 폰이 뱉고 PC가 읽는 측정 로그의 형식.
@@ -12,14 +12,27 @@
 
 ---
 
-## 1. 산출물 2개
+## 1. 산출물 3개 (v6에서 2개 → 3개)
 
-폰이 측정 1회당 아래 두 파일을 만든다. PC로는 `adb pull`로 가져온다.
+폰이 측정 1회당 아래 파일을 만든다. PC로는 `adb pull`로 가져온다
+(손 pull 금지 — `scripts/pull_frames.py`가 스탬프를 붙인다 → §8).
 
 ```
 frames.csv      프레임당 1행
 session.json    이 측정이 어떤 조건이었는지
+detect.csv      ③ 탐지 **추론 1회당 1행** (v6 추가. 탐지를 켠 런에만 있다)
 ```
+
+> 🔴 **`detect.csv`는 선택 파일이다.** 탐지가 아닌 런에는 없고, 없다고 회수가 실패하지
+> 않는다(그렇게 만들면 승격본 45건을 낸 기존 워크플로가 통째로 깨진다).
+> **다만 `session.json`의 `detect.enabled`가 `true`인데 파일이 없으면 회수는 실패한다** —
+> 반쪽 회수를 조용히 통과시키지 않는다(`pull_frames.py`의 `REQUIRED_PULL_FILES` /
+> `OPTIONAL_PULL_FILES`).
+>
+> 🔴 **행 단위가 다르므로 파일을 가른다.** `frames.csv`는 프레임당 1행이고 `detect.csv`는
+> **추론 1회당 1행**이다. 탐지를 프레임 열로 넣으면 탐지가 돌지 않은 프레임의 행이 전부
+> `-1`이 되고, "백분위에서 -1을 걸러낸다"는 책임이 **모든 소비자에게** 퍼진다 — 한 곳만
+> 빠뜨리면 p50이 조용히 -1로 오염된다. → §2-D
 
 ## 2. `frames.csv`
 
@@ -216,6 +229,122 @@ DVFS/발열 차**인지 아직 갈라내지 못했다 → **열별 차분을 근
 
 **프레임타임·FPS를 폰이 계산해 넣지 않는다.** 타임스탬프만 넣고 계산은 PC가 한다.
 폰이 계산한 값과 PC가 계산한 값이 어긋나면 어느 쪽이 맞는지 판정할 방법이 없다.
+
+## 2-D. `detect.csv` — ③ 탐지 계측 (v6)
+
+헤더 있는 CSV. **없는 값은 `-1`** (frames.csv와 같은 규약).
+
+> 🔴 **행 하나 = 추론 1회.** 프레임이 아니다. `detect_idx`는 **추론 시퀀스 번호**이며
+> `frames.csv`의 `frame_idx`와 **조인할 수 없다.** 두 파일을 잇는 것은 **시각**이다
+> (`t_detect_recv_ns` ↔ `t_recv_ns`, 같은 `CLOCK_BOOTTIME`).
+
+### 필수 열
+
+| 열 | 타입 | 의미 |
+|---|---|---|
+| `detect_idx` | int | 0부터. **추론** 시퀀스 번호(프레임 번호가 아니다) |
+| `t_detect_recv_ns` | int ns | 탐지 스레드가 그 프레임을 받은 시각. `frames.csv`의 `t_recv_ns`와 **같은 시계**(`SystemClock.elapsedRealtimeNanos`) |
+
+### E·F·G — 구간 길이 (**CPU 벽시계**)
+
+| 열 | 타입 | 의미 | 버짓 칸 |
+|---|---|---|---|
+| `stage_e_ms` | float ms | letterbox + RGB 변환 + NCHW 텐서화 | **E** |
+| `stage_f_ms` | float ms | ORT `session.run()` **1회** | **F** |
+| `stage_g_ms` | float ms | conf 필터 + `cxcywh→xyxy` + 클래스별 NMS + letterbox 역변환 | **G** |
+
+> 🔴 **이 셋은 CPU 벽시계 구간 길이이고 GPU 시계가 아니다.** `stage_b_ms`·D 계열·
+> `stage_i_ms`·`gpu_present_ms`·`gpu_frame_ms`와 **물리량이 다르므로** `gpu_sum_ms`에도
+> `stage_d_total_ms`에도 **들어가지 않는다.** `lib/frame_log.py`의 상수 자기검사가 이것을
+> **import 시점에** 강제한다(detect 열이 GPU 목록에 한 번 들어가면 CPU 시계와 GPU 시계를
+> 더한 숫자가 버짓표로 나가는데, 결과만 보면 그럴듯해서 사람 눈으로는 안 걸러진다).
+>
+> 🔴 **앱에 요구하는 정밀도: ms 소수 3자리 이상.** 박스가 0개면 G가 진짜로 `0.0x ms`인데
+> 앱이 소수 1자리로 쓰면 그 값이 `0.0`이 되고, 하네스의 하한 가드(`> 0`)가 **가장 싼
+> 샘플만 골라 폐기**한다. 그러면 G 분포가 위로 치우치고, 그 편향은 폐기 카운트에만 남아
+> "왜 G가 이렇게 큰가"를 되물을 때 보이지 않는다. E·F도 같은 이유로 3자리 이상이다.
+>
+> ⚠️ **합계 열을 만들지 않는다.** 총 소요는 `t_detect_end_ns − t_detect_recv_ns`로 유도
+> 가능하고, §2의 "유도값은 저장하지 않는다"가 그대로 적용된다.
+
+### 선택 열
+
+| 열 | 타입 | 의미 | 폐기 하한 |
+|---|---|---|---|
+| `t_detect_end_ns` | int ns | 후처리까지 끝난 시각. `t_detect_recv_ns`와 같은 시계 | — |
+| `t_image_capture_ns` | int ns | `ImageProxy.imageInfo.timestamp` 원본. **기준 시계 불명확**(§4의 `t_capture_ns`와 같은 부류) — 우리 시계와 빼지 않는다. **하네스는 아직 이 열로 파생 시계열을 만들지 않는다**(읽어서 아는 열로만 둔다 = 미지 열 경고가 뜨지 않게) | — |
+| `max_conf` | float | 그 추론의 **최대 점수**(개수가 아니다) | `>= 0` |
+| `boxes_pre_nms` | int | conf 임계 통과 후 **NMS 전** 박스 수. G 비용의 설명 변수 | `>= 0` |
+| `boxes_out` | int | 최종 박스 수 | `>= 0` |
+| `skipped_while_busy` | int | 그 시점까지의 **누적**. 탐지 스레드가 바빠 건너뛴 프레임 수 | `>= 0` |
+
+> 🔴 **폐기 가드가 열 종류별로 다르다.**
+> - **시간 열**(E·F·G): 하한 `> 0`, **상한 없음.** 같은 CPU 시계 안에서 구간이 닫히므로 큰
+>   값은 시계 오류가 아니라 **진짜 느린 추론**이고(발열 스로틀, big 코어 이탈, GC), 그것이
+>   정확히 우리가 잡아야 할 것이다. `-1`은 하한에 걸려 `below_min`으로 **세어진다.**
+> - **카운트·`max_conf`**: 하한 `>= 0`. **0은 정상값이다** — 박스 0개인 추론이 야간 보행에서
+>   다수이고, 시간 열의 `> 0`을 그대로 쓰면 그 추론들이 통째로 폐기되어 (a) 분포가 위로
+>   치우치고 (b) 폐기 카운트가 행 수만큼 튀어 진짜 결손을 덮는다.
+>
+> ⚠️ **`skipped_while_busy`는 누적값이라 백분위를 내지 않는다.** 하네스는 **마지막으로
+> 관측한 값 하나**만 싣는다(`skipped_while_busy_total`). 함께 실리는
+> `skipped_while_busy_rows`가 0이면 total=0은 "건너뛴 프레임이 없다"가 아니라
+> **재지 않았다**는 뜻이다. 값이 줄면(누적은 절대 줄지 않는다) 경고가 붙는다.
+
+### 하네스가 만드는 파생 시계열 (CSV 열이 아니다)
+
+| 이름 | 계산 | 버짓 칸 |
+|---|---|---|
+| `detect_wall_ms` | `t_detect_end_ns − t_detect_recv_ns` | **없음** |
+| `detect_cadence_ms` | `t_detect_recv_ns` 차분 = **실측 실행 주기** | **없음** |
+
+> 🔴 **`detect_wall_ms`는 E+F+G의 합이 아니다.** 그 셋 바깥의 비용(프레임 대기 해제, 텐서
+> 복사, 콜백 디스패치)이 함께 들어가므로 `span − (E+F+G) >= 0`인 **미계상분**이 존재한다.
+> **버짓 칸도 없다** — 칸 라벨을 붙이면 미계상분까지 포함한 숫자가 F칸 같은 자리에 인용된다.
+> 이름에 `_total_`을 쓰지 않는 이유도 같다(`stage_d_total_ms`는 **열들의 행별 합**이라
+> 부류가 다르다).
+>
+> 🔴 **`detect_cadence_ms`가 탐지 주기 N의 실측 대체물이다.** 주기는 `INTERFACES.md`에서
+> 아직 `☐`(미정)이고 하네스는 미확정 계약값을 지어내지 않는다 — 선언을 읽지 않고 **관측한
+> 간격 분포로** 말한다. `session.json`의 `detect.period_n`은 **`null`이 정상**이다.
+> ⚠️ 모집단이 프레임이 아니라 추론이므로 `recv_interval_ms`와 더하거나 빼지 않는다.
+
+### 🔴 t0 공유 규약 — 두 파일의 분석 창이 같아야 한다
+
+`read_detect(path, t0_ns, warmup_sec)`는 **t0를 만들지 않고 받는다.**
+`read_frames`가 낸 `FrameSeries.t0_ns`(= `frames.csv` 첫 행의 `t_recv_ns`)와
+**같은 warmup 값**을 그대로 넘긴다. 자기 첫 행을 t0로 잡으면(탐지는 프레임보다 드물게
+도니 그 행은 렌더 쪽 첫 프레임보다 늦다) 두 파일의 분석 창이 어긋나고, 그 상태로
+"같은 런의 F와 프레임타임"이라고 말하면 **거짓**이 된다.
+
+> **그래서 `analyze_frames.py`가 두 파일을 한 스크립트에서 읽는다**(`--detect`).
+> 별 스크립트로 쪼개면 그 연결이 끊어진다. t0를 못 받으면 `read_detect`는 **죽는다** —
+> 기본값으로 얼버무리면 창이 조용히 어긋난 채 숫자가 나오고, 그 숫자는 `frames.csv` 쪽과
+> 같은 런처럼 보인다.
+>
+> `detect.csv`의 행이 t0보다 앞서면 `before_t0`로 세어 경고한다. 원인이 둘이다 —
+> (a) 시계 역행, (b) 탐지가 **별 use case**라 첫 프레임이 렌더 쪽보다 먼저 도착. (b)는 보통
+> 1~2행이며 분석 창 밖의 앞자락일 뿐이다. ⚠️ 이 사유를 "이상 소실"로 세는 분류는
+> **첫 실측 후 재검토 대상**이다(매 런 발생하면 `data_complete`가 늘 false가 되어 쓸모없어진다).
+
+### `summary.json`의 `detect` 블록 — **`stages`와 다른 블록이다**
+
+`analyze_frames.py --detect`가 채운다. `stages` 블록에 **섞지 않는다** — 그 블록의 `clock`
+문자열이 "GPU 시계"라고 선언하는데 E·F·G는 CPU 벽시계라, 한 블록에 담으면 그 선언이 절반에
+대해 거짓이 된다.
+
+블록에 **반드시 함께** 실리는 것(없으면 F 숫자를 잘못 읽는다):
+
+| 키 | 왜 필요한가 |
+|---|---|
+| `n` / `frames_rows_used` | **표본 수는 추론 횟수이지 프레임 수가 아니다.** 둘을 나란히 실어 그 사실이 드러나게 한다 |
+| `detect_cadence_ms` | 실측 실행 주기 (☐ 미정인 N을 지어내지 않는 수단) |
+| `duty_cycle` | `Σ(detect_wall_ms) / 분석 창`. "탐지가 시간의 몇 %를 점유했나". ⚠️ 프레임타임에서 빼거나 더할 수 없다(탐지는 별 스레드다) |
+| `analysis_window_sec` | 🔴 `frames.csv` `t_recv_ns`의 **실제 span**이다. `p50 × n`으로 유도하지 않는다 — 그 유도는 드롭·폐기만큼 창을 짧게 만들고, 짧아진 창이 `duty_cycle`의 분모가 되면 점유율이 실제보다 커진다 |
+| `clock` | "CPU 벽시계 구간 길이. GPU 열·프레임타임과 더하지 않는다" |
+| `budget_cell` | E·F·G → 칸, 파생 둘 → **명시적 `null`**(키를 빼면 "칸이 없다"와 "등록을 잊었다"가 구분되지 않는다) |
+| `model_sha256` · `ep_requested` · `ep_resolved` · `ep_matches` · `period_n` · `padding_pixel_fraction` | `session.json`에서 그대로 옮긴 **그 런의 조건** (아래 §5) |
+| `skipped_while_busy_total` / `_rows` | 누적값의 마지막 관측치 + 관측 행 수 |
 
 ## 3. 하네스가 뽑아내는 5가지 (한 숫자로 뭉치지 않는 이유)
 
@@ -498,7 +627,7 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "build_type": "release",
   "pipeline_stages": [],
   "capture_clock_base": "unknown",
@@ -523,6 +652,44 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 **하네스는 이 블록들을 해석하지 않고 `summary.json`의 `session`에 그대로 싣는다.**
 값을 만들어내지 않는다 — 앱이 적은 것이 곧 그 런의 조건 기록이다.
 (내용 구조는 앱이 정한다. 하네스가 스키마를 강제하면 앱이 더 적고 싶을 때 막힌다.)
+⚠️ **예외가 하나 있다 — 바로 아래 `detect` 블록이다.** 그것만은 하네스가 값을 읽고 판정에 쓴다.
+
+### `detect` 블록 (v6) — ③ 탐지를 켠 런에만
+
+```json
+"detect": {
+  "enabled": true,
+  "model": { "sha256": "d038191781202824d660b3a5d9f03a97e8ece5302b35c0fc140b0985198bf5f4" },
+  "ep": { "requested": "nnapi", "resolved": "cpu" },
+  "period_n": null,
+  "padding_pixel_fraction": 0.4375
+}
+```
+
+| 키 | 타입 | 하네스가 이것으로 무엇을 하는가 |
+|---|---|---|
+| `enabled` | bool | 🔴 **`pull_frames.py`의 반쪽 회수 판정 기준.** `true`인데 `detect.csv`가 없으면 회수가 **실패**한다(exit 4). 키가 없으면 `null`로 두고 판정하지 않는다 — **값이 없는 것은 `false`가 아니다** |
+| `model.sha256` | str | 어느 모델의 F인가. `models/det_c4b_loli0_640/metadata.json`의 `model.sha256`과 같은 값 |
+| `ep.requested` | str | 앱이 **요청한** 실행 공급자 |
+| `ep.resolved` | str | 앱이 **실제로 세션을 연** 실행 공급자 |
+| `period_n` | int \| **null** | 탐지 주기. **`null`이 정상이다** — `INTERFACES.md`에서 아직 `☐` 미정이라 앱도 값을 지어내지 않는다. 실제 주기는 `detect_cadence_ms` 분포로 말한다 |
+| `padding_pixel_fraction` | float | letterbox 패딩이 입력 텐서에서 차지하는 픽셀 비율(16:9 → 640 정사각이면 `1 − 360/640 = 0.4375`). **F의 일부는 회색 패딩을 미는 비용이다** — 이 값 없이 다른 입력 크기의 F와 비교하면 안 된다 |
+
+🔴 **`ep.requested`와 `ep.resolved`를 둘 다 적는다.** NNAPI를 요청했는데 CPU로 세션이 열린
+런은 `render_arm=detect_nnapi`로 기록되고 계획 대조의 나머지를 전부 통과한다 — 그 상태로 F를
+인용하면 **CPU 숫자가 NNAPI 칸에 들어간다.** `s4_combo` #5(전량 패스스루 폴백)와 같은 실패
+양식이고, 처방도 같다: **앱의 자진 신고를 대조해 크게 낸다.**
+- `run_session.py`는 둘이 다르면 그 런을 **계획 어긋남(실패)**으로 만든다.
+- **하네스는 EP를 해석하지 않는다** — ORT에 묻지도, SoC에서 유추하지도 않는다. 앱이 적은 두
+  값을 비교할 뿐이다. 한쪽이라도 없으면 `ep_matches=null`이며 이는 **"같다"가 아니다.**
+- 어휘: `cpu` · `nnapi` · `unknown` (`lib/frame_log.py`의 `DETECT_EPS`).
+  ⚠️ **QNN은 어휘에 없다** — 측정 기기 A34가 MediaTek이라 불가능하고, 쓰지 않을 토큰을
+  등록하면 계획 어휘 검사가 그것을 통과시킨다. 다른 기기가 들어오면 앱이 쓴 문자열로 등록한다.
+
+🔴 **이 블록은 위 v2 블록들과 달리 하네스가 해석한다.** `enabled`는 회수 실패(exit 4)를,
+`ep.requested`/`ep.resolved`는 계획 어긋남을 만든다 — 값이 틀리면 조용히 지나가지 않고 그 런이
+실패한다. 나머지 키(`model.sha256` · `period_n` · `padding_pixel_fraction`)는 해석하지 않고
+그대로 싣는다.
 
 #### `gpu_timer.supported` 모순 검사
 
@@ -657,6 +824,27 @@ id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통
 (`_1q` 짝이 정말 같은 렌더 경로인지도 **검증하지 않는다** — 앱 쪽 `RenderArm` 정의를
 사람이 확인해야 한다.)
 
+##### ③ 탐지 arm (v6) — 5개
+
+| 값 | 무엇을 재는가 |
+|---|---|
+| `detect_bind_only` | **분모다.** `ImageAnalysis`를 바인딩만 하고 추론은 돌리지 않는다 — 이 arm과 짝 arm의 차이가 "use case를 하나 더 붙인 값"이고 그 **위의** 차이가 추론 비용이다. 둘을 한 arm에서 재면 섞여서 어느 쪽이 비싼지 되물을 수 없다 |
+| `detect_cpu` | ORT CPU EP로 추론 |
+| `detect_nnapi` | ORT NNAPI EP로 추론 |
+| `detect_cpu_prof` | 위 + **ORT 프로파일러 켬** |
+| `detect_nnapi_prof` | 위 + **ORT 프로파일러 켬** |
+
+🔴 **`_prof` 접미사 arm의 시간은 인용하지 않는다.** 프로파일러는 노드마다 기록을 남기므로
+F(그리고 그것을 포함하는 모든 값)에 **자기 비용을 얹는다.** 이 arm은 "어느 노드가 비싼가"를
+보는 장치이고, E·F·G 숫자와 버짓 칸은 **접미사 없는 짝에서만** 인용한다.
+`_1q` 접미사와 같은 취지로 arm을 가른다 — 계측 방식이 다르면 같은 코드라도 같은 조건이 아니고,
+그 사실을 담을 키가 `pipeline_stages`에는 없다.
+
+⚠️ **EP 차이는 arm id로 가른다** — `detect_cpu` / `detect_nnapi`가 다른 arm이고 `render_arm`이
+`CONDITION_KEYS`에 있다. `baseline_diff.py`의 `CONDITION_KEYS`에 `detect.ep.resolved`를
+**넣지 않는다**(그건 선언이 아니라 **측정 결과**이고, 조용히 폴백한 런이 "조건 다름"이라는
+약한 신호로 나오면 그것을 크게 내야 할 `run_session.py`의 EP 어긋남 검사를 가린다).
+
 - **이 표는 사람이 읽는 것이고, 하네스는 이 의미를 해석하지 않는다.** 하네스가 하는 일은
   "그 문자열이 아는 어휘인가"를 보고 **숫자 옆에 arm을 붙이는 것**까지다. 해석을 시작하면
   앱이 arm을 추가할 때마다 하네스가 따라가야 하고, 동기화가 어긋나는 날 조용히 틀린 라벨이
@@ -688,7 +876,7 @@ id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통
 | `stage2_clahe` | ② CLAHE+감마, LAB `L`(타일 히스토그램+CDF+보간) | 앱 `RenderArm.CLAHE_GAMMA` |
 | `stage2_agcwd` | ② AGCWD, LAB `L`(전역 히스토그램+가중 LUT) | 앱 `RenderArm.AGCWD` |
 | `stage2_bilateral` | ② 노이즈 억제(bilateral). `+bf` arm이 ② 자리에서 한 번 더 도는 패스 → `stage_d_denoise_ms` | 앱 (`+bf` arm) / 생성기 `--stage_d_denoise_ms` |
-| `detect` | ③ 탐지. **앱 미구현** — 현재는 합성 로그만 낸다 | 생성기 `--detect_every_n` |
+| `detect` | ③ 탐지. 계측은 **별 파일 `detect.csv`**로 받는다(→ §2-D). GPU 열이 아니라 CPU 벽시계 E·F·G다 | 앱 (③ arm) / 생성기 `--detect_every_n` |
 | `stage4_highlight` | ④ 강조 오버레이 패스(② 출력 위에 스트로크 박스를 덧그린다) → `stage_i_ms` | 앱 `RenderArm.HIGHLIGHT_BOXES` · `HIGHLIGHT_BOXES_STRESS`(둘 다 `["blit_2pass","stage4_highlight"]`) / 생성기 `--stage_i_ms` |
 
 > **조합 arm에는 새 토큰을 만들지 않는다** (v4). ② 자리에서 스테이지를 두 번 도는 arm은
@@ -796,14 +984,35 @@ gpu_present_ms                                        ← 버짓 칸이 없는 �
 미지 열로 보고 경고만 한 뒤 **집계에서 통째로 버린다** — 10분 측정이 숫자 없이 끝난다.
 그래서 **하네스 쪽이 앱보다 먼저 들어간다.**
 
+### `detect.csv`에 열을 추가할 때 (v6~)
+
+같은 규칙에 **하나가 더 붙는다: 그 열을 어떻게 수집할지 선언해야 한다.**
+`lib/frame_log.py`가 import 시점에 검사하며, 빠지면 **모듈이 죽는다**(경고가 아니다).
+
+1. `DETECT_OPTIONAL_COLUMNS`(또는 `DETECT_COUNT_COLUMNS`)에 열 이름
+2. `DETECT_COLUMN_ADDED_IN`에 도입 버전
+3. **수집 경로 분류** — `DETECT_SERIES_COLUMNS`(분포를 낸다) / `DETECT_CUMULATIVE_COLUMNS`
+   (누적값, 마지막 값만) / `DETECT_WALL_SOURCE_COLUMNS`(파생의 재료) 중 하나.
+   쓰지 않기로 했다면 `DETECT_UNCOLLECTED_COLUMNS`에 **사유와 함께** 적는다
+4. `DetectSeries`에 담을 필드 (누적 열은 `<열>_total` / `_rows` / `_regressions` 세 개)
+5. 이 문서 §2-D의 표
+
+> **왜 분류를 강제하는가:** 1·2만 하고 수집을 잊으면 그 열은 **영원히 count=0**이고, 그
+> 상태는 "앱이 그 열을 안 냈다"와 로그상 **구분되지 않는다.** 예전 `read_detect`는 카운트
+> 열 목록을 함수 안에 리터럴로 갖고 있어서 정확히 이 사고가 가능했다 — 지금은 상수에서
+> 파생시키고, 파생되지 않는 열은 import에서 죽인다.
+
 ## 7. 폰 쪽 구현 시 지켜야 할 것
 
 - **`ImageProxy.close()`를 `finally`에서.** 안 닫으면 카메라가 새 프레임을 못 보내고 파이프라인이 멈춘다
 - 백프레셔는 **`STRATEGY_KEEP_ONLY_LATEST`**. 큐에 쌓으면 프레임타임이 좋아 보이고 지연만 는다
 - 로그는 **메모리에 모았다가 끝날 때 한 번에 쓴다.** 매 프레임 파일 I/O를 하면 측정 대상이 오염된다
 - 측정은 **release 빌드, 실기기**로만. 에뮬레이터 프레임은 실기기 숫자가 아니다
+- ③ 탐지 계측은 **`detect.csv`에 따로 쓴다**(→ §2-D). 프레임 열에 넣지 않는다.
+  **E·F·G는 ms 소수 3자리 이상**으로 쓴다 — 1자리로 쓰면 박스 0개인 추론의 G가 `0.0`이 되어
+  하네스의 하한 가드가 **가장 싼 샘플만 골라 폐기**한다
 - 출력 위치는 **런별 디렉토리**다:
-  `getExternalFilesDir(null)/runs/<YYYYMMDD_HHMMSS>/{frames.csv,session.json}`
+  `getExternalFilesDir(null)/runs/<YYYYMMDD_HHMMSS>/{frames.csv,session.json,detect.csv}`
   = `/sdcard/Android/data/<pkg>/files/runs/<YYYYMMDD_HHMMSS>/`.
   `pull_frames.py`가 이 경로를 기본값으로 본다(§8). 앱 외부 파일 디렉토리가 다르면
   `--remote_dir`로 그 **베이스**를 알려준다(런은 그 아래 `runs/`에서 찾는다).
@@ -874,6 +1083,13 @@ python scripts/analyze_frames.py \
   --frames outputs/poc_pull/<run_ts>/<기기 런 이름>/frames.csv \
   --session outputs/poc_pull/<run_ts>/<기기 런 이름>/session.json
 
+# ③ 탐지를 켠 런은 --detect를 **같은 호출에** 붙인다 (v6)
+#    같은 스크립트인 이유는 **t0 공유**다 — frames.csv에서 얻은 t0와 warmup을 그대로 넘겨야
+#    두 파일의 분석 창이 같아진다(§2-D). pull_frames가 회수 직후 이 줄을 그대로 찍어 준다.
+#    ⚠ --detect를 줬는데 그 파일을 못 읽으면 **죽는다**(조용한 반쪽 집계를 만들지 않는다).
+python scripts/analyze_frames.py \
+  --frames <런>/frames.csv --session <런>/session.json --detect <런>/detect.csv
+
 # 이전 측정과 비교해 회귀 판정 (CI: 회귀=1, 판정 불가=3)
 python scripts/baseline_diff.py --baseline <이전>/summary.json --current <이번>/summary.json
 
@@ -923,7 +1139,25 @@ python scripts/gen_synthetic_frames.py --stage_d_ms 5 --render_arm ""   # 키 �
 python scripts/gen_synthetic_frames.py --stage_d_analyze_ms 3 --stage_d_build_ms 1 --stage_d_apply_ms 5 \
   --pipeline_stages "blit_2pass" --render_arm clahe_gamma   # 자기모순 없는 ② 단독 런
 python scripts/gen_synthetic_frames.py --pipeline_stages ""             # 명시적 빈 배열
+
+# ③ 탐지 detect.csv(v6). **--detect_every_n > 0일 때만** 파일을 쓴다(그 인자가 탐지 런의 정의다).
+# E/F/G도 GPU 열과 같은 관행: 0 = 그 열을 아예 쓰지 않는다.
+python scripts/gen_synthetic_frames.py --detect_every_n 5 \
+  --stage_e_ms 3.5 --stage_f_ms 38 --stage_g_ms 1.2 \
+  --pipeline_stages "blit_2pass,detect" --detect_skipped_total 40
+# EP 어긋남 경로 (요청과 다른 EP로 세션이 열린 런) — run_session이 계획 어긋남으로 잡는다
+python scripts/gen_synthetic_frames.py --detect_every_n 4 --stage_f_ms 25 \
+  --detect_ep_requested nnapi --detect_ep_resolved cpu --render_arm detect_nnapi
+# t_detect_end_ns 없음 → detect_wall_ms·duty_cycle을 "낼 수 없다"고 말하는지
+python scripts/gen_synthetic_frames.py --detect_every_n 6 --stage_f_ms 20 --no_detect_end
+# E·F·G 열이 하나도 없는 detect.csv (하위호환·"단계 비용을 말할 수 없다" 경고 경로)
+python scripts/gen_synthetic_frames.py --detect_every_n 6
 ```
+
+> ⚠️ **합성 detect.csv의 E·F·G는 인자로 만든 값이지 측정치가 아니다.** 목적은 소비자 경로
+> (`analyze_frames --detect` / `pull_frames` / `run_session`)를 실기기 전에 끝까지 태우는
+> 것뿐이다. `render_arm=synthetic` · `lighting_condition=synthetic` · `build_type=synthetic`
+> 세 가지가 그 사실을 로그에 박아 둔다 — 이 숫자를 버짓 E·F·G 칸에 옮기지 않는다.
 
 > ⚠️ **`--pipeline_stages`를 생략하면 `--stage_*_ms`/`--detect_every_n`에서 유추한다(옛 동작).**
 > ② 하위 패스 열에는 대응 토큰이 없으므로, 하위 열만 주면 `pipeline_stages=[]`인
@@ -945,10 +1179,10 @@ python scripts/gen_synthetic_frames.py --pipeline_stages ""             # 명시
 >
 > | 종료 코드 | 뜻 |
 > |---|---|
-> | 0 | 선택된 런의 두 파일을 모두 0바이트 초과로 가져옴 (`--list`는 목록을 낸 뒤 0) |
+> | 0 | 선택된 런의 **필수 파일**(`frames.csv`·`session.json`)을 모두 0바이트 초과로 가져옴 (`--list`는 목록을 낸 뒤 0). **선택 파일 `detect.csv`는 없어도 0이다** — 다만 `session.json`이 `detect.enabled=true`면 4다 |
 > | 2 | adb를 찾지 못함 (`--adb`로 경로 지정 가능) |
 > | 3 | 기기 문제 — 0대 / 여러 대인데 `--serial` 없음 / 지정 serial이 `device` 상태 아님. **기기를 추측해 고르지 않는다** |
-> | 4 | `adb pull` 실패, **0바이트 파일**, **회수할 런이 0개**(`runs/`가 비었거나 런 디렉토리가 하나도 없거나 `--run` 이름이 기기에 없음), **원격 조사 실패**(권한 거부 등), `--run`+`--all` 동시 지정 |
+> | 4 | 필수 파일의 `adb pull` 실패, **0바이트 파일**, **회수할 런이 0개**(`runs/`가 비었거나 런 디렉토리가 하나도 없거나 `--run` 이름이 기기에 없음), **원격 조사 실패**(권한 거부 등), `--run`+`--all` 동시 지정, **`detect.enabled=true`인데 `detect.csv`를 못 가져옴**(반쪽 회수, v6) |
 > | 5 | `--no_outputs` — 스탬프 있는 목적지가 없어 아무것도 하지 않았다(`--list` 포함) |
 
 #### 원격 레이아웃 선택 규칙 — 조용한 폴백이 오염 경로였다
@@ -1207,3 +1441,32 @@ S1 이전 빌드의 낡은 로그가 남아 있었다. `pipeline_stages`가 빈 
   `frametime`·`verdict`·`stages`의 **모든 측정값과 폐기·행 회계가 동일**함을 확인했다
   (차이는 "앱이 하네스보다 뒤처졌다" 경고 1줄뿐이고, 그 경고가 **정확히 `gpu_frame_ms`만**
   이름으로 나열한다 — `COLUMN_ADDED_IN`이 계산한다).
+- **v6 (2026-08-06, 팀원2) — `SCHEMA_VERSION` 5 → 6. ③ 탐지: 산출물 3번째 파일
+  `detect.csv`.** 표본 모집단이 다르다(프레임 수 ≫ 추론 수) — E·F·G를 `frames.csv` 열로
+  넣으면 탐지가 돌지 않은 프레임의 행이 전부 `-1`이 되고 "백분위에서 -1을 걸러낸다"는 책임이
+  **모든 소비자에게** 퍼진다(한 곳만 빠뜨리면 p50이 조용히 오염된다). 그래서 **파일을
+  가른다**(§1·§2-D). 필수 열 2 + E·F·G + 선택 6, 파생 시계열 2(`detect_wall_ms` ·
+  `detect_cadence_ms`), `session.json`에 `detect` 블록(§5), arm 어휘 5종 추가(§5).
+  🔴 **E·F·G는 CPU 벽시계다.** `gpu_sum_ms`·`stage_d_total_ms`에 섞이면 두 시계를 더한
+  숫자가 버짓표로 나가므로 상수 자기검사가 import에서 막고, 소비자 쪽도
+  `DETECT_BUDGET_CELL_OF`를 GPU용 `BUDGET_CELL_OF`와 **별 dict**로 두고 겹치면 죽는다.
+  `summary.json`의 `detect`도 `stages`와 **별 블록**이다(그 블록의 `clock` 문자열이
+  "GPU 시계"라고 선언한다).
+  🔴 **t0는 만들지 않고 받는다**(§2-D) — 그래서 `analyze_frames.py`가 `--detect`로 두 파일을
+  한 번에 읽는다. 🔴 **`pull_frames.py`는 `detect.csv`를 선택으로 두되**
+  `detect.enabled=true`인데 없으면 실패로 낸다(반쪽 회수). 🔴 **`run_session.py`는
+  `ep.requested != ep.resolved`를 계획 어긋남으로 낸다** — 하네스가 EP를 해석하는 것이 아니라
+  앱의 자진 신고 두 개를 대조하는 것이며, `s4_combo` #5(전량 패스스루 폴백)와 같은 처방이다.
+  `baseline_diff.py`의 `CONDITION_KEYS`에는 **넣지 않는다**(선언이 아니라 결과라서 —
+  약한 신호가 강한 검사를 가린다). `safety_regression.reason`을 고쳤다: **`evaluated`는
+  false 그대로**이며 사유가 "탐지 미구현"에서 **"정답 라벨이 없다"**로 바뀐다.
+  ⚠️ **앱은 아직 v5다.** §6대로 하네스가 먼저 들어갔고, 앱 라운드 전까지 실기기 로그에
+  "뒤처졌다" 경고가 뜨는 것은 정상이다.
+  검증(합성 = **로직 검증이지 실측이 아니다. E·F·G 실측은 0건**): 합성 detect.csv로
+  `gen_synthetic_frames → analyze_frames --detect → baseline_diff → pull_frames --list`를
+  끝까지 태웠고 모든 시계열의 `n`이 0이 아니다(E·F·G n=300, cadence n=299).
+  실기기 승격 런 1건을 `--detect` 없이 재집계해 `frametime`·`verdict`·`stages`·폐기·행 회계가
+  **동일**함을 확인했다(추가된 것은 `detect: null`과 안전 회귀 사유 문장뿐).
+  가짜 adb로 회수 3경로를 확인: 탐지 없는 런 exit 0(회귀), 탐지 런 exit 0,
+  `detect.enabled=true`인데 파일 없음 exit 4. 상수 자기검사는 반사실 4종(분류 누락 /
+  필드 누락 / 누적 열 필드 3종 누락 / 버전 미등록)에서 전부 `RuntimeError`로 죽는다.

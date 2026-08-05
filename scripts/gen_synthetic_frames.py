@@ -20,6 +20,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.frame_log import (  # noqa: E402
+    DETECT_ENABLED_PATH,
+    DETECT_EPS,
+    DETECT_EP_CPU,
+    DETECT_EP_REQUESTED_PATH,
+    DETECT_EP_RESOLVED_PATH,
+    DETECT_MODEL_SHA_PATH,
+    DETECT_PADDING_FRACTION_PATH,
+    DETECT_PERIOD_N_PATH,
+    DETECT_REQUIRED_COLUMNS,
     GPU_FRAME_COLUMN,
     GPU_SUM_COLUMNS,
     GPU_TIME_COLUMNS,
@@ -34,6 +43,8 @@ from lib.frame_log import (  # noqa: E402
     STAGE4_HIGHLIGHT,
     STAGE_BLIT_2PASS,
     STAGE_DETECT,
+    session_field,
+    write_detect,
     write_frames,
 )
 from lib.run_utils import common_argparser, init_run  # noqa: E402
@@ -183,6 +194,107 @@ def main() -> int:
             f"어휘: {', '.join(PIPELINE_STAGES)} (밖의 값도 그대로 쓴다 — 어휘 경고 시험용)"
         ),
     )
+    # ── ③ 탐지 계측 detect.csv (스키마 v6) ────────────────────────────────
+    # **언제 파일을 쓰는가:** `--detect_every_n > 0`일 때만. 그 인자는 이미 "N프레임마다
+    # 무거운 탐지"를 뜻하므로(위) 탐지가 도는 런의 정의로 그대로 쓴다 — 같은 사실을 두
+    # 인자로 나누면 둘이 어긋난 로그(프레임은 무거운데 detect.csv는 없다)가 만들어진다.
+    #
+    # 각 열은 GPU 열과 **같은 관행**이다: `0 = 그 열을 아예 쓰지 않는다`. 그래야
+    # "E·F·G 열이 하나도 없는 detect.csv"(하위호환·경고 경로)를 생성기로 만들 수 있다.
+    #
+    # ⚠ **여기서 나오는 숫자는 측정치가 아니다.** 값의 크기는 인자가 정하는 것이지
+    #   기기에서 잰 것이 아니다 — 이 파일의 목적은 소비자 경로(H5~H7)를 실기기 전에
+    #   끝까지 태우는 것뿐이다.
+    parser.add_argument(
+        "--stage_e_ms", type=float, default=0.0,
+        help="③ 전처리(letterbox+RGB+NCHW) CPU 벽시계 (버짓 E칸). 0=열 없음",
+    )
+    parser.add_argument(
+        "--stage_f_ms", type=float, default=0.0,
+        help="③ ORT session.run() 1회 CPU 벽시계 (버짓 F칸). 0=열 없음",
+    )
+    parser.add_argument(
+        "--stage_g_ms", type=float, default=0.0,
+        help="③ 후처리(conf+좌표변환+NMS+역변환) CPU 벽시계 (버짓 G칸). 0=열 없음",
+    )
+    parser.add_argument(
+        "--detect_wall_extra_ms", type=float, default=2.0,
+        help=(
+            "E+F+G 바깥의 미계상분(프레임 대기 해제·텐서 복사·콜백 디스패치). "
+            "t_detect_end_ns = recv + E+F+G + 이 값. **detect_wall_ms가 E+F+G의 합이 "
+            "아니라는 사실을 재현하기 위한 인자다**"
+        ),
+    )
+    parser.add_argument(
+        "--no_detect_end", action="store_true",
+        help=(
+            "t_detect_end_ns 열을 쓰지 않는다 → detect_wall_ms·duty_cycle이 나오지 않는 "
+            "경로(하네스가 '낼 수 없다'고 말하는지 시험)"
+        ),
+    )
+    parser.add_argument(
+        "--detect_boxes_pre_nms", type=int, default=14,
+        help="NMS 전 박스 수의 기준값 (0 이상). G 비용의 설명 변수",
+    )
+    parser.add_argument(
+        "--detect_boxes_out", type=int, default=2, help="최종 박스 수의 기준값 (0 이상)",
+    )
+    parser.add_argument(
+        "--detect_empty_frac", type=float, default=0.25,
+        help=(
+            "이 비율의 추론에서 박스 0개·max_conf 0을 낸다 (0~1). **카운트 열의 하한 "
+            "가드(>=0)를 태우는 입력이다** — 시간 열의 `>0`을 쓰면 이 추론들이 통째로 "
+            "폐기되는데, 야간 보행에서는 이쪽이 다수다"
+        ),
+    )
+    parser.add_argument(
+        "--detect_max_conf", type=float, default=0.72,
+        help="박스가 있는 추론의 최대 점수 기준값. 0=열 없음",
+    )
+    parser.add_argument(
+        "--detect_skipped_total", type=int, default=0,
+        help=(
+            "skipped_while_busy(**누적값**)의 마지막 값. 행에 걸쳐 단조 증가로 채운다. "
+            "0=열은 쓰되 값이 0 (하네스가 '재지 않았다'와 구분하는지 시험)"
+        ),
+    )
+    parser.add_argument(
+        "--no_detect_skipped", action="store_true",
+        help="skipped_while_busy 열을 아예 쓰지 않는다 (열 없음 경로)",
+    )
+    parser.add_argument(
+        "--detect_ep_requested", default=DETECT_EP_CPU,
+        help=(
+            f"session.json의 detect.ep.requested (기본 {DETECT_EP_CPU}). "
+            f"''이면 키를 쓰지 않는다 = '대조할 수 없다' 경로. "
+            f"어휘: {', '.join(DETECT_EPS)} (밖의 값도 그대로 쓴다 — 어휘 경고 시험용)"
+        ),
+    )
+    parser.add_argument(
+        "--detect_ep_resolved", default="",
+        help=(
+            "session.json의 detect.ep.resolved. 생략하면 requested와 **같게** 쓴다. "
+            "다르게 주면 EP 어긋남 경로(요청과 다른 EP로 세션이 열린 런)를 만든다"
+        ),
+    )
+    parser.add_argument(
+        "--detect_model_sha256", default="",
+        help="session.json의 detect.model.sha256. 기본은 null (합성 — 모델을 로드하지 않았다)",
+    )
+    parser.add_argument(
+        "--detect_period_n", type=int, default=MISSING,
+        help=(
+            "session.json의 detect.period_n. 기본 -1 = **null로 쓴다** — 탐지 주기는 "
+            "INTERFACES.md에서 아직 ☐ 미정이라 앱도 값을 지어내지 않는다"
+        ),
+    )
+    parser.add_argument(
+        "--detect_padding_fraction", type=float, default=0.4375,
+        help=(
+            "session.json의 detect.padding_pixel_fraction. 기본 0.4375 = 16:9 프레임을 "
+            "640 정사각 letterbox에 넣었을 때의 패딩 픽셀 비율(1 − 360/640)"
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--label", default="synthetic")
     args = parser.parse_args()
@@ -235,6 +347,9 @@ def main() -> int:
     dropped_accum = 0
     emitted = 0
     gpu_disjoint_rows = 0
+    # ③ 탐지가 실제로 돈 프레임의 **수신 시각**. detect.csv는 이 목록에서 나온다 —
+    # 두 파일이 같은 시계(그리고 같은 t0)를 쓰는 것이 이 생성기의 계약이다.
+    detect_recv_times: list[int] = []
 
     for i in range(n_frames):
         t_recv = t + i * interval_ns + int(rng.uniform(-1.0, 1.0) * args.jitter_ms * MS)
@@ -246,6 +361,8 @@ def main() -> int:
         cost_ms = args.base_render_ms + abs(rng.gauss(0, args.jitter_ms))
         if args.detect_every_n > 0 and emitted % args.detect_every_n == 0:
             cost_ms += args.detect_ms
+            # 탐지 스레드가 이 프레임을 받았다. 아래에서 detect.csv 한 행이 된다.
+            detect_recv_times.append(t_recv)
 
         # GPU 패스 시간. **먼저 참값을 만든다** — disjoint는 측정이 실패한 것이지
         # GPU가 일을 안 한 게 아니므로, 아래 파이프라인 비용에는 참값이 들어가야 한다.
@@ -299,6 +416,73 @@ def main() -> int:
         *gpu_cols,
     ]
     write_frames(frames_path, rows, columns=columns)
+
+    # ── ③ detect.csv (v6). **행 하나 = 추론 1회이며 프레임 행과 개수가 다르다.**
+    #    이 파일을 쓰는 유일한 조건은 `--detect_every_n > 0`이다(위 인자 블록 주석).
+    detect_path = paths.out_dir / "detect.csv"
+    detect_rows: list[dict] = []
+    detect_columns: list[str] = []
+    detect_time_base = {
+        "stage_e_ms": args.stage_e_ms,
+        "stage_f_ms": args.stage_f_ms,
+        "stage_g_ms": args.stage_g_ms,
+    }
+    detect_time_cols = [c for c, v in detect_time_base.items() if v > 0]
+    if args.detect_every_n > 0:
+        detect_columns = list(DETECT_REQUIRED_COLUMNS)
+        if not args.no_detect_end:
+            detect_columns.append("t_detect_end_ns")
+        if args.detect_max_conf > 0:
+            detect_columns.append("max_conf")
+        detect_columns += detect_time_cols
+        detect_columns += ["boxes_pre_nms", "boxes_out"]
+        if not args.no_detect_skipped:
+            detect_columns.append("skipped_while_busy")
+
+        n_detect = len(detect_recv_times)
+        for idx, t_recv in enumerate(detect_recv_times):
+            # 값마다 ±15% 흔든다 — 분포가 한 점이면 백분위 검사가 검사가 아니다.
+            times = {
+                c: detect_time_base[c] * (1.0 + rng.uniform(-0.15, 0.15))
+                for c in detect_time_cols
+            }
+            empty = rng.random() < args.detect_empty_frac
+            if empty:
+                # 🔴 **박스 0개는 정상값이다.** 카운트 열의 하한이 `>= 0`이어야 하는 이유가
+                #    이 행들이고, 실제 야간 보행에서는 이쪽이 다수다.
+                pre_nms, boxes_out, conf = 0, 0, 0.0
+            else:
+                pre_nms = max(0, int(round(rng.gauss(
+                    args.detect_boxes_pre_nms, max(1.0, args.detect_boxes_pre_nms * 0.3)
+                ))))
+                boxes_out = max(0, min(pre_nms, int(round(rng.gauss(
+                    args.detect_boxes_out, max(1.0, args.detect_boxes_out * 0.5)
+                )))))
+                conf = min(0.999, max(0.0, rng.gauss(args.detect_max_conf, 0.08)))
+            row = {
+                "detect_idx": idx,   # **프레임 번호가 아니다**
+                "t_detect_recv_ns": t_recv,
+                "boxes_pre_nms": pre_nms,
+                "boxes_out": boxes_out,
+            }
+            for c, v in times.items():
+                # 🔴 소수 3자리로 쓴다. 앱에도 같은 정밀도를 요구한다 — 박스 0개면 G가
+                #    진짜로 0.0x ms인데 1자리로 쓰면 0.0이 되고, 하네스의 하한 가드(>0)가
+                #    **가장 싼 샘플만 골라 폐기**해 G 분포가 위로 치우친다.
+                row[c] = round(v, 3)
+            if not args.no_detect_end:
+                # span = E+F+G + 미계상분. **E+F+G의 합이 아니다**(그게 요점이다).
+                span_ms = sum(times.values()) + args.detect_wall_extra_ms
+                row["t_detect_end_ns"] = t_recv + int(span_ms * MS)
+            if args.detect_max_conf > 0:
+                row["max_conf"] = round(conf, 4)
+            if not args.no_detect_skipped:
+                # 누적값. 마지막 행이 --detect_skipped_total이 되도록 단조 증가로 채운다.
+                row["skipped_while_busy"] = int(
+                    round(args.detect_skipped_total * (idx + 1) / max(1, n_detect))
+                )
+            detect_rows.append(row)
+        write_detect(detect_path, detect_rows, columns=detect_columns)
 
     # 파이프라인 단계 목록 — 어느 arm으로 잰 것인지가 비교 조건이다(baseline_diff).
     # ⚠ 토큰은 **앱 어휘**(lib/frame_log.py의 PIPELINE_STAGES = android RenderArm.pipelineStages)를
@@ -364,6 +548,30 @@ def main() -> int:
             "extension": "GL_EXT_disjoint_timer_query" if gpu_cols else None,
             "synthetic": True,
         },
+        # ③ 탐지 블록. **키 이름의 주인은 lib/frame_log.py의 DETECT_*_PATH 상수다** —
+        # 여기 문자열이 그것과 어긋나면 소비자(analyze_frames/pull_frames/run_session)가
+        # 못 읽는다. 아래 조립 뒤에 상수와 대조해 어긋나면 죽인다.
+        "detect": {
+            # 🔴 이 값이 pull_frames의 반쪽 회수 판정 기준이다(true인데 detect.csv가 없으면 실패).
+            "enabled": bool(detect_rows),
+            "synthetic": True,
+            "model": {
+                # 합성이므로 기본은 null — 모델을 로드한 적이 없다. 가짜 해시를 박으면
+                # "어느 모델의 F인가"라는 질문에 거짓으로 답하는 것이 된다.
+                "sha256": args.detect_model_sha256 or None,
+            },
+            "ep": {
+                "requested": args.detect_ep_requested or None,
+                "resolved": (
+                    (args.detect_ep_resolved or args.detect_ep_requested) or None
+                ),
+            },
+            # 앱도 null로 낸다 — 탐지 주기는 INTERFACES.md에서 아직 ☐ 미정이다.
+            "period_n": None if args.detect_period_n < 0 else args.detect_period_n,
+            "padding_pixel_fraction": args.detect_padding_fraction,
+            "detections_written": len(detect_rows),
+            "detect_columns_written": detect_columns,
+        },
         "params": {
             "render_arm_arg": args.render_arm,
             "pipeline_stages_arg": args.pipeline_stages,
@@ -386,6 +594,19 @@ def main() -> int:
             "gpu_present_ms": args.gpu_present_ms,
             "gpu_frame_ms": args.gpu_frame_ms,
             "gpu_disjoint_frac": args.gpu_disjoint_frac,
+            "stage_e_ms": args.stage_e_ms,
+            "stage_f_ms": args.stage_f_ms,
+            "stage_g_ms": args.stage_g_ms,
+            "detect_wall_extra_ms": args.detect_wall_extra_ms,
+            "no_detect_end": args.no_detect_end,
+            "detect_boxes_pre_nms": args.detect_boxes_pre_nms,
+            "detect_boxes_out": args.detect_boxes_out,
+            "detect_empty_frac": args.detect_empty_frac,
+            "detect_max_conf": args.detect_max_conf,
+            "detect_skipped_total": args.detect_skipped_total,
+            "no_detect_skipped": args.no_detect_skipped,
+            "detect_ep_requested": args.detect_ep_requested,
+            "detect_ep_resolved": args.detect_ep_resolved,
         },
         "gpu_columns_written": gpu_cols,
         "gpu_disjoint_rows": gpu_disjoint_rows,
@@ -398,6 +619,25 @@ def main() -> int:
     # 그 입력을 생성기로 만들 수 없게 된다 — GPU 열 0=열 없음 규칙과 같은 이유다.
     if args.render_arm != "":
         session["render_arm"] = args.render_arm
+
+    # 🔴 **생성한 detect 블록을 소비자가 실제로 읽을 수 있는가**를 여기서 확인한다.
+    #    키 이름을 손으로 적었으므로(위 dict 리터럴) 상수와 어긋날 수 있고, 어긋나면
+    #    "합성 로그로 소비자 경로를 태웠다"는 검증 자체가 거짓이 된다 — 소비자는 아무것도
+    #    못 읽은 채 조용히 null을 보고, 우리는 통과했다고 착각한다.
+    if detect_rows:
+        for path_const in (
+            DETECT_ENABLED_PATH, DETECT_MODEL_SHA_PATH, DETECT_EP_REQUESTED_PATH,
+            DETECT_EP_RESOLVED_PATH, DETECT_PERIOD_N_PATH, DETECT_PADDING_FRACTION_PATH,
+        ):
+            _, present = session_field(session, path_const)
+            if not present:
+                LOG.error(
+                    "생성한 session.json에 %s 키가 없다 — lib/frame_log.py의 경로 상수와 "
+                    "어긋났다. 이 로그로는 소비자 경로를 태울 수 없다",
+                    ".".join(path_const),
+                )
+                return 2
+
     session_path = paths.out_dir / "session.json"
     with session_path.open("w", encoding="utf-8") as f:
         json.dump(session, f, indent=2, ensure_ascii=False, sort_keys=True)
@@ -415,8 +655,30 @@ def main() -> int:
         )
     LOG.info("  frames : %s", frames_path)
     LOG.info("  session: %s", session_path)
-    LOG.info("다음: python scripts/analyze_frames.py --frames %s --session %s --warmup_sec 0",
-             frames_path, session_path)
+    detect_arg = ""
+    if detect_rows:
+        detect_arg = f" --detect {detect_path}"
+        LOG.info(
+            "  detect : %s — 추론 %d행 (**프레임 %d행과 다른 표본이다**), 열: %s",
+            detect_path, len(detect_rows), len(rows), ", ".join(detect_columns),
+        )
+        LOG.warning(
+            "  ⚠ 이 detect.csv의 E·F·G는 **인자로 만든 값이지 측정치가 아니다.** "
+            "여기서 나온 F를 버짓 F칸에 옮기지 말 것 — 이 파일의 목적은 소비자 경로"
+            "(analyze_frames --detect / pull_frames / run_session)를 실기기 전에 태우는 "
+            "것뿐이다. render_arm=%s·lighting_condition=%s·build_type=synthetic 세 가지가 "
+            "그 사실을 로그에 박아 둔다",
+            session.get("render_arm", "(키 없음)"), LIGHTING_SYNTHETIC,
+        )
+    elif args.detect_every_n > 0:
+        LOG.warning(
+            "  --detect_every_n=%s인데 탐지 행이 0개다 — 프레임이 하나도 방출되지 않았다",
+            args.detect_every_n,
+        )
+    LOG.info(
+        "다음: python scripts/analyze_frames.py --frames %s --session %s%s --warmup_sec 0",
+        frames_path, session_path, detect_arg,
+    )
     return 0
 
 

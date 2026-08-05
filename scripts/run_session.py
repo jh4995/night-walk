@@ -50,6 +50,14 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from lib import targets  # noqa: E402
 from lib.frame_log import (  # noqa: E402
+    DETECT_CADENCE_SERIES,
+    DETECT_ENABLED_PATH,
+    DETECT_EP_REQUESTED_PATH,
+    DETECT_EP_RESOLVED_PATH,
+    DETECT_EP_UNKNOWN,
+    DETECT_EPS,
+    DETECT_TIME_COLUMNS,
+    DETECT_WALL_SERIES,
     GPU_TIME_COLUMNS,
     LIGHTING_CONDITIONS,
     LIGHTING_SYNTHETIC,
@@ -72,6 +80,9 @@ from lib.stats import pct_change  # noqa: E402
 
 # 종료 코드·정렬 규칙·기본 패키지를 **다시 적지 않는다**. pull_frames가 그 규약의 주인이다.
 import pull_frames as pull_frames_script  # noqa: E402
+# 안전 회귀 문장도 **다시 적지 않는다**. analyze_frames가 그 문장의 주인이다 — 두 곳에 적으면
+# 한쪽이 낡고, 낡은 쪽이 이미 거짓이 된 문장("탐지 미구현")을 계속 내보낸다.
+import analyze_frames as analyze_script  # noqa: E402
 
 LOG = logging.getLogger(__name__)
 
@@ -126,12 +137,60 @@ DURATION_SHORT_TOLERANCE = 0.10
 FALLBACK_FIELD_PATH = ("render", "processing", "frames_fell_back_to_passthrough")
 FALLBACK_FIELD = ".".join(FALLBACK_FIELD_PATH)
 
+# ── 앱이 신고한 실행 공급자(EP) ─────────────────────────────────────────────
+# **위 폴백 검사와 글자 그대로 같은 구조다.** 경로 상수 하나에서 필드 이름을 파생시키고,
+# 값은 앱의 자진 신고를 그대로 옮기며, 하네스는 해석하지 않는다.
+#
+# 🔴 **하네스가 EP를 해석하지 않는다.** ORT에 묻지도, 기기 SoC에서 유추하지도 않는다 —
+#   대조하는 것은 앱이 적은 두 값(`requested` / `resolved`)뿐이다. 유추를 시작하면 앱이 EP
+#   선택 로직을 바꿀 때마다 하네스가 따라가야 하고, 그 동기화가 어긋나는 날 **조용히 틀린
+#   라벨**이 나온다(FALLBACK_FIELD 주석이 arm→열 매핑을 거부한 것과 같은 논거).
+#
+# 🔴 **왜 어긋남이 '참고'가 아니라 '어긋남'인가.** NNAPI를 요청했는데 CPU로 세션이 열린 런은
+#   `render_arm=detect_nnapi`라고 기록되고 계획 대조의 나머지 항목을 전부 통과한다. 그 상태로
+#   F를 인용하면 **CPU 숫자가 NNAPI 칸에 들어간다** — `s4_combo` #5(전량 패스스루 폴백)와
+#   완전히 같은 실패 양식이고, 그때의 처방이 "앱의 자진 신고를 계획 대조에서 크게 낸다"였다.
+DETECT_EP_REQUESTED_FIELD = ".".join(DETECT_EP_REQUESTED_PATH)
+DETECT_EP_RESOLVED_FIELD = ".".join(DETECT_EP_RESOLVED_PATH)
+DETECT_ENABLED_FIELD = ".".join(DETECT_ENABLED_PATH)
+
 # 승격 베이스라인 (docs/baselines/README.md). 런3(passthrough 재현)이 여기에 비교된다.
 DEFAULT_PROMOTION_BASELINE = "docs/baselines/20260730_poc_empty_a34.json"
 
 # 비교에 쓰는 열. **`lib/frame_log.py`에서 가져온다** — 여기서 열 목록을 다시 적으면
 # 스키마가 늘어날 때 조용히 빠진다.
 COMPARE_COLUMNS = tuple(GPU_TIME_COLUMNS) + (STAGE_D_TOTAL_COLUMN, "gpu_sum_ms")
+
+# ── ③ 탐지 비교 열 (v6). **COMPARE_COLUMNS와 별 tuple이다** ────────────────
+# 🔴 **왜 위 tuple에 합치지 않는가.** 위는 GPU 시계(GL_EXT_disjoint_timer_query) 열이고
+#   이쪽은 CPU 벽시계(SystemClock.elapsedRealtimeNanos) 구간 길이다. 하나로 합치면
+#   (a) `summary_metrics`가 두 시계의 값을 같은 조회 경로(summary["stages"])에서 찾게 되고
+#       — detect 값은 애초에 `summary["detect"]`에 있으므로 **조용히 count=0**이 된다,
+#   (b) 리포트가 두 시계를 한 표에 찍어 사람이 줄 단위로 복사해 갈 때 시계가 떨어져 나간다.
+#   그래서 목록도 조회 경로도 출력 표도 가른다. **어느 코드도 열끼리 더하지 않는다**(비교는
+#   전부 열 단위 diff다) — 합치지 않는 이유는 덧셈이 아니라 **라벨의 오염**이다.
+#
+# ⚠ 여기 넣는 이유: `detect_cpu` vs `detect_nnapi`는 arm 차분으로만 말할 수 있는 조건이고,
+#   그 표가 없으면 두 arm을 나눠 찍은 의미가 사라진다. 노이즈 바닥·arm 차분 기계는 열 이름만
+#   알면 되므로 그대로 재사용된다.
+# ⚠ `detect_cadence_ms`는 **단계 비용이 아니라 실행 간격**이라 넣지 않는다. arm이 달라
+#   주기가 달라진 것을 "비용이 늘었다"로 읽으면 안 된다 — 그 값은 detect 블록에서만 본다.
+DETECT_COMPARE_COLUMNS = tuple(DETECT_TIME_COLUMNS) + (DETECT_WALL_SERIES,)
+
+# 🔴 두 목록이 한 이름도 공유하지 않아야 한다. 겹치면 `summary_metrics`의 dict에서 한쪽이
+#    다른 쪽을 덮어써 **한 시계의 숫자가 다른 시계의 이름으로** 표에 실린다.
+_compare_overlap = sorted(set(COMPARE_COLUMNS) & set(DETECT_COMPARE_COLUMNS))
+if _compare_overlap:
+    raise RuntimeError(
+        f"run_session.py 상수 불일치 — {_compare_overlap}이 GPU 시계 비교 열과 CPU 벽시계 "
+        f"비교 열 양쪽에 있다. 한 metrics dict에 담기므로 한쪽이 다른 쪽을 덮어쓴다"
+    )
+if DETECT_CADENCE_SERIES in DETECT_COMPARE_COLUMNS:
+    raise RuntimeError(
+        f"run_session.py 상수 불일치 — {DETECT_CADENCE_SERIES}는 실행 간격이지 단계 비용이 "
+        f"아니다. arm 차분 표에 들어가면 주기 변화가 비용 변화로 읽힌다"
+    )
+
 FRAMETIME_KEY = "frametime_primary"
 COMPARE_PERCENTILES = ("p50", "p95", "p99")
 
@@ -272,9 +331,30 @@ def validate_plan(plan: dict) -> list[dict]:
         minutes = raw.get("minutes")
         if not isinstance(minutes, (int, float)) or isinstance(minutes, bool) or minutes <= 0:
             raise PlanError(f"{where}.minutes는 양수여야 한다: {minutes!r}")
+        # ── 기대 EP (③ 탐지 런에만. 없으면 None = 이 칸은 EP를 규정하지 않는다) ──
+        # ⚠ **arm에서 유추하지 않는다.** `detect_nnapi`라는 이름을 보고 EP를 정하는 순간
+        #   하네스가 arm의 의미를 해석하기 시작하고, 앱이 이름 규칙을 바꾸는 날 조용히
+        #   틀린 기대값이 생긴다(lib/frame_log.py: "하네스는 arm의 의미를 해석하지 않는다").
+        #   계획에 적혀 있을 때만 대조한다.
+        ep = raw.get("ep")
+        if ep is not None:
+            if ep not in DETECT_EPS:
+                raise PlanError(
+                    f"{where}.ep={ep!r}은 어휘 밖이다. 허용: {', '.join(DETECT_EPS)} "
+                    "(lib/frame_log.py: DETECT_EPS). ⚠ QNN은 측정 기기(A34, MediaTek)에서 "
+                    "불가능해 어휘에 없다"
+                )
+            if ep == DETECT_EP_UNKNOWN:
+                # 조명의 'unknown'과 같은 이유 — '기록되지 않음'을 계획값으로 쓰면 대조가
+                # 무의미해진다(이 스크립트의 존재 이유가 사라진다).
+                raise PlanError(
+                    f"{where}.ep={ep!r} — 이 값은 '기록되지 않음'이라는 뜻이라 계획으로 쓸 수 "
+                    "없다. 실제로 요청할 EP를 적을 것"
+                )
         row = {
             "n": n,
             "arm": arm,
+            "ep": ep,
             "lighting": lighting,
             "minutes": float(minutes),
             "purpose": str(raw.get("purpose") or ""),
@@ -314,8 +394,22 @@ def plan_fingerprint(rows: list[dict]) -> str:
     import hashlib
 
     keys = ("n", "arm", "lighting", "minutes", "compare_to", "noise_pair", "diff_baseline")
+    # ⚠ **새 키는 값이 있을 때만 지문에 넣는다.** 그냥 keys에 더하면 `ep`를 쓰지 않는 기존
+    #   계획의 지문까지 (None이 payload에 들어가면서) 바뀌어, **진행 중인 세션이 전부
+    #   재개 거부**(EXIT_STATE_CONFLICT)된다. 계획이 실제로 달라지지 않았는데 기록을 잃는
+    #   것은 이 스크립트가 막으려는 것과 반대다. 값이 생기면 그때 지문이 바뀌는 것은 옳다 —
+    #   EP 기대값이 바뀐 계획은 다른 계획이다.
+    optional_keys = ("ep",)
     payload = json.dumps(
-        [{k: r.get(k) for k in keys} for r in rows], sort_keys=True, ensure_ascii=False
+        [
+            {
+                **{k: r.get(k) for k in keys},
+                **{k: r[k] for k in optional_keys if r.get(k) is not None},
+            }
+            for r in rows
+        ],
+        sort_keys=True,
+        ensure_ascii=False,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
@@ -646,6 +740,31 @@ def fallback_is_mismatch(arm, value: int | float | None) -> bool:
     return value is not None and value != 0 and arm != RENDER_ARM_PASSTHROUGH
 
 
+def detect_facts(session: dict) -> dict:
+    """앱이 신고한 ③ 탐지 사실. **해석하지 않고 그대로 옮긴다** ([fallback_facts]와 같은 규약).
+
+    `enabled_present=False`는 **`enabled=False`와 다르다.** v6 이전 로그에는 이 블록 자체가
+    없고, 그때는 탐지를 껐다고도 켰다고도 말할 수 없다. 없는 것을 false로 채우면 없는 근거를
+    만드는 것이다.
+    """
+    enabled, enabled_present = _dig(session, DETECT_ENABLED_PATH)
+    requested, req_present = _dig(session, DETECT_EP_REQUESTED_PATH)
+    resolved, res_present = _dig(session, DETECT_EP_RESOLVED_PATH)
+    return {
+        "enabled": enabled if isinstance(enabled, bool) else None,
+        "enabled_raw": enabled,
+        "enabled_present": enabled_present,
+        "ep_requested": requested,
+        "ep_resolved": resolved,
+        "ep_requested_present": req_present,
+        "ep_resolved_present": res_present,
+        # True=같다 / False=다르다 / None=**말할 수 없다**(한쪽이라도 없다)
+        "ep_matches": (
+            None if requested is None or resolved is None else requested == resolved
+        ),
+    }
+
+
 def _done_attempt(row: dict) -> dict | None:
     for a in reversed(row.get("attempts") or []):
         if a.get("conforms"):
@@ -900,6 +1019,61 @@ def check_against_plan(
                 f"잡지 않았고, 감추지도 않는다. {tail}"
             )
 
+    # ── ③ 탐지 EP. **앱의 자진 신고 두 개를 대조한다** (FALLBACK_FIELD와 같은 구조).
+    #    🔴 하네스가 EP를 해석하지 않는다 — ORT에 묻지도, SoC에서 유추하지도 않는다.
+    #    ⚠ **탐지를 켰다고 신고한 런이거나, 계획이 EP를 규정한 칸에서만** 본다. 그러지 않으면
+    #      탐지가 아닌 모든 런(승격본 45건 포함)에 "EP를 대조할 수 없다" 참고가 매번 붙어
+    #      곧 아무도 안 보게 되고, 정작 탐지 런에서 묻힌다.
+    det = detect_facts(session)
+    planned_ep = row.get("ep")
+    if det["enabled"] or planned_ep is not None:
+        if planned_ep is not None and det["ep_requested"] != planned_ep:
+            mismatches.append(
+                f"{DETECT_EP_REQUESTED_FIELD}: 계획={planned_ep!r} vs 실제="
+                f"{det['ep_requested']!r} — 앱에서 EP를 계획대로 고르지 않았을 가능성이 "
+                "가장 크다. **이 런은 계획 칸이 규정한 EP의 숫자가 아니다**"
+            )
+        if det["ep_matches"] is False:
+            # 🔴 이 스크립트가 이번 라운드에 추가하는 가장 중요한 검사다. 스피너가 맞아도,
+            #    arm이 맞아도, 여기서 무효가 된다 — 요청한 EP로 세션이 열리지 않았으면
+            #    그 런의 F는 다른 실행 공급자의 비용이다.
+            mismatches.append(
+                f"EP 어긋남: {DETECT_EP_REQUESTED_FIELD}={det['ep_requested']!r}인데 "
+                f"{DETECT_EP_RESOLVED_FIELD}={det['ep_resolved']!r}다 — 앱이 요청한 실행 "
+                f"공급자로 세션이 열리지 않았다(폴백). **이 런의 E·F·G는 "
+                f"{det['ep_requested']!r}의 비용이 아니라 {det['ep_resolved']!r}의 비용이며, "
+                f"arm 이름({arm!r})이 무엇이든 그렇다.** 프레임타임과 fps는 정상으로 보일 수 "
+                f"있다. 하네스는 EP를 해석하지 않았다 — 앱이 적은 두 값을 대조했을 뿐이다"
+            )
+        elif det["ep_matches"] is None:
+            missing = []
+            if det["ep_requested"] is None:
+                missing.append(
+                    f"{DETECT_EP_REQUESTED_FIELD}"
+                    f"({'명시적 null' if det['ep_requested_present'] else '키 없음'})"
+                )
+            if det["ep_resolved"] is None:
+                missing.append(
+                    f"{DETECT_EP_RESOLVED_FIELD}"
+                    f"({'명시적 null' if det['ep_resolved_present'] else '키 없음'})"
+                )
+            notes.append(
+                f"요청 EP와 해소된 EP를 대조할 수 없다: {', '.join(missing)} — 이 런의 F가 "
+                "어느 실행 공급자에서 나온 값인지 **말할 수 없다**(**값이 없는 것은 '같다'가 "
+                "아니다**). 그래서 어긋남으로 잡지 않았다. 앱이 두 값을 모두 적어야 한다"
+            )
+        elif det["ep_requested"] not in DETECT_EPS:
+            notes.append(
+                f"EP가 하네스 어휘 밖이다: {det['ep_requested']!r} — 앱이 새 EP를 하네스보다 "
+                f"먼저 낸 것일 수 있다(요청과 해소가 같으므로 어긋남은 아니다). "
+                f"허용 어휘: {', '.join(DETECT_EPS)}"
+            )
+    if planned_ep is not None and det["enabled"] is False:
+        mismatches.append(
+            f"계획은 EP {planned_ep!r}를 규정했는데 session.json이 {DETECT_ENABLED_FIELD}="
+            "false라고 신고했다 — 이 런은 탐지를 돌리지 않았다"
+        )
+
     planned = planned_window_sec(row, warmup_sec)
     if analysis_sec is None:
         mismatches.append("분석 창 길이를 재지 못했다 (frames.csv의 t_recv_ns를 읽을 수 없다)")
@@ -934,6 +1108,15 @@ def check_against_plan(
         "frames_fell_back_to_passthrough": fb["value"],
         # 사람이 숫자를 보고 판단하게 두지 않는다. None = 말할 수 없다(필드 없음/읽을 수 없음).
         "no_passthrough_fallback": None if fb["value"] is None else fb["value"] == 0,
+        # ③ 탐지. **진행 파일의 스키마 이름이지 앱의 필드 이름이 아니다** — 위
+        # frames_fell_back_to_passthrough와 같은 취급이며, 앱이 키를 옮겨도 이미 기록된
+        # attempt는 이 이름으로 남아 있어야 다시 읽힌다(둘은 다른 namespace다).
+        DETECT_ENABLED_FIELD: det["enabled"],
+        DETECT_EP_REQUESTED_FIELD: det["ep_requested"],
+        DETECT_EP_RESOLVED_FIELD: det["ep_resolved"],
+        # 사람이 두 문자열을 눈으로 비교하게 두지 않는다. None = 말할 수 없다.
+        "detect_ep_matches": det["ep_matches"],
+        "planned_ep": planned_ep,
         "analysis_window_sec": analysis_sec,
         "planned_window_sec": round(planned, 1),
         "session_duration_sec": round(
@@ -960,7 +1143,12 @@ def matching_plan_rows(state: dict, session: dict) -> list[int]:
 
 # ══ 요약에서 숫자 뽑기 ══════════════════════════════════════════════════════
 def summary_metrics(summary: dict) -> dict:
-    """비교에 쓸 분포만 뽑는다. p50/p95/p99 + min/max + count를 그대로 옮긴다."""
+    """비교에 쓸 분포만 뽑는다. p50/p95/p99 + min/max + count를 그대로 옮긴다.
+
+    🔴 **두 블록에서 뽑는다** — `stages`(GPU 시계)와 `detect`(CPU 벽시계). 목록도 조회 경로도
+    가른 이유는 DETECT_COMPARE_COLUMNS 주석에 있다. 이름이 겹치면 한쪽이 다른 쪽을 덮어써
+    시계가 뒤바뀌므로, 위 상수 검사에 더해 여기서도 실제 값으로 한 번 더 닫는다.
+    """
     out: dict[str, dict] = {}
     ft = ((summary.get("frametime") or {}).get("primary")) or {}
     if ft.get("count"):
@@ -970,6 +1158,17 @@ def summary_metrics(summary: dict) -> dict:
         s = stages.get(col) or {}
         if s.get("count"):
             out[col] = dict(s)
+    detect = summary.get("detect") or {}
+    for col in DETECT_COMPARE_COLUMNS:
+        s = detect.get(col) or {}
+        if not s.get("count"):
+            continue
+        if col in out:  # 도달 불가(위 상수 검사). 그래도 조용히 덮어쓰지 않는다.
+            raise PlanError(
+                f"metrics 키 충돌: {col!r}이 GPU 시계 블록과 detect 블록 양쪽에 있다 — "
+                "한쪽이 다른 쪽을 덮어써 시계가 뒤바뀐 숫자가 표에 실린다"
+            )
+        out[col] = dict(s)
     return out
 
 
@@ -1176,6 +1375,14 @@ def analyze_run(
         "--label", label.strip(),
         *adb_args(args),
     ]
+    # ③ 탐지 계측. **파일이 실제로 회수됐을 때만 넘긴다** — analyze_frames는 명시적으로
+    # 지목한 파일을 못 읽으면 죽는 것이 옳고(조용한 반쪽 집계 금지), 그러면 탐지가 아닌
+    # 런의 집계가 통째로 실패한다. "탐지를 켰는데 파일이 없다"는 pull_frames가 이미
+    # 실패로 잡으므로(회수 단계), 여기까지 왔는데 파일이 없으면 탐지 런이 아니다.
+    detect_csv = local_dir / "detect.csv"
+    if detect_csv.exists():
+        # t0·warmup을 frames.csv와 같은 값으로 쓰기 위해 **같은 자식 호출**에 넘긴다.
+        extra += ["--detect", str(detect_csv)]
     child = invoke_child(ANALYZE_SCRIPT, ANALYZE_STAGE, extra, args)
     return child.json("summary.json"), child
 
@@ -1317,6 +1524,23 @@ def print_attempt_result(row: dict, attempt: dict) -> None:
                 col, s.get("p50"), s.get("p95"), s.get("p99"), s.get("min"), s.get("max"),
                 s.get("count"), arm,
             )
+        # 🔴 ③ 탐지는 **표를 나눠 찍는다.** 위 표는 GPU 시계(+frametime)이고 이쪽은 CPU
+        #    벽시계다. 한 표에 섞으면 줄 하나만 복사해 갈 때 시계가 떨어져 나간다.
+        detect_cols = [c for c in DETECT_COMPARE_COLUMNS if c in m]
+        if detect_cols:
+            obs = attempt.get("observed") or {}
+            LOG.info(
+                "  ③ 탐지 분포 — CPU 벽시계 [arm=%s, EP %s→%s] "
+                "(위 표와 다른 시계다. 더하지 말 것. n은 추론 횟수이지 프레임 수가 아니다):",
+                arm, obs.get(DETECT_EP_REQUESTED_FIELD), obs.get(DETECT_EP_RESOLVED_FIELD),
+            )
+            for col in detect_cols:
+                s = m[col]
+                LOG.info(
+                    "    %-22s p50=%-8s p95=%-8s p99=%-8s min=%-8s max=%-8s (n=%s, arm=%s)",
+                    col, s.get("p50"), s.get("p95"), s.get("p99"), s.get("min"),
+                    s.get("max"), s.get("count"), arm,
+                )
     v = attempt.get("verdict") or {}
     if v:
         LOG.info(
@@ -1343,11 +1567,14 @@ def build_report(state: dict, args, run_ts: str) -> dict:
         "noise_floor": {"available": False},
         "arm_deltas": [],
         "baseline_diff": None,
+        # 성능만 있는 보고는 불완전한 보고다 (conventions §6). **문장은 analyze_frames가
+        # 소유한다** — 여기 사본을 두면 한쪽이 낡고, 낡은 쪽이 이미 거짓이 된 문장
+        # ("탐지 단계 미구현")을 계속 내보낸다. 실제로 v6에서 그렇게 됐다.
         "safety_regression": {
-            # 성능만 있는 보고는 불완전한 보고다 (conventions §6). 탐지 미구현이라
-            # 미평가이며, **보고에서 빼지 않는다.**
-            "evaluated": False,
-            "reason": "탐지 단계 미구현 — 위험물 강조 누락률을 아직 잴 수 없다",
+            # scope="session" — 이 자리는 런 하나가 아니라 세션 전체를 덮는다. 기본값(런)으로
+            # 부르면 "이 런에서 재지 않았다"가 나가고, 탐지가 실제로 돈 세션에서도 그 문장이
+            # 붙는다(같은 결함의 네 번째가 된다). 런별 사실은 아래 per_run이 갖는다.
+            **analyze_script.safety_regression_block(scope="session"),
             "per_run": {},
         },
         "caveats": [],
@@ -1388,6 +1615,15 @@ def build_report(state: dict, args, run_ts: str) -> dict:
             # 앱이 그 arm을 실제로 그렸는가. **분포보다 먼저 봐야 하는 값이다** —
             # 폴백한 런의 프레임타임은 정상으로 보인다.
             "passthrough_fallback": fb,
+            # ③ 탐지 조건. **E·F·G 숫자와 같은 줄에 있어야 한다** — EP가 떨어져 나가면
+            # `detect_nnapi` arm의 표에 CPU 숫자가 남는다(폴백 표시와 같은 논거).
+            "detect": {
+                "enabled": obs.get(DETECT_ENABLED_FIELD),
+                "ep_requested": obs.get(DETECT_EP_REQUESTED_FIELD),
+                "ep_resolved": obs.get(DETECT_EP_RESOLVED_FIELD),
+                "ep_matches": obs.get("detect_ep_matches"),
+                "planned_ep": r.get("ep"),
+            } if a else None,
             "verdict": (a or {}).get("verdict"),
             "metrics": (a or {}).get("metrics"),
         })
@@ -1719,9 +1955,35 @@ def build_report(state: dict, args, run_ts: str) -> dict:
             "그 숫자는 어느 커밋의 앱이 낸 것인지 말할 수 없다"
         )
     report["caveats"].append(
-        "안전 회귀는 evaluated=false다 (탐지 미구현). 성능만 있는 보고는 불완전한 보고다"
+        "안전 회귀는 evaluated=false다 — **정답 라벨이 없어서다.** (앱이 탐지를 내기 시작해도 "
+        "이 값은 그대로 false다. 사유 전문은 safety_regression.reason) "
+        "성능만 있는 보고는 불완전한 보고다"
     )
+    # 🔴 EP가 어긋난 채 통과로 기록된 런. 폴백 caveat와 **같은 자리**에 같은 이유로 둔다 —
+    #    이 검사가 생기기 전에 기록된 attempt는 status=done으로 굳어 있고, 리포트가 말해
+    #    주지 않으면 CPU 숫자가 NNAPI 칸에 인용된다.
+    ep_flagged = [
+        r["n"] for r in report["runs"]
+        if (r.get("detect") or {}).get("ep_matches") is False
+    ]
+    if ep_flagged:
+        report["caveats"].append(
+            f"🔴 {DETECT_EP_RESOLVED_FIELD}가 요청과 다른 런: {ep_flagged} — 앱이 요청한 실행 "
+            "공급자로 세션을 열지 못했다(폴백). **그 런의 E·F·G는 arm 이름이 가리키는 EP의 "
+            "비용이 아니다.** 프레임타임은 정상으로 보인다"
+        )
     return report
+
+
+def col_label(col: str) -> str:
+    """표에 찍을 열 이름. **CPU 벽시계 열에는 시계를 붙인다.**
+
+    🔴 노이즈 바닥·arm 차분 표는 열 이름 사전순으로 한 표에 찍힌다(기계가 열 이름만 알면
+    되도록 만들어져 있고, 그래서 detect 열도 그대로 재사용된다). 그 표에서 `stage_f_ms`
+    줄만 복사해 가면 시계가 떨어져 나가고, GPU 시계 줄과 같은 자리에 놓인다 —
+    **어느 코드도 두 시계를 더하지 않지만, 사람은 표를 보고 더한다.** 그래서 이름에 붙인다.
+    """
+    return f"{col}[CPU벽시계]" if col in DETECT_COMPARE_COLUMNS else col
 
 
 def print_fallback_integrity(integrity: dict | None, indent: str = "  ") -> None:
@@ -1797,7 +2059,7 @@ def print_report(report: dict) -> None:
                         continue
                     LOG.info(
                         "    %-24s %s: %8s vs %8s ms  |Δ|=%-8s (%+.2f%%) [arm=%s, 쌍=%s]",
-                        col, p, v["a_ms"], v["b_ms"], v["abs_delta_ms"],
+                        col_label(col), p, v["a_ms"], v["b_ms"], v["abs_delta_ms"],
                         v["pct"] if v["pct"] is not None else 0.0, blk["arm"], blk["pair"],
                     )
         if nf.get("duplicate_arm_pairs"):
@@ -1861,10 +2123,20 @@ def print_report(report: dict) -> None:
                     tag = f"바닥 {floor}ms({src}) 이내 → **신호가 아니다**"
                 LOG.info(
                     "  %-24s %s: %s(%s) → %s(%s) ms  Δ=%+.3f  %s",
-                    col, p, v["reference_ms"], ad["reference_arm"],
+                    col_label(col), p, v["reference_ms"], ad["reference_arm"],
                     v["current_ms"], ad["arm"], v["delta_ms"], tag,
                 )
         LOG.warning("  ⚠ %s", ad["gpu_present_note"])
+        if any(c in DETECT_COMPARE_COLUMNS for c in ad["columns"]):
+            # 🔴 두 시계가 한 표에 있다는 사실을 표 **끝에서** 한 번 더 말한다. 열 이름의
+            #    [CPU벽시계] 태그는 줄을 복사할 때 따라가고, 이 줄은 표 전체를 볼 때 보인다.
+            LOG.warning(
+                "  ⚠ 위 표에는 **두 시계가 섞여 있다** — [CPU벽시계] 태그가 붙은 열"
+                "(%s)은 SystemClock 구간 길이이고 나머지는 GPU 시계다. 어느 계산도 둘을 "
+                "더하지 않지만, **표를 읽는 사람이 더하면 안 된다.** 또 detect 열의 n은 "
+                "추론 횟수라 GPU 열의 n(프레임 수)과 모집단이 다르다",
+                ", ".join(c for c in ad["columns"] if c in DETECT_COMPARE_COLUMNS),
+            )
 
     bd = report.get("baseline_diff")
     LOG.info("-" * 66)

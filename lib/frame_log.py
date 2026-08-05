@@ -2,6 +2,10 @@
 
 규격 전문은 `docs/FRAME_LOG_SCHEMA.md`. 이 모듈은 그 규격의 실행 가능한 정의다.
 
+파일은 **둘**이다: 매 프레임의 `frames.csv`(read_frames)와, 주기적으로만 도는 ③ 탐지의
+`detect.csv`(read_detect, v6). 표본 모집단이 다르므로 파일을 가른다 —
+아래 "detect.csv" 절 주석 참고.
+
 설계 원칙 3가지:
 
 1. **유도 가능한 값은 저장하지 않는다.** 프레임타임은 타임스탬프 차이로 계산한다.
@@ -20,12 +24,13 @@ import json
 import math
 from collections import Counter
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Optional
 
 from lib.stats import percentile
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # 폰이 반드시 뱉어야 하는 열
 REQUIRED_COLUMNS = ("frame_idx", "t_recv_ns")
@@ -236,6 +241,303 @@ KNOWN_COLUMNS = tuple(REQUIRED_COLUMNS) + tuple(OPTIONAL_COLUMNS)
 
 MISSING = -1
 
+# ══ detect.csv — ③ 탐지 계측 (v6) ═════════════════════════════════════════
+# **frames.csv와 별 파일이다.** 탐지는 매 프레임이 아니라 주기적으로만 돈다. E·F·G를
+# frames.csv의 열로 넣으면 탐지가 돌지 않은 프레임의 행이 전부 -1로 채워지고, "백분위를
+# 낼 때 -1을 걸러낸다"는 책임이 **모든 소비자에게** 퍼진다 — 한 곳만 빠뜨리면 p50이 조용히
+# -1로 오염된다. 애초에 표본 모집단이 다르므로(프레임 수 ≫ 추론 수) 파일을 가른다.
+#
+# 🔴 **E·F·G는 CPU 벽시계(`SystemClock.elapsedRealtimeNanos`) 구간 길이이고 GPU 시계가
+#   아니다.** GPU 패스 시간 열들과 **물리량이 다르므로** `gpu_sum_ms`·`stage_d_total_ms`에
+#   섞이면 안 된다. 섞이는 순간 CPU 시계와 GPU 시계를 더한 숫자가 버짓표로 나간다 —
+#   아래 자기검사가 그것을 import 시점에 막는다.
+#
+# 🔴 **행의 단위는 '추론 1회'다.** `detect_idx`는 추론 시퀀스 번호이며 **프레임 번호가
+#   아니다**(frames.csv의 `frame_idx`와 조인할 수 없다). 두 파일을 잇는 것은 시각
+#   (`t_detect_recv_ns` ↔ `t_recv_ns`, 같은 CLOCK_BOOTTIME)이다.
+DETECT_REQUIRED_COLUMNS = (
+    "detect_idx",        # 추론 시퀀스 번호. **프레임 번호가 아니다**
+    "t_detect_recv_ns",  # 탐지 스레드가 프레임을 받은 시각. frames.csv의 t_recv_ns와 같은 시계
+)
+
+# ── E·F·G 구간 길이 (단위 ms(float), **CPU 벽시계**) ──────────────────────
+# 버짓 E·F·G 칸을 채울 열이다. 값의 뜻은 각 주석 참고.
+# ⚠ 여기에 **합계 열을 만들지 않는다.** 총 소요는 `t_detect_end_ns - t_detect_recv_ns`로
+#   유도 가능하고, 파일 상단 §2가 "유도 가능한 값은 저장하지 않는다"고 정했다
+#   (하네스가 만드는 파생 시계열은 DETECT_WALL_SERIES — CSV 열이 아니고, E+F+G의 합도 아니다).
+DETECT_TIME_COLUMNS = (
+    "stage_e_ms",   # letterbox + RGB 변환 + NCHW 텐서화 (버짓 E칸)
+    "stage_f_ms",   # ORT session.run() 1회 (버짓 F칸)
+    "stage_g_ms",   # conf 필터 + cxcywh→xyxy + 클래스별 NMS + letterbox 역변환 (버짓 G칸)
+)
+
+# ── 카운트 열 (단위 개, int) ──────────────────────────────────────────────
+# ⚠ **시간 열과 폐기 가드가 다르다.** 0은 정상값이다("박스가 없었다") — 시간 열의 하한
+#   `> 0`을 그대로 쓰면 박스 0개인 추론이 전부 폐기로 세어져 분포가 위로 치우친다.
+#   그래서 카운트는 `>= 0`으로 받는다(_collect_nonneg). 기록되지 않은 값만 -1이다.
+DETECT_COUNT_COLUMNS = (
+    "boxes_pre_nms",       # conf 임계 통과 후 **NMS 전** 박스 수. G 비용의 설명 변수다
+    "boxes_out",           # 최종 박스 수
+    "skipped_while_busy",  # 그 시점까지의 **누적**. 탐지 스레드가 바빠 건너뛴 프레임 수
+)
+
+# ── 카운트 열 중 **누적값**인 것 ──────────────────────────────────────────
+# 단조 증가 수열이라 백분위가 뜻이 없다 — 분포를 내지 않고 마지막 값 하나만 남긴다.
+# 그래서 `read_detect`의 수집 경로가 나머지 카운트 열과 **다르다**(DetectSeries에 리스트가
+# 아니라 `<열>_total` / `<열>_rows` / `<열>_regressions` 세 필드를 갖는다).
+DETECT_CUMULATIVE_COLUMNS = ("skipped_while_busy",)
+
+# 분포를 내는 카운트 열 = 카운트 열에서 누적값을 뺀 것. **여기서 파생시킨다.**
+# 🔴 `read_detect` 안에 `("boxes_pre_nms", "boxes_out")` 같은 리터럴을 두지 않는다 —
+#   그러면 다음 사람이 DETECT_COUNT_COLUMNS에 열을 추가하고 아래 자기검사를 전부 통과시켜도
+#   그 값이 조용히 사라지고, `count == 0`과 "열이 없다"가 구분되지 않는다
+#   (KNOWN_COLUMNS 주석이 경계하는 실패와 같은 부류다).
+DETECT_DISTRIBUTION_COUNT_COLUMNS = tuple(
+    c for c in DETECT_COUNT_COLUMNS if c not in DETECT_CUMULATIVE_COLUMNS
+)
+
+# 점수 열. 카운트와 폐기 가드는 같지만(하한 `>= 0`) **개수가 아니라 점수**라 이름을 가른다.
+DETECT_SCORE_COLUMNS = ("max_conf",)
+
+DETECT_OPTIONAL_COLUMNS = (
+    "t_detect_end_ns",     # 후처리까지 끝난 시각. t_detect_recv_ns와 같은 시계
+    # 카메라가 준 ImageProxy.imageInfo.timestamp 원본. **frames.csv의 t_capture_ns와 같은
+    # 부류로 기준 시계가 불명확하다**(§시계 함정) — 우리 시계와 빼지 않는다.
+    # ⚠ 하네스는 아직 이 열로 **파생 시계열을 만들지 않는다.** 읽어서 아는 열로만 두는 이유는
+    #   앱이 이 값을 쓰기 시작해도 미지 열 경고가 뜨지 않게 하려는 것이고, 취득~탐지 지연을
+    #   내려면 t_capture_ns가 그랬듯 상한 가드와 폐기 문장이 따로 필요하다(다음 라운드).
+    "t_image_capture_ns",
+    "max_conf",            # 그 추론의 최대 점수 (float). 카운트가 아니라 점수다
+) + DETECT_TIME_COLUMNS + DETECT_COUNT_COLUMNS
+
+# 위 두 목록에 없는 열 = 하네스가 읽지 않는 열. frames.csv 쪽 KNOWN_COLUMNS와 **같은 취급**이다
+# — 하드 에러로 만들지 않고(앱이 스키마보다 앞서 나갈 수 있다) 반드시 경고한다. 오타는 "없는
+# 것"과 다르다(`stage_f_ms`를 `stage_f`로 오타 내면 F칸이 count=0이 되고, 우리는 "추론 시간을
+# 재지 않았다"고 **잘못** 결론 낸다).
+DETECT_KNOWN_COLUMNS = tuple(DETECT_REQUIRED_COLUMNS) + tuple(DETECT_OPTIONAL_COLUMNS)
+
+# ── 열 → 수집 경로 분류 (다섯 번째 자기검사의 입력) ────────────────────────
+# **`read_detect`가 각 열을 어떻게 다루는지**를 상수로 선언한다. 아래 자기검사가 이 분류와
+# `DETECT_KNOWN_COLUMNS`를 대조해, "스키마에 선언했는데 아무 경로도 수집하지 않는 열"을
+# import 시점에 죽인다. 선언만 하고 수집을 잊으면 그 열은 **영원히 count=0**이고, 그 상태는
+# "앱이 그 열을 안 냈다"와 로그상 구분되지 않는다.
+#
+# 시계열로 수집되는 열(각각 DetectSeries의 같은 이름 필드에 쌓인다).
+DETECT_SERIES_COLUMNS = (
+    tuple(DETECT_TIME_COLUMNS)
+    + DETECT_DISTRIBUTION_COUNT_COLUMNS
+    + DETECT_SCORE_COLUMNS
+)
+# 시계열이 아니라 **파생 시계열의 재료**로만 읽히는 열 (DETECT_WALL_SERIES = end - recv).
+DETECT_WALL_SOURCE_COLUMNS = ("t_detect_end_ns",)
+# 🔴 **일부러 수집하지 않는 열.** "아는 열이지만 아직 쓰지 않는다"를 명시적으로 적는 자리다 —
+#   빼면 아래 자기검사가 이 열을 "수집을 잊은 열"로 지목해 import가 죽는다. 여기 적는 것은
+#   포기가 아니라 **의도의 기록**이고, 쓰기 시작하는 라운드가 이 목록에서 빼면 된다.
+#   (t_image_capture_ns는 기준 시계가 불명확해 우리 시계와 뺄 수 없다 — 상한 가드와 폐기
+#    문장이 따로 필요하다. DETECT_OPTIONAL_COLUMNS의 그 열 주석 참고.)
+DETECT_UNCOLLECTED_COLUMNS = ("t_image_capture_ns",)
+
+# ── 추론 1회의 **벽시계 span** (파생 시계열) ──────────────────────────────
+# **무엇인가:** `t_detect_end_ns - t_detect_recv_ns`. 탐지 스레드가 그 프레임을 받은 순간부터
+# 후처리를 끝낸 순간까지의 벽시계 길이다. **CSV 열이 아니라 하네스가 만드는 파생 시계열**이다.
+#
+# 🔴 **E+F+G의 합이 아니다.** 그 셋의 바깥에 있는 비용(프레임 대기 해제, 텐서 복사, 콜백
+#   디스패치)이 이 span에 함께 들어가므로 `span - (E+F+G) >= 0`인 **미계상분이 존재할 수
+#   있다.** 그 차이를 무엇이라 부르고 어떻게 낼지는 **소비자 라운드(H5)가 정한다** — 여기서
+#   이름을 지으면 소비자가 쓰지 않는 이름이 남는다.
+# 🔴 **버짓 칸이 없다.** E·F·G 각각에는 칸이 있지만 이 파생값에는 없다. 칸 라벨을 붙이면
+#   미계상분까지 포함한 숫자가 F칸 같은 자리에 인용된다.
+# 🔴 **`stage_d_total_ms`와 다른 부류다.** 저쪽은 **열들의 행별 합**이고 이쪽은 **두
+#   타임스탬프의 차**다. 그래서 이름에 `_total_`을 쓰지 않는다 — `stage_d_total_ms`와
+#   `gpu_sum_ms`를 혼동해 D칸에 잘못된 숫자를 옮긴 전례가 있고(STAGE_D_TOTAL_COLUMN 주석),
+#   `*_total_ms` 관행을 따르면 이 값이 "E+F+G의 합"으로 읽혀 같은 함정을 새로 파게 된다.
+DETECT_WALL_SERIES = "detect_wall_ms"
+
+# ── 추론 **실행 주기** (파생 시계열) ──────────────────────────────────────
+# **무엇인가:** 인접한 두 추론의 `t_detect_recv_ns` 차. frames.csv의 `recv_interval_ms`와
+# 정확히 같은 구조이며(시각의 차분), 같은 시계다.
+#
+# 🔴 **이것이 탐지 주기 N의 실측 대체물이다.** `INTERFACES.md`의 탐지 주기는 아직 ☐(미정)이고
+#   하네스는 미확정 계약값을 지어내지 않는다. 대신 "몇 프레임마다 도는가"를 선언에서 읽지 않고
+#   **관측한 간격 분포로** 말한다 — 앱이 주기를 바꾸든 스레드가 밀리든 여기 그대로 드러난다.
+# 🔴 **버짓 칸이 없다.** 단계 비용이 아니라 실행 간격이다.
+# ⚠ 분모가 프레임이 아니라 추론이므로 `recv_interval_ms`와 **더하거나 비교해 빼지 않는다**
+#   (모집단이 다르다). 둘의 비(比)가 대략 "몇 프레임마다 한 번"이지만, 그 나눗셈은 소비자가
+#   자기 문맥에서 한다 — 하네스는 두 분포를 각각 낸다.
+DETECT_CADENCE_SERIES = "detect_cadence_ms"
+
+# 하네스가 만드는 detect 파생 시계열 전부 (CSV 열이 아니다).
+DETECT_DERIVED_SERIES = (DETECT_WALL_SERIES, DETECT_CADENCE_SERIES)
+
+# ── session.json의 detect 블록 경로 ───────────────────────────────────────
+# **하네스가 읽는 키를 한 곳에만 적는다.** `run_session.py`의 FALLBACK_FIELD_PATH와 같은
+# 취지다 — 읽는 코드와 사람에게 보이는 메시지가 이름을 각자 갖고 있으면, 앱이 필드를 옮길 때
+# 한쪽만 낡는다(값은 못 읽는데 메시지는 옛 이름을 자신 있게 가리키는 상태가 가장 나쁘다).
+#
+# ⚠ **생산자는 앱이다.** 다만 이 키들은 arm 어휘와 반대로 **하네스가 먼저 요구한 것**이고,
+#   그 요구는 `docs/FRAME_LOG_SCHEMA.md`에 적혀 앱 담당자가 읽는다. 앱이 다른 이름으로
+#   내기로 하면 앱이 정답이며 여기와 문서를 **함께** 고친다.
+DETECT_SESSION_BLOCK = "detect"
+DETECT_ENABLED_PATH = (DETECT_SESSION_BLOCK, "enabled")
+DETECT_MODEL_SHA_PATH = (DETECT_SESSION_BLOCK, "model", "sha256")
+DETECT_EP_REQUESTED_PATH = (DETECT_SESSION_BLOCK, "ep", "requested")
+DETECT_EP_RESOLVED_PATH = (DETECT_SESSION_BLOCK, "ep", "resolved")
+DETECT_PERIOD_N_PATH = (DETECT_SESSION_BLOCK, "period_n")
+DETECT_PADDING_FRACTION_PATH = (DETECT_SESSION_BLOCK, "padding_pixel_fraction")
+
+# ── 실행 공급자(EP) 어휘 ──────────────────────────────────────────────────
+# LIGHTING_CONDITIONS·PIPELINE_STAGES와 **같은 방식**이다: 어휘를 고정하지 않으면 같은 EP가
+# "NNAPI" / "nnapi" / "ort_nnapi"로 갈려 모든 비교가 "조건 다름"이 된다.
+#
+# 🔴 **하네스는 EP를 해석하지 않는다.** 여기 있는 것은 "그 문자열이 우리가 아는 어휘인가"
+#   뿐이고, 어느 EP가 실제로 무엇을 실행했는지는 판단하지 않는다. `requested != resolved`도
+#   하네스가 해석해서 내리는 결론이 아니라 **앱의 자진 신고 두 개를 대조**한 것이다.
+# ⚠ QNN은 여기에 **없다.** 측정 기기(A34)가 MediaTek이라 이 기기에서 불가능하고, 쓰지도
+#   않을 토큰을 미리 등록하면 계획 어휘 검사가 그것을 통과시킨다(어휘의 목적과 반대다).
+#   다른 기기가 들어오는 날 앱이 쓴 문자열로 등록한다.
+DETECT_EP_CPU = "cpu"
+DETECT_EP_NNAPI = "nnapi"
+DETECT_EP_UNKNOWN = "unknown"  # 기록되지 않음. 비교 대상으로 쓸 수 없다(LIGHTING_UNKNOWN과 같다)
+DETECT_EPS = (DETECT_EP_CPU, DETECT_EP_NNAPI, DETECT_EP_UNKNOWN)
+
+# 각 detect 열이 **어느 스키마 버전에서 들어왔는가.** COLUMN_ADDED_IN과 같은 용도이며
+# 목록을 가른 이유는 대상 파일이 다르기 때문이다(frames.csv / detect.csv).
+# ⚠ 값을 컴프리헨션으로 채우지 않는다 — 그러면 아래 자기검사가 항상 참이 되어 검사가 아니다.
+DETECT_COLUMN_ADDED_IN = {
+    "detect_idx": 6,
+    "t_detect_recv_ns": 6,
+    "t_detect_end_ns": 6,
+    "t_image_capture_ns": 6,
+    "max_conf": 6,
+    "stage_e_ms": 6,
+    "stage_f_ms": 6,
+    "stage_g_ms": 6,
+    "boxes_pre_nms": 6,
+    "boxes_out": 6,
+    "skipped_while_busy": 6,
+}
+
+# ── 상수 자기검사 (v6) ────────────────────────────────────────────────────
+# 위 두 블록과 **같은 부류다** — 상수끼리의 불변식이라 데이터와 무관하고, 깨지는 순간은
+# 개발자가 상수를 고친 그 편집 시점이다. 그래서 import에서 죽인다.
+# 여기서 막는 사고는 조용하다: detect 열이 GPU 쪽 목록에 한 번 들어가면
+#   - GPU_SUM_COLUMNS → **CPU 벽시계와 GPU 시계를 더한 숫자**가 gpu_sum_ms로 버짓표에 나간다
+#   - STAGE_D_FAMILY_COLUMNS → ③ 비용이 ② 비용(D칸)으로 계상돼 D가 부풀려진다
+# 둘 다 결과 숫자만 보면 그럴듯해서 사람 눈으로는 걸러지지 않는다.
+_detect_errors = []
+_gpu_overlap = sorted(set(DETECT_TIME_COLUMNS) & set(GPU_TIME_COLUMNS))
+if _gpu_overlap:
+    _detect_errors.append(
+        f"{_gpu_overlap}이 GPU_TIME_COLUMNS에 있다 — E·F·G는 CPU 벽시계 구간 길이이고 "
+        f"GPU 시계가 아니다(물리량이 다르다)"
+    )
+_sum_overlap = sorted(set(DETECT_TIME_COLUMNS) & set(GPU_SUM_COLUMNS))
+if _sum_overlap:
+    _detect_errors.append(
+        f"{_sum_overlap}이 GPU_SUM_COLUMNS에 있다 — CPU 시계와 GPU 시계를 더한 숫자가 "
+        f"gpu_sum_ms로 버짓표에 나간다"
+    )
+_d_overlap = sorted(set(DETECT_TIME_COLUMNS) & set(STAGE_D_FAMILY_COLUMNS))
+if _d_overlap:
+    _detect_errors.append(
+        f"{_d_overlap}이 STAGE_D_FAMILY_COLUMNS에 있다 — ③ 탐지 비용이 D칸(②)에 계상되어 "
+        f"② 비용이 부풀려진다"
+    )
+# ── 다섯 번째 검사: **선언했는데 아무도 수집하지 않는 열** ────────────────
+# 위 네 검사는 detect 열이 GPU 쪽에 섞이는 것(물리량 오염)과 버전 미등록을 막는데, 그것을
+# 전부 통과하고도 **열이 조용히 사라지는** 경로가 남아 있었다: 새 열을 DETECT_OPTIONAL_COLUMNS
+# (또는 DETECT_COUNT_COLUMNS)에 넣고 DETECT_COLUMN_ADDED_IN에도 넣으면 네 검사는 모두 통과하지만,
+# `read_detect`가 그 열을 읽지 않으면 값이 어디에도 쌓이지 않는다. 그 상태의 로그는
+# **"열이 없는 로그"와 구분되지 않는다** — count=0이 "0이었다"로도 "없었다"로도 읽힌다.
+# 그래서 "각 열을 어떻게 다루는가"를 상수로 선언하게 하고(위 분류 블록), 그 분류가
+# DETECT_KNOWN_COLUMNS를 **빠짐없이·중복 없이** 덮는지를 여기서 검사한다.
+# ⚠ 이 검사는 분류가 실제 코드와 일치하는지까지는 보지 못한다. 그 절반은 DetectSeries 정의
+#   바로 뒤의 필드 검사가 닫는다(선언한 열에 담을 자리가 있는가).
+_detect_handled = (
+    tuple(DETECT_REQUIRED_COLUMNS)      # 행 키로 쓴다 (detect_idx / t_detect_recv_ns)
+    + DETECT_SERIES_COLUMNS             # 시계열로 쌓는다
+    + tuple(DETECT_CUMULATIVE_COLUMNS)  # 마지막 값만 남긴다
+    + DETECT_WALL_SOURCE_COLUMNS        # 파생 시계열의 재료
+    + DETECT_UNCOLLECTED_COLUMNS        # 일부러 수집하지 않는다(의도의 기록)
+)
+_detect_unhandled = [c for c in DETECT_KNOWN_COLUMNS if c not in _detect_handled]
+_detect_phantom = [c for c in _detect_handled if c not in DETECT_KNOWN_COLUMNS]
+_detect_double = sorted({c for c, n in Counter(_detect_handled).items() if n > 1})
+if _detect_unhandled:
+    _detect_errors.append(
+        f"스키마에 선언된 detect 열 {_detect_unhandled}이 어느 수집 경로에도 분류되지 "
+        f"않았다 — read_detect가 읽지 않으므로 그 열의 값은 조용히 사라지고, count=0이 "
+        f"'열이 없는 로그'와 구분되지 않는다. DETECT_SERIES_COLUMNS·"
+        f"DETECT_CUMULATIVE_COLUMNS·DETECT_WALL_SOURCE_COLUMNS 중 하나에 넣거나, 쓰지 "
+        f"않기로 했다면 DETECT_UNCOLLECTED_COLUMNS에 사유와 함께 적을 것"
+    )
+if _detect_phantom:
+    _detect_errors.append(
+        f"수집 경로에 분류된 {_detect_phantom}이 detect 열 목록에 없다 — CSV에서 읽히지 "
+        f"않는 이름이라 그 경로는 영원히 비어 있다"
+    )
+if len(DETECT_WALL_SOURCE_COLUMNS) != 1:
+    # `DETECT_WALL_SERIES`는 **두 시각의 차 하나**다(end - recv). read_detect가 재료 열을
+    # 하나로 전제하고 읽으므로, 목록이 늘면 두 번째부터는 조용히 무시된다.
+    _detect_errors.append(
+        f"DETECT_WALL_SOURCE_COLUMNS의 원소가 1개가 아니다({list(DETECT_WALL_SOURCE_COLUMNS)}) "
+        f"— {DETECT_WALL_SERIES}는 두 시각의 차 하나이며, read_detect는 첫 열만 읽는다"
+    )
+if _detect_double:
+    _detect_errors.append(
+        f"{_detect_double}이 수집 경로 둘 이상에 분류됐다 — 한 열을 두 번 세거나 "
+        f"두 시계열에 나눠 담게 되고, 어느 쪽이 그 열의 분포인지 되물을 수 없다"
+    )
+_detect_missing_version = [c for c in DETECT_KNOWN_COLUMNS if c not in DETECT_COLUMN_ADDED_IN]
+_detect_stray_version = [c for c in DETECT_COLUMN_ADDED_IN if c not in DETECT_KNOWN_COLUMNS]
+if _detect_missing_version or _detect_stray_version:
+    _detect_errors.append(
+        f"DETECT_COLUMN_ADDED_IN이 detect 열 목록과 어긋난다: "
+        f"버전 미등록 열={_detect_missing_version}, detect 열이 아닌 항목="
+        f"{_detect_stray_version} — '앱이 뒤처졌다' 경고가 빠진 열을 말없이 건너뛴다"
+    )
+if _detect_errors:
+    raise RuntimeError(
+        "lib/frame_log.py 상수 불일치 — detect 열의 성질이 어긋난다: "
+        + "; ".join(_detect_errors)
+        + " (docs/FRAME_LOG_SCHEMA.md §2-D 'detect.csv')"
+    )
+
+# ── detect 행 단위 소실 사유 ──────────────────────────────────────────────
+# frames.csv 쪽 ROW_SKIP_REASONS와 같은 구조다. 이름만 열에 맞춘다.
+DETECT_ROW_SKIP_REASONS = ("warmup", "before_t0", "unparsable_t_detect_recv")
+
+# data_complete를 흔드는 사유 = warmup을 뺀 나머지
+DETECT_ANOMALOUS_SKIP_REASONS = ("before_t0", "unparsable_t_detect_recv")
+
+DETECT_ROW_SKIP_REASON_TEXT = {
+    "warmup": "warmup 구간(의도된 제외)",
+    # ⚠ frames.csv의 before_t0와 **뜻이 다르다.** 여기 t0는 이 파일의 첫 행이 아니라
+    #   frames.csv의 t0이고(read_detect가 인자로 받는다), 탐지는 별 use case라 첫 프레임이
+    #   렌더 쪽보다 먼저 도착할 수 있다. 그래서 원인이 둘이다 — 경고 문장이 둘 다 말한다.
+    "before_t0": "frames.csv의 t0보다 앞선 t_detect_recv_ns — 시계 역행 또는 use case 시작 순서 차이",
+    "unparsable_t_detect_recv": "t_detect_recv_ns 파싱 불가(빈칸/비수치/-1) — 잘린 로그 행",
+}
+
+# 폐기 사유 → 사람이 읽는 문장. GPU_DISCARD_REASON_TEXT와 같은 취지 — 사유별 계수는 기존
+# 경로를 그대로 쓰고(새 폐기 경로를 만들지 않는다) 문장만 열 성격에 맞게 바꾼다.
+# detect 열에서 "0 이하"는 시계 역행이 아니다. 엉뚱하게 그렇게 쓰면 폰 쪽이 시계 코드를 뒤진다.
+DETECT_DISCARD_REASON_TEXT = {
+    "below_min": (
+        "-1 또는 0 이하 — 그 추론에서 기록되지 않았거나 구간이 닫히지 않았다"
+        " (시계 역행이 아니다)"
+    ),
+}
+
+# 카운트·점수 열용(`max_conf` 포함). 0은 정상값이므로 음수만 폐기된다 — 문장도 그렇게 말해야 한다.
+DETECT_COUNT_DISCARD_REASON_TEXT = {
+    "below_min": (
+        "-1 또는 음수 — 기록되지 않았다"
+        " (0은 폐기하지 않는다: 박스 0개·점수 0은 정상값이다)"
+    ),
+}
+# ══ detect.csv 절 끝 ══════════════════════════════════════════════════════
+
 # ── 조명 조건 (session.json: lighting_condition) ──────────────────────────
 # 야간 앱에서 조명은 취향이 아니라 **공급 fps를 직접 바꾸는 측정 조건**이다. 저조도에서
 # 카메라 AE가 노출 시간을 늘리면 t_recv_ns 간격 자체가 벌어지므로, 밝은 방 런과 야간 런을
@@ -277,7 +579,10 @@ STAGE2_AGCWD = "stage2_agcwd"          # ② AGCWD, LAB L (전역 히스토그�
 # (예: ["blit_2pass","stage2_drago","stage2_clahe","stage2_bilateral"]) — 조합 arm에 새 토큰을
 # 만들지 않는 규칙과 같은 이유로, bf 전용 합성 토큰을 지으면 같은 구조가 두 이름으로 갈린다.
 STAGE2_BILATERAL = "stage2_bilateral"  # ② 노이즈 억제(bilateral). 앱 생산
-STAGE_DETECT = "detect"                # ③ 탐지. **앱 미구현** — 현재는 합성 로그만 낸다
+# ③ 탐지 스테이지. **앱이 곧 낸다** — 계측은 스키마 v6에서 별 파일 `detect.csv`로 받는다
+# (E·F·G. 위 detect.csv 절 참고). ⚠ 탐지용 arm이 붙어도 **여기에 새 토큰을 만들지 않는다** —
+# 아래 주석대로 같은 구조가 두 이름으로 갈리면 모든 비교가 "조건 다름"이 된다.
+STAGE_DETECT = "detect"                # ③ 탐지. 앱 생산(v6 detect.csv)
 # ④ 강조 오버레이 패스(② 출력 위에 스트로크 박스를 덧그린다) → `stage_i_ms`. **앱 생산**이다 —
 # `RenderArm.kt`의 `highlight_boxes`·`highlight_boxes_stress`가 둘 다 이 토큰을 선언하고
 # (`["blit_2pass","stage4_highlight"]`) `SessionWriter`가 `overlay.gpu_column="stage_i_ms"`를
@@ -371,6 +676,30 @@ RENDER_ARM_BLIT_2PASS_1Q = "blit_2pass_1q"
 RENDER_ARM_DRAGO_CLAHE_CHAIN_1Q = "drago_clahe_chain_1q"
 RENDER_ARM_DRAGO_CLAHE_CHAIN_BF_1Q = "drago_clahe_chain_bf_1q"
 
+# ── ③ 탐지 arm (v6) ───────────────────────────────────────────────────────
+# ⚠ **생산자는 앱이다.** 위 예약어 블록들과 같은 취급 — 팀원2 쪽 명명이지 계약값이 아니고,
+#   앱이 다른 id를 쓰기로 하면 앱이 정답이며 여기를 고친다. 등록은 "이 문자열을 안다"는
+#   뜻일 뿐이고, 하네스는 arm의 의미를 해석하지 않는다.
+#
+# `detect_bind_only`는 **분모**다. `ImageAnalysis`를 바인딩만 하고 추론은 돌리지 않으므로,
+# 이 arm과 짝 arm의 차이가 "use case를 하나 더 붙인 값"이고 그 위의 차이가 추론 비용이다.
+# 둘을 한 arm에서 재면 그 둘이 섞여 어느 쪽이 비싼지 되물을 수 없다.
+RENDER_ARM_DETECT_BIND_ONLY = "detect_bind_only"
+RENDER_ARM_DETECT_CPU = "detect_cpu"
+RENDER_ARM_DETECT_NNAPI = "detect_nnapi"
+
+# ── `_prof` 접미사 = **ORT 프로파일링을 켠 계측** (v6) ─────────────────────
+# 🔴 **렌더·추론 경로는 접미사 없는 짝과 글자 그대로 같다.** 모델도 EP도 전처리도 같고,
+#   다른 것은 **ORT 프로파일러가 켜져 있는가** 하나뿐이다. `_1q` 접미사와 **같은 취지**로
+#   arm을 가른다 — 계측 방식이 다르면 같은 코드라도 같은 조건이 아니고, 그 사실을 담을 키가
+#   `pipeline_stages`에는 없기 때문이다(`render_arm`은 baseline_diff의 CONDITION_KEYS에 있다).
+#
+# 🔴 **이 arm의 시간은 인용하지 않는다.** 프로파일러는 노드마다 기록을 남기므로 F(그리고
+#   그것을 포함하는 모든 값)에 자기 비용을 얹는다. 이 arm은 "어느 노드가 비싼가"를 보는
+#   장치이고, E·F·G 숫자와 버짓 칸은 접미사 없는 짝에서만 인용한다.
+RENDER_ARM_DETECT_CPU_PROF = "detect_cpu_prof"
+RENDER_ARM_DETECT_NNAPI_PROF = "detect_nnapi_prof"
+
 RENDER_ARMS = (
     RENDER_ARM_PASSTHROUGH,
     RENDER_ARM_BLIT_2PASS,
@@ -392,6 +721,12 @@ RENDER_ARMS = (
     RENDER_ARM_BLIT_2PASS_1Q,
     RENDER_ARM_DRAGO_CLAHE_CHAIN_1Q,
     RENDER_ARM_DRAGO_CLAHE_CHAIN_BF_1Q,
+    # ③ 탐지 (v6). `_prof` 짝은 시간 인용 금지 arm이다 — 위 블록 참고.
+    RENDER_ARM_DETECT_BIND_ONLY,
+    RENDER_ARM_DETECT_CPU,
+    RENDER_ARM_DETECT_NNAPI,
+    RENDER_ARM_DETECT_CPU_PROF,
+    RENDER_ARM_DETECT_NNAPI_PROF,
     RENDER_ARM_SYNTHETIC,
 )
 
@@ -520,6 +855,16 @@ class FrameSeries:
     # 같은 이유의 D 계열 판. 하위 패스 하나가 disjoint로 빠지면 그 행의 D는 그만큼 작다.
     stage_d_total_partial_rows: int = 0
     dropped_total: int = 0
+    # warmup 컷의 기준 시각 = **첫 행의 t_recv_ns**. 밖으로 내는 이유는 `read_detect`가
+    # 같은 t0를 써야 하기 때문이다 — detect.csv가 자기 첫 행을 t0로 잡으면 두 파일의 분석
+    # 창이 어긋나고, 그 상태로 "같은 런의 F와 프레임타임"이라고 말하면 거짓이 된다.
+    t0_ns: int = MISSING
+    # 분석 창의 양 끝 = **실제로 쓰인 행들의 t_recv_ns 최소/최대**(warmup 제외 후).
+    # 🔴 창 길이를 `p50(recv_interval_ms) × n`으로 유도하지 않기 위해 둔다. 그 유도는 드롭된
+    #   프레임과 폐기된 간격을 빼먹어 창을 짧게 만들고, 그 짧은 창으로 duty cycle 같은
+    #   비율을 내면 분모가 작아져 값이 커진다(이 결함이 세 문서에 동시에 재발한 적이 있다).
+    t_first_used_ns: int = MISSING
+    t_last_used_ns: int = MISSING
     rows_read: int = 0
     rows_used: int = 0
     # 시계열 이름 -> {사유: 개수}. **값 하나**를 버린 것. 폐기는 조용히 일어나면 안 된다.
@@ -538,6 +883,17 @@ class FrameSeries:
     @property
     def has_output_timeline(self) -> bool:
         return bool(self.output_interval_ms)
+
+    @property
+    def analysis_window_sec(self) -> Optional[float]:
+        """분석 창 길이 = `t_recv_ns`의 **실제 span**. 행이 1개뿐이면 0.0이다(None이 아니다).
+
+        🔴 백분위나 표본 수에서 유도하지 않는다 — 이 값이 duty cycle 같은 비율의 분모가 되고,
+        분모를 유도로 만들면 드롭·폐기만큼 조용히 짧아진다.
+        """
+        if self.t_first_used_ns == MISSING or self.t_last_used_ns == MISSING:
+            return None
+        return (self.t_last_used_ns - self.t_first_used_ns) / 1e9
 
     @property
     def gpu_series(self) -> dict[str, list[float]]:
@@ -600,6 +956,125 @@ class FrameSeries:
         self.rows_skipped[reason] = self.rows_skipped.get(reason, 0) + 1
 
 
+@dataclass
+class DetectSeries:
+    """detect.csv에서 뽑아낸 시계열들. **행 하나 = 추론 1회.**
+
+    🔴 **FrameSeries와 합치지 않는다.** 표본 모집단이 다르다(프레임 수 ≫ 추론 수) —
+    같은 객체에 담으면 별 파일로 분리한 이유가 무의미해지고, `rows_used`가 무엇의 개수인지
+    되물을 수 없게 된다. 회계·폐기·미지 열 **관행은** FrameSeries와 같은 것을 쓴다.
+    """
+
+    # ── E·F·G (CPU 벽시계 구간 길이. GPU 열들과 **다른 물리량**이다) ──
+    stage_e_ms: list[float] = field(default_factory=list)
+    stage_f_ms: list[float] = field(default_factory=list)
+    stage_g_ms: list[float] = field(default_factory=list)
+    # 추론 1회의 **벽시계 span** = t_detect_end_ns - t_detect_recv_ns.
+    # 🔴 **E+F+G의 합이 아니고**(미계상분을 포함한다) **버짓 칸도 없다**.
+    #    `stage_d_total_ms`(열들의 행별 합)와 다른 부류다 — DETECT_WALL_SERIES 주석 참고.
+    detect_wall_ms: list[float] = field(default_factory=list)
+    # 인접한 두 추론의 t_detect_recv_ns 차 = **실측 실행 주기** (파생 시계열).
+    # 🔴 프레임 간격이 아니다 — 모집단이 다르므로 recv_interval_ms와 섞지 않는다.
+    detect_cadence_ms: list[float] = field(default_factory=list)
+    # ── 카운트·점수 (시간이 아니다. 0을 폐기하지 않는다) ──
+    boxes_pre_nms: list[int] = field(default_factory=list)
+    boxes_out: list[int] = field(default_factory=list)
+    max_conf: list[float] = field(default_factory=list)
+    # `skipped_while_busy`는 **누적값**이라 분포를 내지 않는다(단조 증가 수열의 백분위는
+    # 뜻이 없다). 마지막으로 관측한 값 하나만 남긴다.
+    skipped_while_busy_total: int = 0
+    # 그 열이 파싱된 행 수. 0이면 `skipped_while_busy_total = 0`은 "건너뛴 프레임이 없다"가
+    # 아니라 **재지 않았다**는 뜻이다 — 둘을 구분하려면 이 값이 필요하다.
+    skipped_while_busy_rows: int = 0
+    # 누적값이 줄어든 횟수. 누적이면 절대 줄지 않으므로 1건이라도 있으면 그 열을 못 믿는다.
+    skipped_while_busy_regressions: int = 0
+    # CSV 헤더에 실제로 있던 detect 열(필수 제외). 헤더에 없는 열은 폐기로 세지 않는다
+    # ("열이 아예 없다"와 "열은 있는데 값이 -1이다"는 다른 사실이다).
+    detect_columns_present: list[str] = field(default_factory=list)
+    # frames.csv에서 받아 온 분석 창의 기준 시각. **이 파일의 첫 행이 아니다.**
+    t0_ns: int = MISSING
+    rows_read: int = 0
+    rows_used: int = 0
+    # 시계열 이름 -> {사유: 개수}. **값 하나**를 버린 것.
+    discarded: dict[str, dict[str, int]] = field(default_factory=dict)
+    # 사유 -> 개수. **행 전체**가 시계열에 못 들어온 것. 회계는 accounting_ok로 닫는다.
+    rows_skipped: dict[str, int] = field(
+        default_factory=lambda: {r: 0 for r in DETECT_ROW_SKIP_REASONS}
+    )
+    # CSV 헤더에 있었지만 DETECT_KNOWN_COLUMNS에 없어 **집계에 쓰이지 않은** 열 이름.
+    unknown_columns: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def time_series(self) -> dict[str, list[float]]:
+        """열 이름 -> 시계열. 파생인 detect_wall_ms는 여기 넣지 않는다(원본 열만)."""
+        return {name: getattr(self, name) for name in DETECT_TIME_COLUMNS}
+
+    @property
+    def has_detect_timings(self) -> bool:
+        return any(self.time_series.values())
+
+    @property
+    def discarded_total(self) -> int:
+        return sum(sum(reasons.values()) for reasons in self.discarded.values())
+
+    @property
+    def rows_skipped_total(self) -> int:
+        return sum(self.rows_skipped.values())
+
+    @property
+    def rows_skipped_anomalous(self) -> int:
+        """warmup을 뺀 소실. 1건이라도 있으면 그 로그는 온전하지 않다."""
+        return sum(self.rows_skipped.get(r, 0) for r in DETECT_ANOMALOUS_SKIP_REASONS)
+
+    @property
+    def accounting_ok(self) -> bool:
+        """rows_read == rows_used + 모든 소실 사유의 합. 깨지면 어딘가 조용히 새고 있다."""
+        return self.rows_read == self.rows_used + self.rows_skipped_total
+
+    def note_discard(self, series_name: str, reason: str) -> None:
+        reasons = self.discarded.setdefault(series_name, {})
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    def note_row_skip(self, reason: str) -> None:
+        self.rows_skipped[reason] = self.rows_skipped.get(reason, 0) + 1
+
+
+# ── 상수 자기검사 (v6, 다섯 번째 검사의 나머지 절반) ──────────────────────
+# 위 커버리지 검사는 "모든 열이 어딘가로 분류됐는가"를 보고, 여기서는 **그 분류에 담을 자리가
+# 실제로 있는가**를 본다. 둘을 함께 걸어야 "선언은 했는데 수집은 안 되는 열"이 닫힌다 —
+# 분류만 있고 필드가 없으면 read_detect가 AttributeError로 죽거나(그 런의 집계를 통째로 잃는다)
+# 조용히 건너뛴다. 상수·정의끼리의 불변식이므로 데이터와 무관하고, 깨지는 순간은 개발자가
+# 열을 추가한 그 편집 시점이다.
+_detect_field_names = {f.name for f in dataclass_fields(DetectSeries)}
+_detect_field_errors = []
+for _c in DETECT_SERIES_COLUMNS:
+    if _c not in _detect_field_names:
+        _detect_field_errors.append(
+            f"DetectSeries에 {_c} 필드가 없다 — 시계열로 분류됐는데 담을 자리가 없다"
+        )
+for _c in DETECT_CUMULATIVE_COLUMNS:
+    # 누적 열은 리스트가 아니라 세 필드로 받는다: 마지막 값 / 파싱된 행 수 / 감소 횟수.
+    # (행 수가 없으면 total=0이 "건너뛴 프레임이 없다"인지 "재지 않았다"인지 구분되지 않는다.)
+    for _suffix in ("_total", "_rows", "_regressions"):
+        if f"{_c}{_suffix}" not in _detect_field_names:
+            _detect_field_errors.append(
+                f"DetectSeries에 {_c}{_suffix} 필드가 없다 — 누적 열로 분류됐는데 "
+                f"마지막 값·행 수·감소 횟수를 담을 자리가 없다"
+            )
+for _c in DETECT_DERIVED_SERIES:
+    if _c not in _detect_field_names:
+        _detect_field_errors.append(
+            f"DetectSeries에 {_c} 필드가 없다 — 파생 시계열을 담을 자리가 없다"
+        )
+if _detect_field_errors:
+    raise RuntimeError(
+        "lib/frame_log.py 상수 불일치 — detect 열 분류와 DetectSeries 필드가 어긋난다: "
+        + "; ".join(_detect_field_errors)
+        + " (docs/FRAME_LOG_SCHEMA.md §2-D 'detect.csv')"
+    )
+
+
 class FrameLogError(Exception):
     """스키마 위반. 조용히 넘어가면 안 되는 것만 여기로 던진다."""
 
@@ -643,6 +1118,21 @@ def read_session(path: Path) -> dict:
         return {}
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def session_field(session: dict, path: tuple[str, ...]) -> tuple[object, bool]:
+    """(값, 마지막 키가 실제로 있었는가). 경로는 위 DETECT_*_PATH 상수에서만 온다.
+
+    `key_present`를 함께 돌려주는 이유: **명시적 `null`과 "키가 없다"는 다른 사실이다.**
+    둘 다 "말할 수 없다"로 판정되지만, 사유가 "필드가 없다"로 뭉개지면 사람이 엉뚱한 곳
+    (스키마 버전)을 뒤진다. `run_session.py`의 `_dig`와 같은 규약이다.
+    """
+    cur: object = session
+    for key in path:
+        if not isinstance(cur, dict) or key not in cur:
+            return None, False
+        cur = cur[key]
+    return cur, True
 
 
 def read_frames(
@@ -722,6 +1212,8 @@ def read_frames(
     if t0 == MISSING:
         raise FrameLogError("첫 행의 t_recv_ns가 비어 있다 — 기준 시각을 잡을 수 없다")
     cutoff_ns = t0 + int(warmup_sec * 1e9)
+    # read_detect가 **같은** t0를 쓰도록 밖으로 낸다 (FrameSeries.t0_ns 주석)
+    series.t0_ns = t0
 
     prev_recv = MISSING
     prev_out = MISSING
@@ -751,6 +1243,10 @@ def read_frames(
         dropped = _to_int(row.get("dropped_since_last"))
 
         series.rows_used += 1
+        # 분석 창의 양 끝. **행을 세는 것이 아니라 시각을 기록한다** (analysis_window_sec 주석).
+        if series.t_first_used_ns == MISSING:
+            series.t_first_used_ns = t_recv
+        series.t_last_used_ns = t_recv
         if dropped > 0:
             series.dropped_total += dropped
 
@@ -869,6 +1365,188 @@ def read_frames(
                 f"프레임 간격을 하나도 계산하지 못했다 — 사용 가능한 행이 "
                 f"{series.rows_used}개뿐이라 차분을 만들 수 없다"
             )
+
+    return series
+
+
+def read_detect(
+    path: Path,
+    t0_ns: int,
+    warmup_sec: float = 0.0,
+) -> DetectSeries:
+    """detect.csv를 읽어 ③ 탐지 시계열을 만든다. **행 하나 = 추론 1회.**
+
+    `t0_ns`: **frames.csv에서 얻은 t0**(`FrameSeries.t0_ns`)를 그대로 넘긴다.
+    🔴 자기 첫 행을 t0로 잡지 **않는** 이유: 탐지는 프레임보다 드물게 돌므로 이 파일의 첫
+    행은 렌더 쪽 첫 프레임보다 늦다. 그 시각에서 warmup을 다시 세면 두 파일의 분석 창이
+    어긋나고, 그 상태로 "같은 런의 F와 프레임타임"이라고 말하면 거짓이 된다. 그래서 t0는
+    만들지 않고 **받는다** — 호출자가 두 파일을 같은 창으로 맞출 책임을 갖는다.
+
+    `warmup_sec`: read_frames에 준 것과 **같은 값**을 준다. 다르면 위와 같은 이유로 창이
+    어긋난다(하네스는 그것을 검사할 방법이 없다 — 호출자가 지킨다).
+    """
+    if not path.exists():
+        raise FrameLogError(f"탐지 로그가 없다: {path}")
+    # t0를 못 받았으면 **죽는다.** 기본값으로 얼버무리면(예: 0이나 첫 행) 창이 조용히
+    # 어긋난 채 숫자가 나오고, 그 숫자는 frames.csv 쪽과 같은 런처럼 보인다.
+    if not isinstance(t0_ns, int) or isinstance(t0_ns, bool) or t0_ns < 0:
+        raise FrameLogError(
+            f"t0_ns가 유효하지 않다({t0_ns!r}) — frames.csv에서 얻은 t0"
+            "(read_frames가 채우는 FrameSeries.t0_ns)를 넘겨야 두 파일의 분석 창이 같아진다"
+        )
+
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise FrameLogError(f"헤더가 없다: {path}")
+        missing = [c for c in DETECT_REQUIRED_COLUMNS if c not in reader.fieldnames]
+        if missing:
+            raise FrameLogError(
+                f"필수 열 누락: {missing} (있는 열: {reader.fieldnames})"
+            )
+        # 중복 열은 **죽인다.** read_frames와 완전히 같은 이유다(그쪽 주석 참고):
+        # csv.DictReader는 중복 헤더에서 마지막 값만 남기므로 성한 값이 조용히 파괴되고,
+        # 그 결과 해당 지표가 count=0이 되어 "그 열이 없는 로그"와 구분되지 않는다.
+        # 미지 열은 덧붙는 것이라 무해하지만 중복은 **아는 열의 값을 파괴한다.**
+        dup_known = sorted(
+            {
+                c for c, n in Counter(reader.fieldnames).items()
+                if n > 1 and c in DETECT_KNOWN_COLUMNS
+            }
+        )
+        if dup_known:
+            raise FrameLogError(
+                f"헤더에 중복된 열이 있다: {dup_known} (전체 헤더: {reader.fieldnames}) — "
+                "csv.DictReader는 중복 헤더에서 마지막 값만 남기므로 앞쪽 값이 조용히 파괴된다. "
+                "그 결과 해당 지표가 count=0이 되어 '그 열이 없는 로그'와 구분되지 않는다. "
+                "폰 쪽 detect.csv 헤더 생성부를 확인할 것"
+            )
+        # 미지 열은 죽이지 않는다(앱이 스키마보다 앞서 나갈 수 있다). 대신 이름을 지목해 경고.
+        unknown_columns = sorted(
+            {c for c in reader.fieldnames if c not in DETECT_KNOWN_COLUMNS}
+        )
+        # 헤더에 실제로 있는 열만 집계 대상이다. 없는 열까지 읽으면 모든 행이 "값 -1"로 보여
+        # 폐기 카운트가 행 수만큼 튄다 — "열이 없다"와 "열은 있는데 -1이다"는 다른 사실이다.
+        present = [c for c in DETECT_OPTIONAL_COLUMNS if c in reader.fieldnames]
+        rows = list(reader)
+
+    series = DetectSeries()
+    series.t0_ns = t0_ns
+    series.unknown_columns = unknown_columns
+    series.detect_columns_present = present
+    _add_detect_unknown_column_warnings(series)
+    series.rows_read = len(rows)
+    if not rows:
+        raise FrameLogError(f"행이 하나도 없다: {path}")
+
+    cutoff_ns = t0_ns + int(warmup_sec * 1e9)
+    # ── 수집 대상은 **전부 상수 분류에서 파생시킨다.** 여기에 열 이름 리터럴을 두면
+    #    (예전의 `("boxes_pre_nms", "boxes_out")`) 다음 사람이 열을 추가하고 자기검사를
+    #    모두 통과시켜도 그 값이 조용히 사라진다. 위 다섯 번째 자기검사가 이 파생과 짝이다.
+    time_cols = [c for c in DETECT_TIME_COLUMNS if c in present]
+    # 카운트·점수는 폐기 가드가 같다(하한 `>= 0`). 분포를 내는 것만 여기 온다 —
+    # 누적 열은 아래에서 따로 다룬다.
+    nonneg_cols = [
+        c for c in DETECT_DISTRIBUTION_COUNT_COLUMNS + DETECT_SCORE_COLUMNS if c in present
+    ]
+    # 정수로 읽을 열(카운트)과 실수로 읽을 열(점수)을 가른다. `_to_int`는 "12.7개"를 12로
+    # 만들지만 점수에 그걸 쓰면 0.72가 0이 된다.
+    int_cols = set(DETECT_DISTRIBUTION_COUNT_COLUMNS)
+    cumulative_cols = [c for c in DETECT_CUMULATIVE_COLUMNS if c in present]
+    # 벽시계 span은 **두 시각의 차 하나**이므로 재료 열도 하나다(자기검사가 개수를 강제한다).
+    wall_end_col = DETECT_WALL_SOURCE_COLUMNS[0]
+    has_end = wall_end_col in present
+    prev_cumulative: dict[str, int] = {}
+    prev_detect_recv = MISSING
+
+    for row in rows:
+        t_recv = _to_int(row.get("t_detect_recv_ns"))
+        # ── 행을 건너뛰는 세 경로. **전부 사유별로 센다** (read_frames와 같은 규약).
+        if t_recv == MISSING:
+            series.note_row_skip("unparsable_t_detect_recv")
+            continue
+        if t_recv < t0_ns:
+            # frames.csv의 t0보다 과거. 시계 역행일 수도 있고, 탐지가 별 use case라
+            # 첫 프레임이 렌더 쪽보다 먼저 도착한 것일 수도 있다 — 조용히 버리지 않는다.
+            series.note_row_skip("before_t0")
+            continue
+        if t_recv < cutoff_ns:
+            series.note_row_skip("warmup")  # 의도된 제외
+            continue
+
+        series.rows_used += 1
+
+        # 실행 주기 — 인접한 두 추론의 수신 시각 차. **frames.csv의 recv_interval_ms와 같은
+        # 구조이고 같은 시계이지만 모집단이 다르다**(프레임이 아니라 추론). 이 값이 ☐ 미정인
+        # 탐지 주기 N을 지어내지 않고 관측으로 말하는 수단이다(DETECT_CADENCE_SERIES 주석).
+        if prev_detect_recv != MISSING:
+            _collect(
+                series, DETECT_CADENCE_SERIES, series.detect_cadence_ms,
+                (t_recv - prev_detect_recv) / 1e6,
+            )
+        prev_detect_recv = t_recv
+
+        # E·F·G — 하한 `> 0`, **상한 없음.** GPU 열과 같은 논거다(SANE_* 주석): 한 구간의
+        # 시작/끝을 같은 CPU 시계 안에서 닫으므로 큰 값은 시계 오류가 아니라 **진짜 느린
+        # 추론**이고(발열 스로틀링, big 코어 이탈, GC), 그것이 정확히 우리가 잡아야 할 것이다.
+        # 값이 -1이면 하한에 걸려 below_min으로 세어진다 — 새 폐기 경로를 만들지 않는다.
+        for col in time_cols:
+            _collect(series, col, getattr(series, col), _to_float(row.get(col)))
+
+        # 추론 1회의 **벽시계 span** = end - recv. **파생 시계열이지 CSV 열이 아니다**
+        # (DETECT_WALL_SERIES 주석: E+F+G의 합이 아니고 버짓 칸도 없다).
+        if has_end:
+            t_end = _to_int(row.get(wall_end_col))
+            if t_end == MISSING:
+                series.note_discard(DETECT_WALL_SERIES, "below_min")
+            else:
+                _collect(
+                    series, DETECT_WALL_SERIES, series.detect_wall_ms,
+                    (t_end - t_recv) / 1e6,
+                )
+
+        # 카운트·점수 — **하한이 `>= 0`이다**(시간 열과 다르다). 박스 0개는 정상값이므로
+        # 시간 열의 `> 0`을 쓰면 그 추론들이 통째로 폐기되어 분포가 위로 치우친다.
+        for col in nonneg_cols:
+            raw = _to_int(row.get(col)) if col in int_cols else _to_float(row.get(col))
+            _collect_nonneg(series, col, getattr(series, col), raw)
+
+        # 누적 열(`skipped_while_busy`)은 **분포를 내지 않고 마지막 값만 남긴다** —
+        # 단조 증가 수열의 백분위는 뜻이 없다. 누적은 절대 줄지 않으므로 감소는 세어 두고
+        # 경고한다(카운터가 리셋됐거나 열이 뒤바뀐 것).
+        # ⚠ 열 이름과 필드 이름 규약(`<열>_total`/`_rows`/`_regressions`)은 상수에서 파생한다 —
+        #   위 필드 자기검사가 그 자리가 실제로 있는지를 import 시점에 강제한다.
+        for col in cumulative_cols:
+            val = _to_int(row.get(col))
+            if val < 0:
+                series.note_discard(col, "below_min")
+                continue
+            setattr(series, f"{col}_rows", getattr(series, f"{col}_rows") + 1)
+            prev = prev_cumulative.get(col)
+            if prev is not None and val < prev:
+                setattr(
+                    series, f"{col}_regressions",
+                    getattr(series, f"{col}_regressions") + 1,
+                )
+            prev_cumulative[col] = val
+            setattr(series, f"{col}_total", val)
+
+    _add_detect_row_skip_warnings(series)
+    _add_detect_discard_warnings(series)
+    _add_detect_warnings(series)
+
+    if series.rows_used == 0:
+        raise FrameLogError(
+            f"warmup {warmup_sec}s 이후 남은 추론 행이 없다 (rows_read={series.rows_read}, "
+            f"소실 내역={series.rows_skipped}) — 측정 시간이 warmup보다 짧거나, "
+            f"t_detect_recv_ns가 성한 행이 없거나, t0_ns가 이 로그와 다른 런의 것이다"
+        )
+    if not series.accounting_ok:  # 방어선. 깨지면 위 세 경로 밖으로 행이 샜다는 뜻이다.
+        raise FrameLogError(
+            f"행 회계가 맞지 않는다: rows_read={series.rows_read} != "
+            f"rows_used={series.rows_used} + 소실 {series.rows_skipped_total} "
+            f"({series.rows_skipped})"
+        )
 
     return series
 
@@ -1057,6 +1735,73 @@ def check_render_arm(session: dict) -> tuple[object, bool, Optional[str]]:
     return val, True, None
 
 
+def check_detect_ep(session: dict) -> dict:
+    """session.json의 `detect.ep.requested` / `detect.ep.resolved`를 **대조만** 한다.
+
+    🔴 **하네스가 EP를 해석하지 않는다.** ORT에 물어보지도, 기기 사양에서 유추하지도 않는다 —
+    여기 있는 것은 앱이 스스로 신고한 값 두 개와, 그 둘이 같은가뿐이다. 해석을 시작하면
+    앱이 EP를 바꿀 때마다 하네스가 따라가야 하고, 그 동기화가 어긋나는 날 **조용히 틀린
+    라벨**이 나온다(RENDER_ARMS 주석과 같은 원칙).
+
+    반환 dict:
+      requested / resolved  : 원문 (없으면 None)
+      requested_present / resolved_present : 키가 있었는가 (명시적 null과 구분)
+      matches : True=같다 / False=다르다 / None=한쪽이라도 없어 **말할 수 없다**
+      vocab_ok : 두 값 모두 어휘 안인가 (판정선이 아니다 — 경고만)
+      warnings : 문장 리스트
+    """
+    req, req_present = session_field(session, DETECT_EP_REQUESTED_PATH)
+    res, res_present = session_field(session, DETECT_EP_RESOLVED_PATH)
+    req_field = ".".join(DETECT_EP_REQUESTED_PATH)
+    res_field = ".".join(DETECT_EP_RESOLVED_PATH)
+    warnings: list[str] = []
+
+    unknown_vocab = [
+        (name, val) for name, val in ((req_field, req), (res_field, res))
+        if val is not None and val not in DETECT_EPS
+    ]
+    if unknown_vocab:
+        warnings.append(
+            "EP 어휘 밖 값: "
+            + ", ".join(f"{name}={val!r}" for name, val in unknown_vocab)
+            + f" — 앱이 새 EP를 하네스보다 먼저 낸 것일 수 있다(집계는 그대로 진행했다). "
+            f"어휘가 갈리면 같은 EP의 런들이 서로 '조건 다름'이 된다. "
+            f"허용 어휘: {', '.join(DETECT_EPS)} (lib/frame_log.py: DETECT_EPS)"
+        )
+
+    matches: Optional[bool]
+    if req is None or res is None:
+        matches = None
+        missing = []
+        if req is None:
+            missing.append(f"{req_field}({'명시적 null' if req_present else '키 없음'})")
+        if res is None:
+            missing.append(f"{res_field}({'명시적 null' if res_present else '키 없음'})")
+        warnings.append(
+            f"요청 EP와 해소된 EP를 대조할 수 없다: {', '.join(missing)} — 이 런의 F가 어느 "
+            f"실행 공급자에서 나온 값인지 **말할 수 없다**(NNAPI를 요청했는데 CPU로 폴백한 "
+            f"런이 NNAPI 숫자로 인용되는 경로가 여기다). 앱이 두 값을 모두 적어야 한다"
+        )
+    else:
+        matches = req == res
+        if not matches:
+            warnings.append(
+                f"🔴 EP 어긋남 — {req_field}={req!r}인데 {res_field}={res!r}다. 앱이 요청한 "
+                f"실행 공급자로 세션이 열리지 않았다(폴백). **이 런의 F는 {req!r}의 비용이 "
+                f"아니라 {res!r}의 비용이다** — arm 이름이 무엇이든 그렇다. 이 값들은 "
+                f"하네스가 해석한 것이 아니라 앱의 자진 신고 두 개를 대조한 것이다"
+            )
+    return {
+        "requested": req,
+        "resolved": res,
+        "requested_present": req_present,
+        "resolved_present": res_present,
+        "matches": matches,
+        "vocab_ok": not unknown_vocab,
+        "warnings": warnings,
+    }
+
+
 def check_schema_version(session: dict) -> tuple[Optional[int], bool, Optional[str]]:
     """session.json이 선언한 schema_version과 하네스의 SCHEMA_VERSION을 대조한다.
 
@@ -1101,13 +1846,22 @@ def check_schema_version(session: dict) -> tuple[Optional[int], bool, Optional[s
             c for c, ver in COLUMN_ADDED_IN.items() if ver > declared
         ]
         extra = ""
+        # v6에서 늘어난 것은 frames.csv의 열이 아니라 **파일 하나**(detect.csv)다. 그 목록은
+        # DETECT_COLUMN_ADDED_IN에 있으므로 위 컴프리헨션에 걸리지 않는다 — 여기서 함께
+        # 말하지 않으면 v5 세션에 "늘어난 것: 없음"이라는 **거짓 안심**을 보내게 된다
+        # (이 경고의 존재 이유가 "빠진 것을 이름으로 짚는다"인데 그것을 스스로 어기는 꼴이다).
+        missing_detect = [
+            c for c, ver in DETECT_COLUMN_ADDED_IN.items() if ver > declared
+        ]
+        if missing_detect:
+            extra += f", detect.csv 자체(③ 탐지: {', '.join(missing_detect)})"
         if declared < 2:
-            extra = ", session의 gl/gpu_timer 블록"
+            extra += ", session의 gl/gpu_timer 블록"
         return declared, False, (
             f"session.json이 schema_version={declared}이라고 선언했다 — 하네스는 "
             f"v{SCHEMA_VERSION}다. **앱이 하네스보다 뒤처졌다.** v{declared} 이후에 늘어난 것"
-            f"({', '.join(missing_cols) if missing_cols else '없음'}{extra})이 이 로그에는 "
-            f"없을 수 있다. 읽히기는 하지만 stages 블록의 count가 0인 것은 '그 패스가 "
+            f"(frames.csv 열: {', '.join(missing_cols) if missing_cols else '없음'}{extra})이 "
+            f"이 로그에는 없을 수 있다. 읽히기는 하지만 stages 블록의 count가 0인 것은 '그 패스가 "
             f"0ms였다'가 아니라 **그 빌드가 재지 않았다**는 뜻이다. "
             f"⚠ 스키마를 확장할 때는 하네스가 앱보다 **먼저** 들어간다"
             f"(docs/FRAME_LOG_SCHEMA.md §6) — 앱 라운드가 붙기 전까지 이 경고가 뜨는 것은 "
@@ -1272,8 +2026,121 @@ def _add_stage_d_warnings(series: FrameSeries) -> None:
         )
 
 
+def _add_detect_unknown_column_warnings(series: DetectSeries) -> None:
+    """detect.csv에 스키마 밖 열이 있으면 이름을 지목한다. **죽이지 않고 경고만.**
+
+    `_add_unknown_column_warnings`와 같은 이유다 — 조용히 무시하면 열 이름 오타가
+    "그 열이 원래 없었다"와 구분되지 않는다(예: `stage_f_ms`를 `stage_f`로 오타 내면
+    F칸이 count=0이 되고 리포트는 "추론 시간을 재지 않았다"고 잘못 말한다).
+    """
+    if not series.unknown_columns:
+        return
+    names = ", ".join(repr(c) for c in series.unknown_columns)
+    series.warnings.append(
+        f"detect.csv에 스키마에 없는 열 {len(series.unknown_columns)}개가 있다: {names} — "
+        f"이 열은 집계에 전혀 쓰이지 않았다. 열 이름 오타라면 해당 지표가 count=0이 되어 "
+        f"'그 열이 없는 로그'와 구분되지 않으므로 위 이름을 폰 쪽 헤더와 대조할 것. "
+        f"의도한 새 열이라면 lib/frame_log.py의 DETECT_OPTIONAL_COLUMNS와 "
+        f"docs/FRAME_LOG_SCHEMA.md에 등록해야 집계에 들어온다 "
+        f"(하네스가 아는 열: {', '.join(DETECT_KNOWN_COLUMNS)})"
+    )
+
+
+def _add_detect_row_skip_warnings(series: DetectSeries) -> None:
+    """추론 행이 사라졌으면 사유별로 말한다. warmup만은 경고가 아니다(의도된 제외)."""
+    for reason in DETECT_ANOMALOUS_SKIP_REASONS:
+        n = series.rows_skipped.get(reason, 0)
+        if not n:
+            continue
+        extra = ""
+        if reason == "before_t0":
+            # 원인이 둘이다. 하나로 단정하면 엉뚱한 곳을 뒤진다.
+            # ⚠ 이 사유의 **분류 자체가 첫 실측 후 재검토 대상**이다 — (b)가 정상 런마다
+            #   일어나면 anomalous가 늘 >= 1이 되어 data_complete 플래그가 쓸모없어진다
+            #   (ROW_SKIP_REASONS 주석이 warmup을 이상으로 세지 않는 이유와 같은 논거).
+            #   실측 건수를 보고 그대로 둘지·warmup으로 접을지·사유를 쪼갤지 정한다.
+            extra = (
+                " 원인은 둘 중 하나다: (a) 시계 역행, (b) 탐지가 별 use case라 첫 프레임이 "
+                "렌더 쪽 첫 프레임보다 먼저 도착했다. (b)라면 개수가 적고(보통 1~2개) "
+                "frames.csv 첫 행 근방의 시각이므로, 그 경우는 분석 창 밖의 앞자락일 뿐이다. "
+                "⚠ 이 사유를 이상 소실로 세는 분류는 **첫 실측 후 재검토 대상**이다 — "
+                "(b)가 매 런 발생하면 이 플래그가 늘 false가 되어 쓸모없어진다 "
+                "(lib/frame_log.py의 _add_detect_row_skip_warnings 주석)."
+            )
+        series.warnings.append(
+            f"추론 행 {n}개가 시계열에 들어가지 못했다 — "
+            f"{DETECT_ROW_SKIP_REASON_TEXT[reason]} (rows_read={series.rows_read}, "
+            f"rows_used={series.rows_used}, warmup 제외={series.rows_skipped.get('warmup', 0)}, "
+            f"t0_ns={series.t0_ns}). 의도된 제외가 아니므로 이 로그의 분포는 온전한 측정이 "
+            f"아니다.{extra}"
+        )
+
+
+def _add_detect_discard_warnings(series: DetectSeries) -> None:
+    """폐기가 1건이라도 있으면 경고로 남긴다 (`_add_discard_warnings`와 같은 취지).
+
+    폐기된 샘플은 **그 측정의 최악 추론일 수 있다.** 사유 문장은 열 성격에 따라 고른다 —
+    detect 열에서 "0 이하"는 시계 역행이 아니므로 GPU/프레임 쪽 문장을 쓰면 폰 쪽이
+    엉뚱하게 시계 코드를 뒤진다.
+    """
+    for name in sorted(series.discarded):
+        reasons = series.discarded[name]
+        text = (
+            DETECT_COUNT_DISCARD_REASON_TEXT
+            if name in DETECT_COUNT_COLUMNS or name in DETECT_SCORE_COLUMNS
+            else DETECT_DISCARD_REASON_TEXT
+        )
+        detail = ", ".join(
+            f"{text.get(reason, DISCARD_REASON_TEXT.get(reason, reason))} {count}개"
+            for reason, count in sorted(reasons.items())
+        )
+        total = sum(reasons.values())
+        series.warnings.append(
+            f"{name}: 샘플 {total}개를 폐기했다 ({detail}). "
+            f"폐기된 샘플이 그 측정의 최악 추론일 수 있으므로 분포는 낙관적으로 치우친다"
+        )
+
+
+def _add_detect_warnings(series: DetectSeries) -> None:
+    """E·F·G 열이 **있는데 유효 표본이 없는** 경우 등을 말한다.
+
+    `_add_gpu_warnings`와 같은 이유다 — 이 경고가 없으면 `stage_f_ms.count == 0`이
+    "추론이 공짜였다"로 읽힐 수 있다. 0ms와 "재지 못했다"는 완전히 다른 사실이다.
+    """
+    if not [c for c in DETECT_TIME_COLUMNS if c in series.detect_columns_present]:
+        series.warnings.append(
+            f"detect.csv에 E·F·G 열({', '.join(DETECT_TIME_COLUMNS)})이 하나도 없다 — "
+            f"추론 행은 {series.rows_used}개 있지만 단계 비용은 이 로그로 말할 수 없다. "
+            f"앱이 구간 계측을 켜지 않은 빌드이거나 스키마 v6 이전 로그다"
+        )
+    for col in series.detect_columns_present:
+        if col not in DETECT_TIME_COLUMNS:
+            continue
+        if getattr(series, col):
+            continue
+        discarded = sum(series.discarded.get(col, {}).values())
+        series.warnings.append(
+            f"{col}: 열은 있는데 유효 표본이 0개다(폐기 {discarded}개). "
+            f"이건 '그 구간이 0ms였다'가 아니라 **재지 못했다**는 뜻이다 — 앱이 그 구간에서 "
+            f"-1을 쓰고 있는지(계측 미구현) 확인할 것. 이 열로 단계 비용을 말하지 말 것"
+        )
+    # 누적 열의 감소. **열 이름을 리터럴로 쓰지 않는다** — 누적 열이 늘면 그 열의 경고가
+    # 조용히 빠진다(수집 경로를 상수에서 파생시키는 것과 같은 이유).
+    for col in DETECT_CUMULATIVE_COLUMNS:
+        regressions = getattr(series, f"{col}_regressions", 0)
+        if not regressions:
+            continue
+        series.warnings.append(
+            f"{col}가 {regressions}번 감소했다 — "
+            f"이 열은 **누적값**이라 절대 줄지 않아야 한다. 카운터가 중간에 리셋됐거나 이 열이 "
+            f"'그 시점까지의 누적'이 아닌 다른 값을 담고 있다(예: 직전 구간 개수). "
+            f"{col}_total={getattr(series, f'{col}_total')}은 마지막으로 관측한 "
+            f"값이므로 건너뛴 총량이 아닐 수 있다 — 앱 쪽 카운터를 확인할 것"
+        )
+
+
 def _collect(
-    series: FrameSeries,
+    series: FrameSeries | DetectSeries,
     name: str,
     target: list[float],
     value: float,
@@ -1299,6 +2166,28 @@ def _collect(
     target.append(value)
 
 
+def _collect_nonneg(
+    series: DetectSeries,
+    name: str,
+    target: list,
+    value: float,
+) -> None:
+    """카운트·점수용. **0을 받는다** — 시간 열과 가드가 다른 이유가 여기 있다.
+
+    박스 0개(`boxes_out == 0`)는 정상값이고 실제로 야간 보행 대부분의 프레임이 그렇다.
+    시간 열의 하한(`> 0`)을 그대로 쓰면 그 추론들이 통째로 폐기되어 (a) 분포가 위로 치우치고
+    (b) 폐기 카운트가 행 수만큼 튀어 진짜 결손을 덮는다. 기록되지 않은 값(-1)만 버린다.
+
+    ⚠ `_collect`와 같은 이유로 **부정형**(`not (value >= 0)`)으로 쓴다 — NaN은 어떤 비교에도
+    False를 돌려주므로 긍정형으로 쓰면 NaN이 통과해 백분위와 요약 JSON을 망친다.
+    (`_to_float`가 이미 막지만, 여기서 한 번 더 닫아야 값의 출처와 무관하게 막힌다.)
+    """
+    if not (value >= 0):
+        series.note_discard(name, "below_min")
+        return
+    target.append(value)
+
+
 def write_frames(
     path: Path, rows: list[dict], columns: Optional[list[str]] = None
 ) -> None:
@@ -1310,6 +2199,40 @@ def write_frames(
     생성기로 만들지 못하게 된다.
     """
     known = list(REQUIRED_COLUMNS) + list(OPTIONAL_COLUMNS)
+    if columns is not None:
+        cols = list(columns)
+    elif rows:
+        cols = [c for c in known if any(c in r for r in rows)]
+    else:
+        cols = known
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=cols)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({c: row.get(c, MISSING) for c in cols})
+
+
+def write_detect(
+    path: Path, rows: list[dict], columns: Optional[list[str]] = None
+) -> None:
+    """합성 detect.csv 생성용. `write_frames`의 짝이며 **규약이 글자 그대로 같다.**
+
+    - 열 순서는 `DETECT_REQUIRED_COLUMNS` → `DETECT_OPTIONAL_COLUMNS` 순(스키마 순서).
+      행 dict의 키 순서를 따르지 않는다 — 그러면 생성 코드에 따라 헤더 순서가 흔들린다.
+    - 없는 값은 **-1 센티널**(MISSING). 빈칸이 아니다 (파일 상단 §3).
+    - `columns`를 주지 않으면 **행에 실제로 있는 키만** 헤더로 쓴다. 전체 열을 항상 쓰면
+      스키마에 열이 늘 때마다 모든 합성 로그가 그 열을 -1로 갖게 되어 **"그 열이 없는
+      로그"를 만들 수 없다** — `read_detect`의 하위호환 경로("E·F·G 열이 하나도 없다",
+      "열은 있는데 표본 0개")를 생성기로 시험할 수 없게 된다.
+
+    ⚠ **실기기 로그는 앱이 쓴다.** 이 함수를 거치지 않는다 — 여기서 쓴 CSV는 합성이며
+      실측이 아니다(`render_arm`도 `RENDER_ARM_SYNTHETIC`로 선언해야 한다).
+    ⚠ **중복 헤더를 만들지 않는다.** `columns`에 같은 이름을 두 번 주면 `read_detect`가
+      하드 에러로 죽는다(csv.DictReader가 앞쪽 값을 파괴하므로). 그 방어선을 시험하려면
+      이 함수를 쓰지 말고 CSV를 직접 써야 한다.
+    """
+    known = list(DETECT_REQUIRED_COLUMNS) + list(DETECT_OPTIONAL_COLUMNS)
     if columns is not None:
         cols = list(columns)
     elif rows:

@@ -46,6 +46,22 @@ CONDITION_KEYS = (
     # "회귀"로 보인다. 어휘는 lib/frame_log.py의 LIGHTING_CONDITIONS.
     ("session", "lighting_condition"),
     ("source", "warmup_sec"),
+    # ── 🔴 **`detect.ep.resolved`를 여기 넣지 않는다 (결정됨, v6)** ──────────
+    # CONDITION_KEYS는 **선언된 조건**을 비교하는 장치인데 `ep.resolved`는 **측정된 결과**다.
+    # 결과를 조건 키에 넣으면 조용히 폴백한 런이 "조건 다름"이라는 **약한 신호**(comparable
+    # =false, exit code는 그대로)로 나오고, 그 사실을 크게 내야 할 `run_session.py`의 EP
+    # 어긋남 검사(계획 대조에서 그 런을 **실패**로 만든다)와 역할이 겹친다.
+    # **하나의 사실에 장치가 둘이면 약한 쪽이 강한 쪽을 가린다** — "이미 표시가 있다"는
+    # 이유로 강한 검사를 안 보게 된다.
+    #
+    # EP 차이는 **arm id로 가른다**: `detect_cpu` / `detect_nnapi`가 이미 다른 arm이고
+    # `render_arm`은 위 조건 키에 있다. `highlight_boxes`/`_stress`(박스 개수), `_1q`
+    # (계측 방식)와 **같은 구조**다 — 조건이 다르면 arm을 가른다는 이 저장소의 선례.
+    #
+    # ⚠ **남는 구멍:** 같은 `detect_nnapi` arm인데 런마다 `ep.resolved`가 갈리는 경우
+    #   (한 런은 NNAPI로 열리고 다른 런은 CPU로 폴백)는 arm id로 잡히지 않는다. 그건
+    #   run_session의 어긋남 검사가 담당한다(그 런은 계획 칸을 못 채운다). 노이즈 쌍 안에서
+    #   실제로 갈리는 것이 관측되면 그때 이 키 추가를 재검토한다 — 관측 전에 넣지 않는다.
 )
 
 METRICS = ("p50", "p95", "p99", "mean")

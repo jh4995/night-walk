@@ -1,4 +1,9 @@
-"""폰의 측정 로그(frames.csv / session.json)를 하네스 출력 디렉토리로 가져온다.
+"""폰의 측정 로그(frames.csv / session.json / detect.csv)를 하네스 출력 디렉토리로 가져온다.
+
+**필수는 `frames.csv`·`session.json` 둘이고, `detect.csv`는 선택이다** (스키마 v6).
+탐지가 아닌 런에는 그 파일이 아예 없으므로 필수로 두면 기존 워크플로가 통째로 깨진다.
+다만 `session.json`이 `detect.enabled=true`라고 선언했는데 detect.csv가 없으면 **실패**다 —
+조용한 반쪽 회수를 막는 것이 이 스크립트의 존재 이유다.
 
 손 `adb pull`에는 두 문제가 있었다:
   (a) pull 대상을 `outputs/` 아래로 잡으면 "outputs 산출물을 손으로 만들지 않는다"와 충돌한다
@@ -39,16 +44,30 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib import device_meta  # noqa: E402
+from lib.frame_log import DETECT_ENABLED_PATH, read_session, session_field  # noqa: E402
 from lib.run_utils import common_argparser, init_run  # noqa: E402
 
 LOG = logging.getLogger(__name__)
+
+# 사람에게 보이는 이름은 경로에서 파생한다 — 앱이 키를 옮길 때 메시지만 낡지 않게.
+DETECT_ENABLED_FIELD = ".".join(DETECT_ENABLED_PATH)
 
 DEFAULT_PACKAGE = "com.bammasil.poc"
 # 앱의 외부 저장소 전용 디렉토리 (Context.getExternalFilesDir(null))
 REMOTE_BASE_TEMPLATE = "/sdcard/Android/data/{pkg}/files"
 # 앱이 런별 디렉토리를 만드는 위치 (MainActivity: `<files>/runs/<YYYYMMDD_HHMMSS>/`)
 RUNS_SUBDIR = "runs"
-PULL_FILES = ("frames.csv", "session.json")
+# ── 회수 대상 파일. **필수와 선택을 가른다** (스키마 v6) ────────────────────
+# 🔴 `detect.csv`를 그냥 PULL_FILES에 더하면 **탐지가 아닌 모든 런의 회수가 실패한다** —
+#   아래 pull 루프의 `ok` 판정이 파일마다 같은 잣대를 대고, 하나라도 실패하면
+#   EXIT_PULL_FAILED가 나간다. 승격본 45건을 낸 기존 워크플로가 통째로 깨지는 자리다.
+#   그래서 detect.csv는 **선택**이다.
+REQUIRED_PULL_FILES = ("frames.csv", "session.json")
+# 🔴 다만 "선택"이 "없어도 조용히 넘어간다"는 뜻은 아니다. `session.json`이
+#   `detect.enabled=true`라고 말하는데 detect.csv가 없으면 **실패**로 낸다 — 조용한 반쪽
+#   회수를 막는 것이 이 스크립트의 존재 이유다(평면 폴백을 실패로 만든 것과 같은 논거).
+OPTIONAL_PULL_FILES = ("detect.csv",)
+PULL_FILES = REQUIRED_PULL_FILES + OPTIONAL_PULL_FILES
 
 # 평면 폴백으로 가져온 것을 담는 로컬 디렉토리 이름. 기기 런 이름(타임스탬프)과 **모양이
 # 다르게** 짓는다 — 경로만 봐도 "이건 런 디렉토리에서 온 게 아니다"가 드러나야 한다.
@@ -261,7 +280,12 @@ def stale_flat_warning(base_dir: str, names: list[str]) -> str:
 
 
 def _print_listing(runs: list[dict]) -> None:
-    """--list 출력. 어느 런을 뽑을지 사람이 고를 수 있어야 한다."""
+    """--list 출력. 어느 런을 뽑을지 사람이 고를 수 있어야 한다.
+
+    🔴 "회수해도 반쪽이다" 경고는 **필수 파일에만** 붙인다. 선택 파일(detect.csv)이 없다고
+    같은 경고를 내면 탐지가 아닌 모든 런에서 상시 켜지고, 그러면 그 경고는 곧 아무도 안 봐서
+    **정작 frames.csv가 빠진 런에서 묻힌다.** 경고를 무디게 만드는 것도 조용한 실패다.
+    """
     LOG.info("=" * 62)
     LOG.info("기기의 런 %d개:", len(runs))
     for r in runs:
@@ -270,6 +294,14 @@ def _print_listing(runs: list[dict]) -> None:
             f = (r["files_on_device"] or {}).get(name)
             if f:
                 LOG.info("      %-14s %10s bytes  %s", name, f["size_bytes"], f["mtime"])
+            elif name in OPTIONAL_PULL_FILES:
+                # 없는 것이 정상인 경우가 대부분이다(탐지 arm이 아닌 런). 다만 그 런이
+                # 정말 탐지를 켰는지는 session.json을 읽어야 알 수 있고, --list는 파일을
+                # 회수하지 않으므로 여기서는 단정하지 않는다 — 실제 판정은 pull 경로가 한다.
+                LOG.info(
+                    "      %-14s 없음 (선택 파일 — 탐지 런이 아니면 정상. "
+                    "detect.enabled=true인데 없으면 회수 시 실패로 잡는다)", name,
+                )
             else:
                 LOG.warning("      %-14s 없음 — 이 런은 회수해도 반쪽이다", name)
         extra = sorted(set(r["files_on_device"] or {}) - set(PULL_FILES))
@@ -457,7 +489,7 @@ def main() -> int:
             return _fail(paths, result, reason, warnings)
         if not flat_names:
             reason = (
-                f"{runs_dir} 도 없고 `{base_dir}/` 에 {', '.join(PULL_FILES)} 도 없다 — "
+                f"{runs_dir} 도 없고 `{base_dir}/` 에 {', '.join(REQUIRED_PULL_FILES)} 도 없다 — "
                 "앱이 한 번도 측정을 끝내지 않았거나 경로가 다르다"
                 "(--package / --remote_dir 확인). 위 [ls base] 원문을 볼 것"
             )
@@ -551,7 +583,9 @@ def main() -> int:
         local_dir.mkdir(parents=True, exist_ok=True)
         files = []
         failed = []
+        missing_optional = []
         for name in PULL_FILES:
+            optional = name in OPTIONAL_PULL_FILES
             remote = f"{sel['remote_dir']}/{name}"
             local = local_dir / name
             res = _adb_raw(adb_path, ["pull", remote, str(local)], serial=serial)
@@ -568,6 +602,9 @@ def main() -> int:
                 "exists": exists,
                 "size_bytes": size,
                 "ok": ok,
+                # 필수/선택을 **결과에도 남긴다.** 나중에 pull_result만 보고 "왜 이건 실패인데
+                # 저건 아닌가"를 되물을 근거가 여기다.
+                "required": not optional,
                 "adb": res,
             }
             files.append(entry)
@@ -578,11 +615,45 @@ def main() -> int:
                 elif res["returncode"] == 0 and not exists:
                     reason = "adb는 성공을 반환했는데 로컬 파일이 없다"
                 entry["failure_reason"] = reason
-                failed.append(name)
-                failed_all.append(f"{sel['name']}/{name}")
-                LOG.error("%s/%s 실패: %s", sel["name"], name, reason)
+                if optional:
+                    # 선택 파일은 **여기서 실패로 세지 않는다.** 다만 0바이트 잔해는 지운다 —
+                    # 남겨 두면 analyze_frames --detect가 "헤더가 없다"로 죽고, 사람은
+                    # 회수가 아니라 스키마를 의심하게 된다.
+                    if exists and size == 0:
+                        local.unlink(missing_ok=True)
+                        entry["local_path"] = None
+                        entry["exists"] = False
+                    missing_optional.append(name)
+                    LOG.info(
+                        "%s/%s 없음 (선택 파일): %s", sel["name"], name, reason,
+                    )
+                else:
+                    failed.append(name)
+                    failed_all.append(f"{sel['name']}/{name}")
+                    LOG.error("%s/%s 실패: %s", sel["name"], name, reason)
             else:
                 LOG.info("%s/%s 가져옴: %s (%d bytes)", sel["name"], name, local, size)
+
+        # ── 🔴 선택 파일이 **없어도 되는 런인가**를 앱의 자진 신고로 판정한다.
+        #    session.json이 detect.enabled=true라고 말하는데 detect.csv가 없으면 그 회수는
+        #    반쪽이다 — 그대로 통과시키면 "탐지를 켰는데 탐지 계측이 없는" 런이 조용히
+        #    베이스라인에 들어간다. 하네스가 탐지 여부를 추측하지 않고 **선언을 읽는다.**
+        detect_declared, detect_missing_reason = _detect_declared_enabled(
+            local_dir / "session.json"
+        )
+        detect_ok = "detect.csv" not in missing_optional
+        detect_mismatch = bool(detect_declared) and not detect_ok
+        if detect_mismatch:
+            why = (
+                f"{sel['name']}: session.json이 {DETECT_ENABLED_FIELD}=true라고 선언했는데 "
+                f"detect.csv를 회수하지 못했다 — 이 런은 **반쪽 회수**다. ③ 탐지를 켠 런의 "
+                f"E·F·G가 통째로 없는 상태이며, 그대로 집계하면 '탐지를 안 켠 런'과 구분되지 "
+                f"않는다. 앱이 detect.csv를 쓰지 못했거나(측정을 정지 버튼으로 끝냈는지 확인) "
+                f"경로가 다르다. 위 [pull {sel['name']}/detect.csv] 원문을 볼 것"
+            )
+            failed.append("detect.csv")
+            failed_all.append(f"{sel['name']}/detect.csv")
+            LOG.error("%s", why)
 
         runs_out.append({
             "name": sel["name"],
@@ -590,6 +661,13 @@ def main() -> int:
             "local_dir": str(local_dir.resolve()),
             "files": files,
             "failed_files": failed,
+            "missing_optional_files": missing_optional,
+            # 앱이 선언한 탐지 사용 여부. None = 말할 수 없다(키 없음/session.json 못 읽음).
+            # **None과 false는 다르다** — 없는 것을 false로 채우면 없는 근거를 만드는 것이다.
+            "detect_declared_enabled": detect_declared,
+            "detect_declared_reason": detect_missing_reason,
+            "detect_csv_ok": detect_ok,
+            "detect_half_pull": detect_mismatch,
             "ok": not failed,
         })
 
@@ -617,13 +695,57 @@ def main() -> int:
     LOG.info("=" * 62)
     LOG.info("회수한 런 %d개 (레이아웃: %s)", len(runs_out), layout)
     for r in runs_out:
-        LOG.info("다음: python scripts/analyze_frames.py --frames %s --session %s",
-                 Path(r["local_dir"]) / "frames.csv", Path(r["local_dir"]) / "session.json")
+        # detect.csv를 실제로 가져왔을 때만 --detect를 붙인다. 없는 경로를 안내하면
+        # analyze_frames가 죽고(명시 지목한 파일을 못 읽으면 죽는 것이 옳다), 사람은
+        # 회수가 아니라 집계를 의심하게 된다.
+        detect_arg = ""
+        if r.get("detect_csv_ok"):
+            detect_arg = f" --detect {Path(r['local_dir']) / 'detect.csv'}"
+        LOG.info("다음: python scripts/analyze_frames.py --frames %s --session %s%s",
+                 Path(r["local_dir"]) / "frames.csv",
+                 Path(r["local_dir"]) / "session.json",
+                 detect_arg)
+        if r.get("detect_declared_enabled") is None and r.get("detect_csv_ok"):
+            # 파일은 왔는데 선언을 못 읽었다. 집계는 되지만 그 런이 정말 탐지 런인지
+            # session.json만으로는 말할 수 없다 — 사실을 남긴다.
+            LOG.warning(
+                "%s: detect.csv는 가져왔지만 %s를 확인할 수 없다 (%s)",
+                r["name"], DETECT_ENABLED_FIELD, r.get("detect_declared_reason"),
+            )
     if layout == "legacy_flat":
         # 마지막에 한 번 더. 이 경고는 스크롤 위쪽에서 묻히면 안 된다.
         LOG.warning("%s", legacy_flat_warning(base_dir))
     LOG.info("=" * 62)
     return EXIT_OK
+
+
+def _detect_declared_enabled(session_path: Path) -> tuple[bool | None, str | None]:
+    """회수한 session.json이 ③ 탐지를 켰다고 선언했는가. (값, 못 읽은 사유).
+
+    반환값 셋을 구분한다: True(켰다) / False(껐다고 선언) / None(**말할 수 없다**).
+    🔴 None을 False로 접지 않는다 — 없는 것을 "껐다"로 채우면 없는 근거를 만드는 것이고,
+    그러면 필드가 없는 옛 로그에서 반쪽 회수가 조용히 통과한다. 대신 사유를 남긴다.
+    """
+    if not session_path.exists():
+        return None, "session.json이 회수되지 않아 탐지 선언을 읽을 수 없다"
+    try:
+        session = read_session(session_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, f"session.json을 읽지 못했다: {exc}"
+    raw, present = session_field(session, DETECT_ENABLED_PATH)
+    if not present:
+        return None, f"session.json에 {DETECT_ENABLED_FIELD}가 없다 (v6 이전 로그이거나 앱 미구현)"
+    if isinstance(raw, bool):
+        return raw, None
+    if raw is None:
+        return None, f"{DETECT_ENABLED_FIELD}가 명시적으로 null이다 (키는 있는데 값이 없다)"
+    # 앱이 문자열 "true"로 적는 전례가 있다(run_session의 build.git_dirty). 같은 방어선.
+    text = str(raw).strip().lower()
+    if text in {"true", "1", "yes", "on"}:
+        return True, None
+    if text in {"false", "0", "no", "off"}:
+        return False, None
+    return None, f"{DETECT_ENABLED_FIELD}를 불리언으로 읽을 수 없다: {raw!r}"
 
 
 def _fail(paths, result: dict, reason: str, warnings: list[str]) -> int:
