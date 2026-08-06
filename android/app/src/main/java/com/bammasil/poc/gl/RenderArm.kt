@@ -392,6 +392,93 @@ enum class RenderArm(
         "detect_xnnpack_prof",
         listOf("blit_2pass", "detect"),
         listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
+    ),
+
+    // ── 하한이 없던 세 계열의 프레임 단일 query 짝(`*_1q`) ─────────────────
+    // 🔴 **왜 이 셋이 더 필요한가:** 단일 query 짝을 실제로 잰 것은 [BLIT_2PASS] ·
+    // [DRAGO_CLAHE_CHAIN] · [DRAGO_CLAHE_CHAIN_BF] 셋뿐이라, [DRAGO_CLAHE_FUSED] ·
+    // [DRAGO_CLAHE_FUSED_BF] · [HIGHLIGHT_BOXES] 계열에는 **패스별 계측의 상한만 있고
+    // 하한이 없다**(`docs/STATUS.md` 알려진 이슈 22).
+    //
+    // ⚠ **부풀림 비율을 다른 arm에서 옮겨 보정할 수 없다.** 중복 계상량은 마지막 전체화면
+    //   패스의 비용을 따라가므로 패스 구성마다 다르다 — 같은 라운드에서 ④ 오버레이 arm은
+    //   +2%였고 9패스 arm은 +43%였다([SINGLE_QUERY_WHAT_DIFFERS]). 한 arm의 비율을 다른
+    //   arm에 곱하면 그건 측정이 아니라 추정이고, 그 추정이 버짓 칸으로 들어간다.
+    //   그러므로 하한은 **그 arm에서 직접 재는 수밖에 없고**, 그러려면 arm id가 있어야 한다.
+    //
+    // 나머지 규약은 위 `_1q` 블록과 같다 — 렌더 경로는 짝과 글자 그대로 같고(uses* 판별식에
+    // 함께 넣었다), 열은 `gpu_frame_ms` 하나이며, 목록 **뒤에** 붙인다(스피너가 entries
+    // 순서라 중간에 끼우면 측정자가 고르던 위치가 전부 밀린다).
+
+    /**
+     * [DRAGO_CLAHE_FUSED]의 프레임 단일 query 판. 렌더 7패스, 열 1개.
+     *
+     * 이 짝이 있어야 융합의 `gpu_sum`을 체인의 것과 **같은 자격으로** 비교할 수 있다 —
+     * 지금은 체인 쪽만 하한이 있어 두 arm의 차분이 "융합의 절감"인지 "중복 계상량의 차이"인지
+     * 가릴 수 없다([FUSED_HOW_TO_COMPARE]가 그 차분을 이 arm의 유일한 뜻으로 못 박았다).
+     */
+    DRAGO_CLAHE_FUSED_1Q(
+        "drago_clahe_fused_1q",
+        // 짝(drago_clahe_fused)과 **같은 목록**이다. 두 arm을 가르는 것은 render_arm 문자열뿐이다.
+        listOf("blit_2pass", "stage2_drago", "stage2_clahe"),
+        listOf("gpu_frame_ms"),
+    ),
+
+    /** [DRAGO_CLAHE_FUSED_BF]의 프레임 단일 query 판. 렌더 8패스, 열 1개. */
+    DRAGO_CLAHE_FUSED_BF_1Q(
+        "drago_clahe_fused_bf_1q",
+        listOf("blit_2pass", "stage2_drago", "stage2_clahe", "stage2_bilateral"),
+        listOf("gpu_frame_ms"),
+    ),
+
+    /**
+     * [HIGHLIGHT_BOXES]의 프레임 단일 query 판. 렌더 4패스, 열 1개.
+     *
+     * 🔴 **박스 개수가 짝과 같아야 한다**([highlightBoxCount]에 이 arm이 들어 있다). 빠뜨리면
+     * 박스를 0개 그려 렌더가 짝과 달라지고, 그러면 두 계측의 차분이 아무 뜻이 없어진다 —
+     * 이 arm 계열이 재려는 것은 **같은 그림을 두 방식으로 잰 차이**뿐이다.
+     */
+    HIGHLIGHT_BOXES_1Q(
+        "highlight_boxes_1q",
+        listOf("blit_2pass", "stage4_highlight"),
+        listOf("gpu_frame_ms"),
+    ),
+
+    // ── ③ 이식 정확성 대조 arm(`detect_parity_*`) ──────────────────────────
+    // 🔴 **재는 arm이 아니라 대조하는 arm이다.** 추론 경로·모델·전처리는 짝
+    // ([DETECT_CPU]/[DETECT_NNAPI]/[DETECT_XNNPACK])과 글자 그대로 같고, 다른 것은 **샘플
+    // K개의 텐서를 파일로 덤프하는가** 하나뿐이다 — `_prof` 접미사와 같은 취지로 arm을 갈랐다
+    // (계측 방식이 다르면 같은 코드라도 같은 조건이 아니고, 그 사실을 담을 키가
+    // `pipeline_stages`에는 없다). 🔴 시간 인용 금지 ([DETECT_PARITY_NOT_QUOTABLE]).
+    //
+    // 무엇에 답하는가: `metadata.json`의 `parity_check`는 **상류가 PC에서 PyTorch 대비** 확인한
+    // 것이고, **폰 ORT 출력이 그것과 같은지는 별개 문제다.** 그 질문에 답할 수단이 지금까지
+    // 없어 "미검증"이라고 쓰기만 했다 — 이 arm이 그 수단이다. 포맷 규약과 3분할(E/F/G) 대조법은
+    // `docs/plans/20260806_detect_parity_dump_format.md`에 있고 소비자는 `scripts/detect_parity.py`다.
+    //
+    // 🔴 **왜 EP 셋 다인가:** NNAPI가 GPU로 내려가는 것을 이미 실측했다(`gpu_busy` 2.2%→43%).
+    // GPU 경로는 **fp16으로 떨어질 수 있고** 그러면 같은 모델·같은 입력인데 **답이 달라진다.**
+    // 그건 성능 문제가 아니라 **안전 문제**라 EP별로 봐야 하고, 폰 EP끼리도 서로 대조한다.
+
+    /** [DETECT_CPU]의 덤프 판. 🔴 시간 인용 금지 ([DETECT_PARITY_NOT_QUOTABLE]). */
+    DETECT_PARITY_CPU(
+        "detect_parity_cpu",
+        listOf("blit_2pass", "detect"),
+        listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
+    ),
+
+    /** [DETECT_NNAPI]의 덤프 판. 🔴 시간 인용 금지 ([DETECT_PARITY_NOT_QUOTABLE]). */
+    DETECT_PARITY_NNAPI(
+        "detect_parity_nnapi",
+        listOf("blit_2pass", "detect"),
+        listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
+    ),
+
+    /** [DETECT_XNNPACK]의 덤프 판. 🔴 시간 인용 금지 ([DETECT_PARITY_NOT_QUOTABLE]). */
+    DETECT_PARITY_XNNPACK(
+        "detect_parity_xnnpack",
+        listOf("blit_2pass", "detect"),
+        listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
     );
 
     /**
@@ -427,9 +514,12 @@ enum class RenderArm(
     /**
      * ② 자리가 **융합**(통계 두 벌 + 적용 한 벌)인 arm인가.
      * **`PassthroughRenderer.drawFusedComputeStage2`(7패스) 경로 선택 전용**이다.
+     *
+     * 🔴 [DRAGO_CLAHE_FUSED_1Q]가 **여기 함께 들어 있다**([usesChainedComputeStage2]와 같은
+     * 이유다) — 여기서 빼면 `dispatchDraw`가 3패스 골격으로 떨어뜨려 실험이 무의미해진다.
      */
     val usesFusedComputeStage2: Boolean
-        get() = this == DRAGO_CLAHE_FUSED
+        get() = this == DRAGO_CLAHE_FUSED || this == DRAGO_CLAHE_FUSED_1Q
 
     /**
      * ② 자리가 **체인 + bilateral**인 arm인가.
@@ -446,14 +536,15 @@ enum class RenderArm(
      * **`PassthroughRenderer.drawFusedBilateral`(8패스) 경로 선택 전용**이다.
      */
     val usesFusedBilateral: Boolean
-        get() = this == DRAGO_CLAHE_FUSED_BF
+        get() = this == DRAGO_CLAHE_FUSED_BF || this == DRAGO_CLAHE_FUSED_BF_1Q
 
     /**
      * ④ 오버레이 arm인가. **`PassthroughRenderer.drawHighlightOverlay`(4패스) 경로 선택
      * 전용**이다 — 개수 차이는 [highlightBoxCount]가 따로 말한다.
      */
     val usesHighlightOverlay: Boolean
-        get() = this == HIGHLIGHT_BOXES || this == HIGHLIGHT_BOXES_STRESS
+        get() = this == HIGHLIGHT_BOXES || this == HIGHLIGHT_BOXES_STRESS ||
+            this == HIGHLIGHT_BOXES_1Q
 
     /** ② 자리에 bilateral 한 패스가 붙는 arm인가(체인이든 융합이든). */
     val usesBilateral: Boolean
@@ -471,6 +562,9 @@ enum class RenderArm(
             BLIT_2PASS_1Q -> BLIT_2PASS
             DRAGO_CLAHE_CHAIN_1Q -> DRAGO_CLAHE_CHAIN
             DRAGO_CLAHE_CHAIN_BF_1Q -> DRAGO_CLAHE_CHAIN_BF
+            DRAGO_CLAHE_FUSED_1Q -> DRAGO_CLAHE_FUSED
+            DRAGO_CLAHE_FUSED_BF_1Q -> DRAGO_CLAHE_FUSED_BF
+            HIGHLIGHT_BOXES_1Q -> HIGHLIGHT_BOXES
             else -> null
         }
 
@@ -509,7 +603,19 @@ enum class RenderArm(
      */
     val usesDetectSession: Boolean
         get() = this == DETECT_CPU || this == DETECT_NNAPI || this == DETECT_XNNPACK ||
-            this == DETECT_CPU_PROF || this == DETECT_NNAPI_PROF || this == DETECT_XNNPACK_PROF
+            this == DETECT_CPU_PROF || this == DETECT_NNAPI_PROF || this == DETECT_XNNPACK_PROF ||
+            usesDetectParityDump
+
+    /**
+     * ③ **이식 정확성 대조 덤프**를 남기는 arm인가. `DetectParityDumper`의 시작 판별식이고,
+     * `session.json`의 `detect.parity` 블록과 인용 금지 문장([DETECT_PARITY_NOT_QUOTABLE])도
+     * 이 값으로 갈린다.
+     *
+     * 🔴 **추론 경로는 짝 arm과 같다** — 다른 것은 샘플 K개를 파일로 쓰는가 하나뿐이다.
+     */
+    val usesDetectParityDump: Boolean
+        get() = this == DETECT_PARITY_CPU || this == DETECT_PARITY_NNAPI ||
+            this == DETECT_PARITY_XNNPACK
 
     /**
      * 이 arm이 **요청하는** 실행 공급자. 어휘는 `lib/frame_log.py`의 `DETECT_EPS`와 같다.
@@ -519,9 +625,9 @@ enum class RenderArm(
      */
     val detectEpRequested: String?
         get() = when (this) {
-            DETECT_CPU, DETECT_CPU_PROF -> "cpu"
-            DETECT_NNAPI, DETECT_NNAPI_PROF -> "nnapi"
-            DETECT_XNNPACK, DETECT_XNNPACK_PROF -> "xnnpack"
+            DETECT_CPU, DETECT_CPU_PROF, DETECT_PARITY_CPU -> "cpu"
+            DETECT_NNAPI, DETECT_NNAPI_PROF, DETECT_PARITY_NNAPI -> "nnapi"
+            DETECT_XNNPACK, DETECT_XNNPACK_PROF, DETECT_PARITY_XNNPACK -> "xnnpack"
             else -> null
         }
 
@@ -544,7 +650,9 @@ enum class RenderArm(
      */
     val highlightBoxCount: Int
         get() = when (this) {
-            HIGHLIGHT_BOXES -> HIGHLIGHT_BOX_COUNT
+            // 🔴 `_1q` 짝이 **같은 개수**를 그려야 한다. 여기서 빠지면 0개를 그려 렌더가
+            //    짝과 달라지고, 그러면 두 계측의 차분이 아무 뜻이 없어진다.
+            HIGHLIGHT_BOXES, HIGHLIGHT_BOXES_1Q -> HIGHLIGHT_BOX_COUNT
             HIGHLIGHT_BOXES_STRESS -> HIGHLIGHT_BOX_COUNT_STRESS
             else -> 0
         }
@@ -1550,8 +1658,15 @@ enum class RenderArm(
                 "계상량**이다 — 그것이 이 arm의 존재 이유다. " +
                 "⚠ 짝은 렌더가 같은 arm 하나뿐이다: blit_2pass_1q↔blit_2pass · " +
                 "drago_clahe_chain_1q↔drago_clahe_chain · " +
-                "drago_clahe_chain_bf_1q↔drago_clahe_chain_bf. 다른 arm과 짝지으면 렌더가 " +
+                "drago_clahe_chain_bf_1q↔drago_clahe_chain_bf · " +
+                "drago_clahe_fused_1q↔drago_clahe_fused · " +
+                "drago_clahe_fused_bf_1q↔drago_clahe_fused_bf · " +
+                "highlight_boxes_1q↔highlight_boxes. 다른 arm과 짝지으면 렌더가 " +
                 "달라 그 차분은 아무 뜻이 없다. " +
+                "🔴 **부풀림 비율을 arm 사이에서 옮기지 말 것** — 중복 계상량은 마지막 " +
+                "전체화면 패스의 비용을 따라가므로 패스 구성마다 다르다(같은 라운드에서 " +
+                "④ 오버레이 arm +2% / 9패스 arm +43%). 하한이 필요하면 **그 arm의 `_1q` " +
+                "짝을 직접 재는 수밖에 없다** — 뒤의 세 짝이 생긴 이유가 그것이다. " +
                 "⚠ **다른 세션의 짝과 비교하지 말 것** — 발열·조명·AE 상태가 다르면 그 차이가 " +
                 "중복 계상량으로 둔갑한다. " +
                 "⚠ 이 arm은 **패스별 분해를 낼 수 없다.** 어느 패스가 비싼지는 짝 arm의 열이 " +
@@ -1600,6 +1715,28 @@ enum class RenderArm(
                 "(detect_cpu / detect_nnapi / detect_xnnpack)에서만 인용한다"
 
         /**
+         * 🔴 **`detect_parity_*` arm의 시간도 인용하지 않는다.**
+         *
+         * [DETECT_PROF_NOT_QUOTABLE]이 `_prof`에 대해 하는 일과 **같은 자리·같은 취지**다 —
+         * 사유만 다르다(프로파일러가 아니라 **덤프 I/O**다). 샘플당 ~7MB를 디스크에 쓰므로
+         * 같은 스레드에 있으면 그 프레임의 값이 부풀고, 다른 스레드로 빼도 SoC 경쟁이 남는다.
+         * 출처는 `docs/plans/20260806_detect_parity_dump_format.md` §6이다.
+         */
+        const val DETECT_PARITY_NOT_QUOTABLE =
+            "🔴 **이 arm의 시간을 인용하지 말 것.** 이 arm은 샘플 K개의 원본 평면·입력 텐서·" +
+                "출력 텐서를 파일로 덤프하는데(샘플당 ~7MB) 그 I/O가 추론과 **같은 스레드**에 " +
+                "있어 그 프레임의 E·F·G가 부풀고, 다른 스레드로 빼도 SoC 자원 경쟁은 남는다. " +
+                "덤프는 E·F·G를 재는 구간 **밖**(기록이 끝난 뒤)에서 하지만 그것으로 " +
+                "**해소되지 않는다** — 같은 런의 다른 프레임과 표시 경로가 그 I/O와 경쟁한다. " +
+                "그러므로 detect.csv가 나오더라도 그 값은 **버짓 칸으로 옮기지 않고** " +
+                "승격본(docs/baselines/)으로도 올리지 않는다. " +
+                "재는 자리는 이미 있다(detect_cpu / detect_nnapi / detect_xnnpack) — " +
+                "**이 arm은 값을 대조하는 자리이지 재는 자리가 아니다.** " +
+                "🔴 그리고 이 대조가 답하는 것은 '이식이 값을 바꾸지 않았는가'까지이며 " +
+                "**'모델이 옳은가'가 아니다**(정답 라벨이 없다). " +
+                "출처: docs/plans/20260806_detect_parity_dump_format.md §0·§6"
+
+        /**
          * ③ arm의 프레임타임을 읽는 법. **arm마다 뜻이 다르다.**
          *
          * - [DETECT_BIND_ONLY]: 분석 use case 하나를 더 붙인 값. 추론은 없다.
@@ -1608,8 +1745,8 @@ enum class RenderArm(
         const val DETECT_ROUND_SCOPE =
             "이 arm의 프레임타임을 읽는 법: **detect_bind_only는 분석 use case 하나를 더 붙인 " +
                 "값**이고 추론이 없다(pipeline_stages에 detect 토큰이 없는 이유다). " +
-                "detect_cpu / detect_nnapi / detect_xnnpack / _prof 셋은 프레임 경로에서 " +
-                "**실제로 추론이 돈다** — " +
+                "detect_cpu / detect_nnapi / detect_xnnpack · _prof 셋 · detect_parity_* 셋은 " +
+                "프레임 경로에서 **실제로 추론이 돈다** — " +
                 "렌더 경로 자체는 blit_2pass와 글자 그대로 같으므로, 그 arm들의 프레임타임 " +
                 "차이는 GL 변경이 아니라 **같은 SoC를 탐지 스레드와 나눠 쓴 결과**다. " +
                 "🔴 E·F·G의 분포는 프레임타임이 아니라 **detect.csv**에 있다"

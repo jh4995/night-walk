@@ -175,6 +175,37 @@ class DetectPostprocessor(
         return Result(boxesPreNms = count, boxesOut = kept, maxConf = maxConf)
     }
 
+    /**
+     * 최종 박스 하나. **원본 프레임 좌표계**다(역변환 + 클램프까지 거친 값).
+     * ③ 이식 정확성 덤프(`DetectParityDumper`)가 매니페스트에 싣는 자리에서만 쓴다.
+     */
+    class Box(
+        val cls: Int,
+        val conf: Float,
+        val x1: Float,
+        val y1: Float,
+        val x2: Float,
+        val y2: Float,
+    )
+
+    /**
+     * NMS를 통과한 박스 [count]개를 복사한다. `count`는 [Result.boxesOut]이다.
+     *
+     * 🔴 **[run] 직후 같은 스레드에서만 부른다** — 내부 배열은 재사용이라 다음 프레임이
+     * 덮어쓴다. ⚠ 이 함수는 객체를 만든다(위 "프레임당 객체 0개" 규약의 유일한 예외이며,
+     * **덤프 arm에서 샘플 K개에 대해서만** 불린다 — 측정 arm은 이 경로를 타지 않는다).
+     */
+    fun copyBoxes(count: Int): List<Box> {
+        val out = ArrayList<Box>(count)
+        var k = 0
+        while (k < count) {
+            val i = keptIndices[k]
+            out.add(Box(boxClass[i], boxScore[i], boxX1[i], boxY1[i], boxX2[i], boxY2[i]))
+            k++
+        }
+        return out
+    }
+
     private fun iou(i: Int, j: Int): Float {
         val ix1 = if (boxX1[i] > boxX1[j]) boxX1[i] else boxX1[j]
         val iy1 = if (boxY1[i] > boxY1[j]) boxY1[i] else boxY1[j]

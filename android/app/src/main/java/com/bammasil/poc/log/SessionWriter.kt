@@ -8,6 +8,8 @@ import com.bammasil.poc.gl.GlCapabilitiesProbe
 import com.bammasil.poc.gl.GpuTimerReport
 import com.bammasil.poc.gl.GpuTimerRing
 import com.bammasil.poc.detect.DetectContract
+import com.bammasil.poc.detect.DetectParityDumper
+import com.bammasil.poc.detect.DetectParityResult
 import com.bammasil.poc.detect.DetectReport
 import com.bammasil.poc.gl.HighlightOverlay
 import com.bammasil.poc.gl.LabGlsl
@@ -89,6 +91,11 @@ class SessionFacts(
      * [detect]가 "세션을 어떻게 준비했나"라면 이쪽은 "이 런에서 몇 번 돌았나"다.
      */
     val detectRun: DetectRunFacts?,
+    /**
+     * ③ 이식 정확성 대조 덤프의 사실. **덤프 arm(`detect_parity_*`)이 아니면 null**이고
+     * 그때는 `detect.parity` 블록 자체가 나가지 않는다(다른 블록들과 같은 규약).
+     */
+    val detectParity: DetectParityResult?,
 )
 
 /**
@@ -828,6 +835,19 @@ object SessionWriter {
                 putBilateralOverrides(json, facts, RenderArm.DRAGO_CLAHE_CHAIN_BF)
                 putSingleFrameQueryNotes(json, RenderArm.DRAGO_CLAHE_CHAIN_BF_1Q)
             }
+            RenderArm.DRAGO_CLAHE_FUSED_1Q -> {
+                putFused(json, facts)
+                putSingleFrameQueryNotes(json, RenderArm.DRAGO_CLAHE_FUSED_1Q)
+            }
+            RenderArm.DRAGO_CLAHE_FUSED_BF_1Q -> {
+                putFused(json, facts)
+                putBilateralOverrides(json, facts, RenderArm.DRAGO_CLAHE_FUSED_BF)
+                putSingleFrameQueryNotes(json, RenderArm.DRAGO_CLAHE_FUSED_BF_1Q)
+            }
+            RenderArm.HIGHLIGHT_BOXES_1Q -> {
+                putHighlightCopy(json, facts)
+                putSingleFrameQueryNotes(json, RenderArm.HIGHLIGHT_BOXES_1Q)
+            }
             // ── ③ 탐지 arm ────────────────────────────────────────────────
             // ② 자리는 **단순 복사**이고 렌더가 blit_2pass와 글자 그대로 같다.
             // 🔴 짝의 서술을 그대로 재사용하고 `else` 낙하로 처리하지 않는다 — 사본을 만들면
@@ -838,26 +858,45 @@ object SessionWriter {
             RenderArm.DETECT_XNNPACK,
             RenderArm.DETECT_CPU_PROF,
             RenderArm.DETECT_NNAPI_PROF,
-            RenderArm.DETECT_XNNPACK_PROF -> {
+            RenderArm.DETECT_XNNPACK_PROF,
+            RenderArm.DETECT_PARITY_CPU,
+            RenderArm.DETECT_PARITY_NNAPI,
+            RenderArm.DETECT_PARITY_XNNPACK -> {
                 putBlit2Pass(json)
                 // 🔴 ② 서술만 보고 "탐지가 프레임타임에 안 들어간다"를 유도하지 못하게 한다.
                 json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
             }
             // ④ arm의 ② 자리는 **단순 복사**다. 오버레이 서술은 root의 overlay 블록에 있다.
-            RenderArm.HIGHLIGHT_BOXES, RenderArm.HIGHLIGHT_BOXES_STRESS -> {
-                json.put("algorithm", "copy")
-                json.put("gpu_status", facts.stage2Status)
-                json.put(
-                    "note",
-                    "④ 오버레이 arm이라 ② 자리는 단순 복사다 — 여기서 나오는 stage_d_ms는 " +
-                        "②의 비용이 아니라 **골격 자체(오프스크린 왕복)의 비용**이며 " +
-                        "blit_2pass의 같은 자리와 같은 것이다. 이 arm이 재는 것은 " +
-                        "**stage_i_ms(④ 오버레이)**이고 그 서술은 session.json의 overlay 블록에 " +
-                        "있다"
-                )
-            }
+            RenderArm.HIGHLIGHT_BOXES, RenderArm.HIGHLIGHT_BOXES_STRESS ->
+                putHighlightCopy(json, facts)
         }
         return json
+    }
+
+    /**
+     * ④ 오버레이 arm의 ② 서술. **`highlight_boxes_1q`도 이 함수를 부른다** —
+     * 두 arm의 렌더가 글자 그대로 같아야 계측 방식의 차이만 남고, 서술에 사본을 만들면
+     * 한쪽만 고쳐지는 날 두 arm의 문장이 갈라진다([putBlit2Pass]와 같은 이유다).
+     */
+    private fun putHighlightCopy(json: JSONObject, facts: SessionFacts) {
+        json.put("algorithm", "copy")
+        json.put("gpu_status", facts.stage2Status)
+        // 🔴 열 이름을 이 arm이 **실제로 싣는 열**로 말한다. 프레임 단일 query arm에는
+        //    stage_d_ms도 stage_i_ms도 없으므로 그 이름을 그대로 쓰면 거짓 서술이 나간다.
+        val columnPart = if (facts.arm.usesSingleFrameQuery) {
+            "⚠ 이 arm은 **패스별 열을 싣지 않는다**(gpu_frame_ms 하나뿐이다) — ② 자리와 " +
+                "④ 오버레이의 패스별 비용은 짝 arm " +
+                "${facts.arm.singleFrameQueryPeer?.id}의 stage_d_ms / stage_i_ms가 말한다"
+        } else {
+            "여기서 나오는 stage_d_ms는 ②의 비용이 아니라 **골격 자체(오프스크린 왕복)의 " +
+                "비용**이며 blit_2pass의 같은 자리와 같은 것이다. 이 arm이 재는 것은 " +
+                "**stage_i_ms(④ 오버레이)**다"
+        }
+        json.put(
+            "note",
+            "④ 오버레이 arm이라 ② 자리는 단순 복사다 — $columnPart. " +
+                "④의 서술은 session.json의 overlay 블록에 있다"
+        )
     }
 
     /**
@@ -1036,11 +1075,40 @@ object SessionWriter {
      * [RenderArm]의 상수에서 온다 — 여기에 숫자를 다시 적지 않는다.
      *
      * 🔴 `box_count`가 **필수**다. 없으면 `stage_i_ms`가 무슨 조건의 값인지 사라진다.
+     *
+     * 🔴 **열 이름을 무조건 `stage_i_ms`라고 적지 않는다.** `highlight_boxes_1q`는 이 블록을
+     * 함께 내지만(둘 다 [RenderArm.usesHighlightOverlay]다) `gpu_frame_ms` 하나만 싣는다 —
+     * 거기에 `stage_i_ms`를 사실 키로 적으면 **CSV에 없는 열을 있다고 말하는 것**이고,
+     * `session.json`은 나중에 숫자의 출처를 되묻는 유일한 기록이라 그게 곧 가짜 대응이 된다.
+     * [putHighlightCopy]가 `stage2_params` 쪽에서 이미 같은 분기를 하고 있었는데 **이 블록만
+     * 빠져 있었다**(독립 검증 지적). 두 곳의 표현이 갈라지지 않도록 아래 [iCostPhrase] 하나를
+     * 만들어 두 문장이 함께 쓴다.
      */
     private fun buildOverlay(facts: SessionFacts): JSONObject {
         val json = JSONObject()
+        val singleQuery = facts.arm.usesSingleFrameQuery
+        val peerId = facts.arm.singleFrameQueryPeer?.id
+        // ④ 오버레이 비용이 **이 arm에서 어느 열에 들어 있는가**. 아래 두 자리가 같은 것을 쓴다.
+        val iCostPhrase = if (singleQuery) {
+            "gpu_frame_ms(프레임 전체를 감싼 query 하나뿐이라 오버레이 패스만 떼어낼 수 없다)"
+        } else {
+            "stage_i_ms"
+        }
         json.put("stage", "④ 선택적 강조 (버짓 I칸)")
-        json.put("gpu_column", "stage_i_ms")
+        json.put(
+            "gpu_column",
+            if (singleQuery) RenderArm.SINGLE_FRAME_QUERY_COLUMN else "stage_i_ms"
+        )
+        if (singleQuery) {
+            json.put(
+                "gpu_column_note",
+                "🔴 **이 arm에는 stage_i_ms가 없다.** 계측 방식만 다른 arm이라(렌더는 짝과 " +
+                    "글자 그대로 같다) 열이 gpu_frame_ms 하나뿐이고, 그 값은 **프레임 전체의 " +
+                    "GPU 시간**이지 I칸이 아니다 — 버짓 I칸으로 옮겨 적지 말 것. ④ 오버레이 " +
+                    "패스만의 비용은 짝 arm ${peerId}의 stage_i_ms가 말한다. 이 블록의 나머지 " +
+                    "키(박스 개수·기하·색·스펙 이탈)는 **렌더가 같으므로 그대로 성립한다**"
+            )
+        }
         json.put("upstream_reference", "scripts/emphasize.py")
         json.put("spec_provenance", RenderArm.HIGHLIGHT_SPEC_PROVENANCE)
         // 🔴 조건. 지우지 말 것.
@@ -1104,12 +1172,29 @@ object SessionWriter {
         json.put(
             "tile_reload_note",
             "⚠ 이 패스는 **glClear를 부르지 않는다** — ② 출력 위에 얹기 때문이다. 그래서 타일 " +
-                "GPU가 컬러 어태치먼트를 다시 load하고, **stage_i_ms에는 그 비용이 섞여 있다.** " +
+                "GPU가 컬러 어태치먼트를 다시 load하고, **${iCostPhrase}에는 그 비용이 섞여 " +
+                "있다.** " +
                 "오버레이 패스의 실제 비용이며 빼낼 수단이 없다. 게다가 패스2(복사)와 패스3의 " +
                 "타깃이 같은 FBO_B라 드라이버가 두 렌더패스를 병합하면 두 열의 경계가 흐려진다 " +
                 "— 일반 주의사항은 gpu_timer.attribution_note와 같다"
         )
-        json.put("how_to_compare", RenderArm.HIGHLIGHT_HOW_TO_COMPARE)
+        // 🔴 짝 arm의 문장을 그대로 쓰면 **없는 열로 개당 기울기를 구하라**고 말하게 된다.
+        //    게다가 이 arm에는 stress 짝(`highlight_boxes_stress_1q`)이 아예 없어서 그 방법
+        //    자체가 성립하지 않는다 — 없는 절차를 안내하지 않는다.
+        json.put(
+            "how_to_compare",
+            if (singleQuery) {
+                "🔴 **이 arm으로 ④의 개당 비용을 구할 수 없다.** 열이 gpu_frame_ms 하나뿐이라 " +
+                    "오버레이 패스가 분리되지 않고, 개수만 다른 짝(highlight_boxes_stress)의 " +
+                    "**단일 query 판이 없어** 차분을 낼 상대도 없다. 개당 기울기는 짝 arm " +
+                    "${peerId}와 highlight_boxes_stress의 stage_i_ms 차분으로 구한다. " +
+                    "이 arm이 답하는 질문은 **하나뿐**이다: 짝 arm의 gpu_sum이 프레임 전체 GPU " +
+                    "시간을 얼마나 부풀려 세는가(gpu_frame_ms와의 차). 그 비교법은 " +
+                    "**stage2_params.how_to_compare_instrumentation**에 있다"
+            } else {
+                RenderArm.HIGHLIGHT_HOW_TO_COMPARE
+            }
+        )
         json.put("gpu_status", facts.overlayStatus)
         return json
     }
@@ -1154,6 +1239,10 @@ object SessionWriter {
         if (facts.arm.detectProfilingEnabled) {
             json.put("prof_arm_not_quotable", RenderArm.DETECT_PROF_NOT_QUOTABLE)
         }
+        // 🔴 `_prof`와 **같은 자리·같은 취지**의 인용 금지 문장이다(사유만 다르다 — 덤프 I/O).
+        if (facts.arm.usesDetectParityDump) {
+            json.put("parity_arm_not_quotable", RenderArm.DETECT_PARITY_NOT_QUOTABLE)
+        }
 
         // 🔴 탐지 주기 N은 INTERFACES.md에서 아직 ☐다. **null이 정상이고 값을 지어내지 않는다.**
         json.put("period_n", JSONObject.NULL)
@@ -1172,6 +1261,8 @@ object SessionWriter {
         if (run != null) {
             json.put("run", buildDetectRun(run))
         }
+        // ③ 대조 덤프. 덤프 arm이 아니면 null이라 키 자체가 나가지 않는다.
+        facts.detectParity?.let { json.put("parity", buildDetectParity(it)) }
 
         if (report == null) {
             json.put(
@@ -1415,6 +1506,20 @@ object SessionWriter {
     private fun buildDetectRuntime(report: DetectReport): JSONObject = JSONObject()
         .put("package", report.ortPackage)
         .put("version", report.ortVersion)
+        // 🔴 **런타임이 스스로 말한 버전.** 위 `version`은 build.gradle.kts에 우리가 적은
+        //    문자열이라 실제로 로드된 .so가 그 버전이라는 보장이 아니다. PC 대조에서
+        //    "같은 ORT 버전인데 값이 다르면 빌드/플랫폼 차이"라고 말하려면 그 전제가
+        //    **기계로 확인된 것**이어야 한다. 못 읽었으면 null이고 지어내지 않는다.
+        .put("version_runtime", report.ortVersionRuntime ?: JSONObject.NULL)
+        .put("version_mismatch", report.ortVersionMismatch ?: JSONObject.NULL)
+        .put(
+            "version_note",
+            "`version`은 gradle 좌표에 **선언한** 값이고 `version_runtime`은 " +
+                "OrtEnvironment.getVersion()이 **말한** 값이다. 인용은 " +
+                "**version_runtime을 우선**한다 — 둘이 다르면 version_mismatch가 문장으로 " +
+                "말하고, 그 자체가 발견이다. (모델 해시를 metadata.json의 선언값 대신 로드 " +
+                "바이트에서 직접 계산하는 것과 같은 논거다)"
+        )
         .put("abi_filters", "arm64-v8a")
         .put(
             "note",
@@ -1623,6 +1728,70 @@ object SessionWriter {
                 "⚠ measured 프로파일을 확정하면(endProfiling) 그 세션은 다시 프로파일할 수 " +
                 "없으므로 앱이 세션을 닫는다 — `_prof` arm으로 연속 측정하려면 arm을 다시 " +
                 "고를 것"
+        )
+        return json
+    }
+
+    /**
+     * ③ **이식 정확성 대조 덤프**의 사실. 🔴 **덤프가 반쪽이면 반쪽이라고 낸다** —
+     * 앱이 맞춰 주지 않는다. 덤프가 모자란 채로 PC가 대조를 돌리면 그 결과의 뜻이 사라진다.
+     *
+     * 파일 포맷의 출처는 `docs/plans/20260806_detect_parity_dump_format.md` 하나이고, 이
+     * 블록은 **그 파일들이 실제로 남았는가**만 말한다(내용의 판정은 `scripts/detect_parity.py`가 한다).
+     */
+    private fun buildDetectParity(parity: DetectParityResult): JSONObject {
+        val json = JSONObject()
+        json.put("enabled", true)
+        json.put("not_quotable", RenderArm.DETECT_PARITY_NOT_QUOTABLE)
+        json.put("format", DetectParityDumper.FORMAT)
+        json.put("byte_order", DetectParityDumper.BYTE_ORDER)
+        json.put("dir", parity.dirName ?: JSONObject.NULL)
+        json.put("manifest", DetectParityDumper.MANIFEST_NAME)
+        json.put("manifest_written", parity.manifestWritten)
+        json.put("samples_requested", parity.requestedSamples)
+        json.put("samples_captured", parity.capturedSamples)
+        json.put("bytes_written", parity.bytesWritten)
+        json.put("move_method", parity.moveMethod)
+        val files = JSONArray()
+        for (name in parity.files) files.put(name)
+        json.put("files", files)
+        val failures = JSONArray()
+        for (f in parity.failures) failures.put(f)
+        json.put("failures", failures)
+        json.put(
+            "complete",
+            parity.manifestWritten &&
+                parity.capturedSamples == parity.requestedSamples &&
+                parity.failures.isEmpty()
+        )
+        json.put(
+            "sample_count_note",
+            "샘플 수 K의 근거는 규약 §9다: 입력 텐서 하나가 4.9MB라 K가 커지면 pull이 " +
+                "오래 걸리고, 이식 정확성은 장면 다양성보다 **연산 경로 일치**의 문제라 " +
+                "표본이 많을 필요가 없다. ⚠ **통계적 표본이 아니다** — " +
+                "'${parity.capturedSamples}장에서 일치했다'를 '항상 일치한다'로 쓰지 말 것"
+        )
+        json.put(
+            "rotation_note",
+            "🔴 매니페스트의 source.rotation_applied는 **false**다(알려진 이슈 29 — 앱이 " +
+                "rotationDegrees를 적용하지 않는다). **이 대조는 그래도 성립한다** — 폰과 PC가 " +
+                "**같은 (누운) 입력**을 보고 같은 답을 내는지를 재기 때문이다. " +
+                "🔴 다만 이 덤프로 '모델이 잘 맞힌다/못 맞힌다'를 말하면 안 된다"
+        )
+        json.put(
+            "scope_note",
+            "이 덤프가 답하는 것: 폰의 E가 같은 소스에서 PC와 같은 텐서를 만드는가 / " +
+                "폰의 F가 **같은 입력 텐서**에서 PC ORT와 같은 출력을 내는가 / 폰의 G가 " +
+                "**같은 출력 텐서**에서 같은 박스를 내는가 / EP를 바꾸면 답이 달라지는가. " +
+                "🔴 답하지 못하는 것: **모델이 옳은가**(mAP·누락률 — 정답 라벨이 필요하다), " +
+                "상류 PyTorch와 같은가(상류 레포가 이 저장소에 없다), 실제 야간 장면에서의 성능"
+        )
+        json.put(
+            "boxes_coordinate_space",
+            "매니페스트의 boxes는 **원본 프레임 좌표계**다(규약 §5). 후처리 순서는 " +
+                "conf 필터 → cxcywh→xyxy → **클래스별 NMS(letterbox 640 좌표계)** → " +
+                "역변환 + 원본 경계 클램프이며, PC 재구현은 반드시 이 순서여야 한다 — " +
+                "🔴 **클램프는 아핀이 아니라** 순서를 바꾸면 IoU가 달라진다"
         )
         return json
     }
@@ -2007,6 +2176,8 @@ object SessionWriter {
             // 🔴 `else -> null`로 흘리지 않는다. 흘리면 조합 arm인데 peer가 사라진다.
             RenderArm.DRAGO_CLAHE_CHAIN_1Q -> RenderArm.DRAGO_CLAHE_FUSED
             RenderArm.DRAGO_CLAHE_CHAIN_BF_1Q -> RenderArm.DRAGO_CLAHE_FUSED_BF
+            RenderArm.DRAGO_CLAHE_FUSED_1Q -> RenderArm.DRAGO_CLAHE_CHAIN
+            RenderArm.DRAGO_CLAHE_FUSED_BF_1Q -> RenderArm.DRAGO_CLAHE_CHAIN_BF
             // 조합 arm이 아니면 짝이 없다(blit_2pass_1q도 여기다). **아무 arm이나 집지 않는다.**
             RenderArm.BLIT_2PASS_1Q -> null
             else -> null
@@ -2188,6 +2359,8 @@ object SessionWriter {
             //    아니다"라는 **거짓 empty_reason**이 로그로 나간다.
             RenderArm.DRAGO_CLAHE_CHAIN_1Q -> declaredCounts(RenderArm.DRAGO_CLAHE_CHAIN)
             RenderArm.DRAGO_CLAHE_CHAIN_BF_1Q -> declaredCounts(RenderArm.DRAGO_CLAHE_CHAIN_BF)
+            RenderArm.DRAGO_CLAHE_FUSED_1Q -> declaredCounts(RenderArm.DRAGO_CLAHE_FUSED)
+            RenderArm.DRAGO_CLAHE_FUSED_BF_1Q -> declaredCounts(RenderArm.DRAGO_CLAHE_FUSED_BF)
             // 조합 arm이 아니다 — 짝(blit_2pass)과 같이 이 표가 성립하지 않는다.
             RenderArm.BLIT_2PASS_1Q -> emptyMap()
             else -> emptyMap()
@@ -2420,6 +2593,9 @@ object SessionWriter {
                         RenderArm.DRAGO_CLAHE_CHAIN_1Q -> CHAIN_STAGE2_PASSES
                         RenderArm.DRAGO_CLAHE_CHAIN_BF_1Q ->
                             CHAIN_STAGE2_PASSES + bilateralPass("FBO_B (처리 해상도. 핑퐁)")
+                        RenderArm.DRAGO_CLAHE_FUSED_1Q -> FUSED_STAGE2_PASSES
+                        RenderArm.DRAGO_CLAHE_FUSED_BF_1Q ->
+                            FUSED_STAGE2_PASSES + bilateralPass("FBO_A (처리 해상도. 핑퐁)")
                         else -> emptyList()
                     }
                     listOf(

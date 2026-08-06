@@ -21,6 +21,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.bammasil.poc.detect.DetectContract
+import com.bammasil.poc.detect.DetectParityDumper
 import com.bammasil.poc.detect.DetectPipeline
 import com.bammasil.poc.detect.DetectRuntime
 import com.bammasil.poc.gl.PassthroughRenderer
@@ -76,6 +77,13 @@ class MainActivity : ComponentActivity() {
 
     /** 🔴 [FrameLogRecorder]와 **다른 인스턴스다** — 그쪽 규약은 GL 스레드 전용이다. */
     private val detectRecorder = DetectLogRecorder()
+
+    /**
+     * ③ 이식 정확성 대조 덤프. **`detect_parity_*` arm에서만** 파일을 남긴다.
+     * 런 도중에는 staging에 쌓고, 정지 시점에 런 디렉토리의 `parity/`로 옮긴다 —
+     * 런 디렉토리 이름은 [resolveRunDir]가 정지 시점에야 확정하기 때문이다.
+     */
+    private lateinit var detectParityDumper: DetectParityDumper
 
     /** `onFrameAvailable` 전용 스레드. 메인 루퍼를 쓰면 UI 지연이 `t_recv_ns`에 섞인다. */
     private var signalThread: HandlerThread? = null
@@ -136,7 +144,8 @@ class MainActivity : ComponentActivity() {
         //   그 콜백이 ③ arm이면 여기를 만진다.
         val externalDir = getExternalFilesDir(null)
         detectRuntime = DetectRuntime(externalDir, File(externalDir, DETECT_PROFILE_DIR))
-        detectPipeline = DetectPipeline(detectRuntime, detectRecorder)
+        detectParityDumper = DetectParityDumper(File(externalDir, DETECT_PARITY_STAGING_DIR))
+        detectPipeline = DetectPipeline(detectRuntime, detectRecorder, detectParityDumper)
 
         statusText = findViewById(R.id.status_text)
         toggleButton = findViewById(R.id.toggle_button)
@@ -347,7 +356,7 @@ class MainActivity : ComponentActivity() {
         // ③ 추론을 돌리는 arm이면 탐지 기록도 함께 켠다. 🔴 **여기서 실패하면 런을 시작하지
         //    않는다** — 라벨은 detect_cpu인데 detect.csv가 비는 런을 만들지 않기 위해서다.
         if (arm.usesDetectSession) {
-            detectPipeline.start()?.let {
+            detectPipeline.start(arm)?.let {
                 showMessage("🔴 ③ 탐지 기록을 시작하지 못했다:\n$it")
                 return
             }
@@ -463,6 +472,11 @@ class MainActivity : ComponentActivity() {
             // ⚠ **런 시작 시점에 잠근 arm의 보고여야 한다** — 다른 arm의 보고가 실리면
             //    EP·모델이 이 런의 것이 아니게 된다(armAtStart를 잠근 것과 같은 이유다).
             val detectReport = detectRuntime.report?.takeIf { it.arm == arm }
+            // ③ 대조 덤프를 런 디렉토리로 옮기고 매니페스트를 확정한다. 🔴 **quiesce 뒤이자
+            //    collectProfiles 앞이다** — 워커가 아직 파일을 쓰고 있으면 샘플이 반쪽이 되고,
+            //    collectProfiles는 `_prof` arm에서 report를 비우므로 그 뒤에 부르면 매니페스트에
+            //    실을 모델·EP 값이 사라진다. 덤프 arm이 아니면 null이다.
+            val parityResult = detectParityDumper.finish(runDir, detectReport)
             // `_prof` arm의 Chrome-trace JSON을 런 디렉토리로 옮긴다 — 예전에는 내부 캐시라
             // 루트 없이 못 꺼냈다.
             // ⚠ **세션을 연 arm에서만** 한다. 분모 arm에서 부르면 직전에 다른 arm이 남긴
@@ -529,6 +543,8 @@ class MainActivity : ComponentActivity() {
                     } else {
                         null
                     },
+                    // ③ 대조 덤프의 사실. 덤프 arm이 아니면 null이고 그때는 블록 자체가 없다.
+                    detectParity = parityResult,
                 ),
             )
             lastRunPath = runDir.absolutePath
@@ -541,6 +557,15 @@ class MainActivity : ComponentActivity() {
                         "건너뜀=${detectPipeline.skippedWhileBusy.get()} " +
                         "오류=${detectPipeline.errors.get()} quiesced=$quiesced " +
                         "프로파일=${profiles.joinToString(",")}"
+                )
+            }
+            // 스모크 확인용. 인용 가능한 것은 session.json의 detect.parity 블록이다.
+            parityResult?.let {
+                Log.i(
+                    TAG,
+                    "③ parity 덤프: 샘플 ${it.capturedSamples}/${it.requestedSamples} " +
+                        "매니페스트=${it.manifestWritten} 바이트=${it.bytesWritten} " +
+                        "이동=${it.moveMethod} 실패=${it.failures.size}"
                 )
             }
             // 스모크 확인용. 인용 가능한 숫자는 여전히 파일에 남은 것뿐이다.
@@ -651,6 +676,12 @@ class MainActivity : ComponentActivity() {
 
         /** ORT 프로파일러의 작업 디렉토리. 결과는 런 정지 시점에 런 디렉토리로 옮겨진다. */
         const val DETECT_PROFILE_DIR = "detect_profiles"
+
+        /**
+         * ③ 대조 덤프의 staging 루트. 결과는 런 정지 시점에 `<run_dir>/parity/`로 옮겨진다
+         * (위 프로파일과 같은 취지 — 런 디렉토리 이름이 정지 시점에야 확정된다).
+         */
+        const val DETECT_PARITY_STAGING_DIR = "detect_parity"
 
         /**
          * A12 (2)의 quiesce 상한. 🔴 **무한 대기를 하지 않는다** — 추론이 끝내 안 끝나면

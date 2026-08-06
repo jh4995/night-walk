@@ -5,6 +5,7 @@ import ai.onnxruntime.OrtSession
 import android.os.SystemClock
 import android.util.Log
 import androidx.camera.core.ImageProxy
+import com.bammasil.poc.gl.RenderArm
 import com.bammasil.poc.log.DetectLogRecorder
 import com.bammasil.poc.source.AnalysisSink
 import java.util.concurrent.ExecutorService
@@ -48,6 +49,12 @@ import java.util.concurrent.atomic.AtomicLong
 class DetectPipeline(
     private val runtime: DetectRuntime,
     val recorder: DetectLogRecorder,
+    /**
+     * ③ 이식 정확성 대조 덤프. **덤프 arm이 아니면 아무 일도 하지 않는다**
+     * ([DetectParityDumper.capture]가 즉시 null을 낸다) — 다른 arm의 프레임 경로에 이 객체가
+     * 있다는 사실이 비용으로 새면 안 되기 때문이다.
+     */
+    private val parity: DetectParityDumper,
 ) : AnalysisSink {
 
     private val worker: ExecutorService =
@@ -90,9 +97,12 @@ class DetectPipeline(
     /**
      * 기록을 시작한다. **UI 스레드에서, 아직 아무 추론도 없는 시점에** 부른다.
      *
+     * @param arm 이 런의 arm. 🔴 **덤프 arm인지 여기서 갈린다** — 스피너의 현재 값이 아니라
+     *   `MainActivity`가 시작 시점에 잠근 arm이어야 한다(런 도중 바뀐 값으로 덤프를 켜면
+     *   session.json이 실제로 돈 경로와 다른 것을 적게 된다).
      * @return 시작하지 못한 사유(사람이 읽는 문장). null이면 시작했다.
      */
-    fun start(): String? {
+    fun start(arm: RenderArm): String? {
         val ready = runtime.ready
             ?: return "③ 세션이 준비되지 않았다 — arm 스피너에서 이 arm을 다시 고를 것"
         // 🔴 임계를 숫자로 못 읽으면 **후처리를 시작하지 않는다.** 0으로 뭉개면 전 앵커가
@@ -110,6 +120,15 @@ class DetectPipeline(
         //    적으면 그게 곧 하드코딩이고 모델이 갱신되는 날 조용히 어긋난다.
         pre = DetectPreprocessor(ready.inputWidth, ready.inputHeight, ready.inputChannels)
         post = DetectPostprocessor(ready.outputChannels, ready.outputAnchors, conf, iou)
+
+        // ③ 대조 덤프. 🔴 **덤프를 시작하지 못하면 런을 시작하지 않는다** — 라벨만
+        //    detect_parity_*이고 parity/가 없는 런은 이 라운드가 막으려는 실패다.
+        //    ⚠ 클래스 이름은 **모델이 낸 것**을 넘긴다(계약 문서의 순서가 아니다).
+        if (arm.usesDetectParityDump) {
+            parity.start(runtime.report?.classNames ?: emptyList())?.let { return it }
+        } else {
+            parity.disable()
+        }
 
         analysisFramesReceived.set(0)
         inferencesRun.set(0)
@@ -129,6 +148,8 @@ class DetectPipeline(
      * `session.json`에 남는다.
      */
     fun startBindOnly() {
+        // 이 arm은 추론이 없으므로 덤프도 없다. 이전 런의 상태가 남지 않게 내린다.
+        parity.disable()
         analysisFramesReceived.set(0)
         inferencesRun.set(0)
         skippedWhileBusy.set(0)
@@ -213,6 +234,7 @@ class DetectPipeline(
 
         val tensor: OnnxTensor
         val eNs: Long
+        val box: DetectContract.Letterbox?
         try {
             // ── E 시작: ImageProxy에서 픽셀을 꺼내는 것부터 ──
             val eStart = System.nanoTime()
@@ -221,19 +243,34 @@ class DetectPipeline(
             eNs = System.nanoTime() - eStart
             // ── E 끝: 입력 텐서가 준비된 시점 ──
             tensor = t
-            lastLetterbox = preprocessor.lastLetterbox
+            box = preprocessor.lastLetterbox
+            lastLetterbox = box
         } catch (t: Throwable) {
             busy.set(false)
             noteError("전처리 실패: ${t.javaClass.simpleName}: ${t.message}")
             return
         }
 
-        worker.execute { infer(tensor, tRecvNs, tCaptureNs, eNs) }
+        // ③ 대조 덤프의 재료를 **여기서** 복사한다(덤프 arm에서 K개까지, 아니면 null).
+        // 🔴 **E 구간 밖이다** — 위에서 eNs를 찍은 뒤이므로 이 복사가 stage_e_ms에 섞이지 않는다.
+        // 🔴 **여기서만 복사할 수 있다**: ImageProxy는 이 함수가 반환하면 닫히고,
+        //    DetectPreprocessor는 평면 배열과 inputBuffer를 **재사용**한다(참조만 넘기면
+        //    다음 프레임이 덮어쓴다). letterbox도 **그 프레임의 것**을 그대로 넘긴다.
+        val capture = parity.capture(image, preprocessor.inputBuffer, box, tRecvNs)
+
+        worker.execute { infer(tensor, tRecvNs, tCaptureNs, eNs, capture) }
     }
 
     // ── 워커 스레드 ──────────────────────────────────────────────────────
 
-    private fun infer(tensor: OnnxTensor, tRecvNs: Long, tCaptureNs: Long, eNs: Long) {
+    private fun infer(
+        tensor: OnnxTensor,
+        tRecvNs: Long,
+        tCaptureNs: Long,
+        eNs: Long,
+        /** ③ 대조 덤프의 재료. 덤프 arm이 아니거나 K개를 이미 잡았으면 null이다. */
+        capture: DetectParityDumper.Capture?,
+    ) {
         val ready = session
         val postprocessor = post
         if (ready == null || postprocessor == null) {
@@ -254,7 +291,10 @@ class DetectPipeline(
             val outTensor = result.get(0) as OnnxTensor
             val box = lastLetterbox
                 ?: throw IllegalStateException("letterbox 기하가 없다 — 전처리를 거치지 않았다")
-            val out = postprocessor.run(outTensor.floatBuffer, box)
+            // ⚠ 버퍼를 지역 변수로 잡는 것은 **덤프가 같은 것을 다시 읽기 위해서**다.
+            //   호출 순서·횟수는 그대로이므로 G의 뜻은 바뀌지 않는다(floatBuffer 호출 1회).
+            val outBuffer = outTensor.floatBuffer
+            val out = postprocessor.run(outBuffer, box)
             val gNs = System.nanoTime() - gStart
 
             val tEndNs = SystemClock.elapsedRealtimeNanos()
@@ -272,6 +312,20 @@ class DetectPipeline(
                 skippedWhileBusy = skippedWhileBusy.get(),
             )
             inferencesRun.incrementAndGet()
+
+            // ── ③ 대조 덤프 ──────────────────────────────────────────────
+            // 🔴 **E·F·G 구간 밖이고 행 기록도 끝난 뒤다.** 구간 안에 넣으면 디스크 I/O가
+            //    F·G에 섞여 그 값이 그대로 detect.csv로 나간다(그래도 이 arm의 시간은
+            //    인용 금지다 — RenderArm.DETECT_PARITY_NOT_QUOTABLE).
+            // ⚠ 박스는 **여기서** 복사한다. 후처리기의 내부 배열은 다음 프레임이 덮어쓴다.
+            if (capture != null) {
+                parity.write(
+                    capture,
+                    outBuffer,
+                    out.boxesPreNms,
+                    postprocessor.copyBoxes(out.boxesOut),
+                )
+            }
         } catch (t: Throwable) {
             noteError("추론/후처리 실패: ${t.javaClass.simpleName}: ${t.message}")
         } finally {

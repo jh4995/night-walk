@@ -101,8 +101,31 @@ class DetectReport(
 
     // ── 런타임 좌표 ───────────────────────────────────────────────────────
     val ortPackage: String,
+    /** gradle 좌표에 **선언한** 버전(`BuildConfig.ORT_VERSION`). 빌드 파일이 말하는 값이다. */
     val ortVersion: String,
+    /**
+     * 🔴 **런타임이 스스로 말한 버전**(`OrtEnvironment.getVersion()`). 못 읽으면 null.
+     *
+     * 왜 선언값과 따로 두는가: [ortVersion]은 `build.gradle.kts`에 우리가 **적은** 문자열이고,
+     * 실제로 로드된 `libonnxruntime.so`가 그 버전이라는 보장이 아니다 — 모델 해시를
+     * `metadata.json`의 선언값 대신 **로드한 바이트에서 직접 계산**하기로 한 것과 같은 논거다.
+     * PC 대조에서 "폰과 PC가 같은 ORT 버전인데 값이 다르면 그것은 빌드/플랫폼 차이"라고
+     * 말하려면 그 전제가 **기계로 확인된 것**이어야 한다. 둘이 어긋나면 그 사실 자체가 발견이다.
+     */
+    val ortVersionRuntime: String?,
 ) {
+
+    /** 선언한 버전과 런타임이 말한 버전이 어긋나는가. null이면 어긋나지 않았거나 못 읽었다. */
+    val ortVersionMismatch: String?
+        get() {
+            val actual = ortVersionRuntime ?: return null
+            return if (actual == ortVersion) {
+                null
+            } else {
+                "gradle에 선언한 ORT 버전($ortVersion)과 런타임이 말한 버전($actual)이 다르다 " +
+                    "— 이 런의 숫자는 **런타임 쪽 버전으로 잰 것**이다"
+            }
+        }
 
     /** 화면·logcat 한 줄 요약. **인용 근거가 아니다**(인용은 session.json으로만). */
     fun oneLine(): String = if (!ok) {

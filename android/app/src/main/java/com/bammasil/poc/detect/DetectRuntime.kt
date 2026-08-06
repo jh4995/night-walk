@@ -211,6 +211,18 @@ class DetectRuntime(
         environment = env
         val envMs = SystemClock.elapsedRealtime() - envStart
 
+        // 🔴 **런타임이 스스로 말하는 버전.** BuildConfig.ORT_VERSION은 gradle에 우리가 **적은**
+        //    문자열이라 실제로 로드된 .so가 그 버전이라는 보장이 아니다 — 모델 해시를
+        //    metadata.json의 선언값 대신 로드 바이트에서 직접 계산하기로 한 것과 같은 논거다.
+        //    PC 대조에서 "같은 ORT 버전인데 다르면 빌드/플랫폼 차이"라고 말하려면 그 전제가
+        //    기계로 확인된 것이어야 한다. 못 읽으면 **지어내지 않고 null로 둔다.**
+        val ortVersionRuntime = try {
+            env.version
+        } catch (t: Throwable) {
+            Log.w(TAG, "OrtEnvironment.getVersion() 실패 — 선언값만 남는다", t)
+            null
+        }
+
         val available = try {
             // ⚠ **빌드에 컴파일된 EP 목록일 뿐이다.** "실제로 쓰였나"에 대해 아무것도
             //   말하지 않는다. 그래도 기록은 한다 — "무엇이 요청 가능했나"의 유일한 근거다.
@@ -371,6 +383,7 @@ class DetectRuntime(
             warmupInferMsAll = warmupMs.toList(),
             ortPackage = BuildConfig.ORT_PACKAGE,
             ortVersion = BuildConfig.ORT_VERSION,
+            ortVersionRuntime = ortVersionRuntime,
         )
     }
 
@@ -881,6 +894,8 @@ class DetectRuntime(
         warmupInferMsAll = emptyList(),
         ortPackage = BuildConfig.ORT_PACKAGE,
         ortVersion = BuildConfig.ORT_VERSION,
+        // 실패 경로다 — 환경이 안 섰을 수도 있으므로 **런타임 버전을 지어내지 않는다.**
+        ortVersionRuntime = null,
     )
 
     private companion object {

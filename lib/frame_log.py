@@ -679,6 +679,17 @@ RENDER_ARM_HIGHLIGHT_BOXES_STRESS = "highlight_boxes_stress"
 RENDER_ARM_BLIT_2PASS_1Q = "blit_2pass_1q"
 RENDER_ARM_DRAGO_CLAHE_CHAIN_1Q = "drago_clahe_chain_1q"
 RENDER_ARM_DRAGO_CLAHE_CHAIN_BF_1Q = "drago_clahe_chain_bf_1q"
+# 🔴 **아래 셋이 생긴 이유는 "하한이 없는 arm 계열이 셋 남아 있다"는 것이다**(STATUS 이슈 22).
+#   단일 query 짝을 실제로 잰 것은 `blit_2pass`·`drago_clahe_chain`·`drago_clahe_chain_bf`
+#   셋뿐이라, `drago_clahe_fused`·`drago_clahe_fused_bf`·`highlight_boxes` 계열에는 **패스별
+#   계측의 상한만 있고 하한이 없다.**
+#   ⚠ **부풀림 비율을 다른 arm에서 옮겨 보정할 수 없다** — 중복 계상량은 마지막 전체화면
+#     패스의 비용을 따라가므로 패스 구성마다 다르다(④ 오버레이 arm은 +2%, 9패스 arm은 +43%로
+#     한 자릿수 배수만큼 벌어진다). 그러므로 하한은 **그 arm에서 직접 재는 수밖에 없고**,
+#     그러려면 arm id가 있어야 한다. 그 사실이 이 셋의 존재 이유다.
+RENDER_ARM_DRAGO_CLAHE_FUSED_1Q = "drago_clahe_fused_1q"
+RENDER_ARM_DRAGO_CLAHE_FUSED_BF_1Q = "drago_clahe_fused_bf_1q"
+RENDER_ARM_HIGHLIGHT_BOXES_1Q = "highlight_boxes_1q"
 
 # ── ③ 탐지 arm (v6) ───────────────────────────────────────────────────────
 # ⚠ **생산자는 앱이다.** 위 예약어 블록들과 같은 취급 — 팀원2 쪽 명명이지 계약값이 아니고,
@@ -706,6 +717,24 @@ RENDER_ARM_DETECT_CPU_PROF = "detect_cpu_prof"
 RENDER_ARM_DETECT_NNAPI_PROF = "detect_nnapi_prof"
 RENDER_ARM_DETECT_XNNPACK_PROF = "detect_xnnpack_prof"
 
+# ── `detect_parity_*` = **이식 정확성 대조 전용 arm** (v6) ─────────────────
+# 🔴 **`_prof` arm과 같은 취급이다 — 이 arm의 시간은 인용하지 않는다**
+#   (`DETECT_PROF_NOT_QUOTABLE`과 같은 부류). 이 arm은 E·F·G 각 경계에서 텐서를 파일로
+#   덤프하는데(샘플당 ~7MB) 그 I/O가 같은 스레드에 있으면 E·F·G가 그만큼 부풀고, 다른
+#   스레드로 빼도 SoC 자원 경쟁이 남는다. 그러므로 `detect.csv`가 나오더라도 그 값은
+#   버짓 칸으로 옮기지 않고 승격본(`docs/baselines/`)으로도 올리지 않는다.
+#   **재는 자리는 이미 있다**(`detect_cpu` 등) — 이 arm은 **값을 대조하는 자리**다.
+#
+# 무엇을 대조하는가: 폰이 남긴 원본 평면·입력 텐서·출력 텐서·박스를 PC ORT 재구현과
+#   3분할(E/F/G)로 비교한다. 포맷 규약은 `docs/plans/20260806_detect_parity_dump_format.md`,
+#   소비자는 `scripts/detect_parity.py`다. EP별로 arm을 가르는 이유는 `detect_*`와 같고
+#   (EP 차이는 arm id로 가른다), 여기서는 이유가 하나 더 있다 — **NNAPI가 GPU로 내려가는
+#   것을 이미 실측했고 GPU 경로는 fp16으로 떨어질 수 있다.** 같은 입력에 답이 달라지는 것은
+#   성능 문제가 아니라 안전 문제라, EP끼리도 서로 대조해야 한다.
+RENDER_ARM_DETECT_PARITY_CPU = "detect_parity_cpu"
+RENDER_ARM_DETECT_PARITY_NNAPI = "detect_parity_nnapi"
+RENDER_ARM_DETECT_PARITY_XNNPACK = "detect_parity_xnnpack"
+
 RENDER_ARMS = (
     RENDER_ARM_PASSTHROUGH,
     RENDER_ARM_BLIT_2PASS,
@@ -727,6 +756,10 @@ RENDER_ARMS = (
     RENDER_ARM_BLIT_2PASS_1Q,
     RENDER_ARM_DRAGO_CLAHE_CHAIN_1Q,
     RENDER_ARM_DRAGO_CLAHE_CHAIN_BF_1Q,
+    # 하한이 없던 세 계열(STATUS 이슈 22)의 단일 query 짝 — 위 블록 참고.
+    RENDER_ARM_DRAGO_CLAHE_FUSED_1Q,
+    RENDER_ARM_DRAGO_CLAHE_FUSED_BF_1Q,
+    RENDER_ARM_HIGHLIGHT_BOXES_1Q,
     # ③ 탐지 (v6). `_prof` 짝은 시간 인용 금지 arm이다 — 위 블록 참고.
     RENDER_ARM_DETECT_BIND_ONLY,
     RENDER_ARM_DETECT_CPU,
@@ -735,6 +768,10 @@ RENDER_ARMS = (
     RENDER_ARM_DETECT_CPU_PROF,
     RENDER_ARM_DETECT_NNAPI_PROF,
     RENDER_ARM_DETECT_XNNPACK_PROF,
+    # ③ 이식 정확성 대조 전용(v6). `_prof`와 같이 **시간 인용 금지** arm이다 — 위 블록 참고.
+    RENDER_ARM_DETECT_PARITY_CPU,
+    RENDER_ARM_DETECT_PARITY_NNAPI,
+    RENDER_ARM_DETECT_PARITY_XNNPACK,
     RENDER_ARM_SYNTHETIC,
 )
 
