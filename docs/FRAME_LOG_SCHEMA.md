@@ -682,9 +682,13 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 - `run_session.py`는 둘이 다르면 그 런을 **계획 어긋남(실패)**으로 만든다.
 - **하네스는 EP를 해석하지 않는다** — ORT에 묻지도, SoC에서 유추하지도 않는다. 앱이 적은 두
   값을 비교할 뿐이다. 한쪽이라도 없으면 `ep_matches=null`이며 이는 **"같다"가 아니다.**
-- 어휘: `cpu` · `nnapi` · `unknown` (`lib/frame_log.py`의 `DETECT_EPS`).
+- 어휘: `cpu` · `nnapi` · `xnnpack` · `unknown` (`lib/frame_log.py`의 `DETECT_EPS`).
   ⚠️ **QNN은 어휘에 없다** — 측정 기기 A34가 MediaTek이라 불가능하고, 쓰지 않을 토큰을
   등록하면 계획 어휘 검사가 그것을 통과시킨다. 다른 기기가 들어오면 앱이 쓴 문자열로 등록한다.
+  ⚠️ **`xnnpack`은 CPU EP를 통째로 대체하지 않는다** — 커널 일부만 가져가므로 `node_counts`가
+  `{CPUExecutionProvider: n, XnnpackExecutionProvider: m}`처럼 **섞여 나오는 것이 정상**이다.
+  XNNPACK 노드가 하나라도 있으면 `xnnpack`으로 신고한다(그 규칙은 **앱이** 소유한다 —
+  하네스는 문자열이 어휘 안인지만 본다).
 
 🔴 **이 블록은 위 v2 블록들과 달리 하네스가 해석한다.** `enabled`는 회수 실패(exit 4)를,
 `ep.requested`/`ep.resolved`는 계획 어긋남을 만든다 — 값이 틀리면 조용히 지나가지 않고 그 런이
@@ -831,8 +835,10 @@ id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통
 | `detect_bind_only` | **분모다.** `ImageAnalysis`를 바인딩만 하고 추론은 돌리지 않는다 — 이 arm과 짝 arm의 차이가 "use case를 하나 더 붙인 값"이고 그 **위의** 차이가 추론 비용이다. 둘을 한 arm에서 재면 섞여서 어느 쪽이 비싼지 되물을 수 없다 |
 | `detect_cpu` | ORT CPU EP로 추론 |
 | `detect_nnapi` | ORT NNAPI EP로 추론 |
+| `detect_xnnpack` | ORT XNNPACK EP로 추론. **CPU EP를 통째로 대체하지 않는다** — 노드가 CPU/XNNPACK로 섞인다 |
 | `detect_cpu_prof` | 위 + **ORT 프로파일러 켬** |
 | `detect_nnapi_prof` | 위 + **ORT 프로파일러 켬** |
+| `detect_xnnpack_prof` | 위 + **ORT 프로파일러 켬** |
 
 🔴 **`_prof` 접미사 arm의 시간은 인용하지 않는다.** 프로파일러는 노드마다 기록을 남기므로
 F(그리고 그것을 포함하는 모든 값)에 **자기 비용을 얹는다.** 이 arm은 "어느 노드가 비싼가"를

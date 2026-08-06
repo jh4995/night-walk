@@ -397,8 +397,12 @@ DETECT_PADDING_FRACTION_PATH = (DETECT_SESSION_BLOCK, "padding_pixel_fraction")
 #   다른 기기가 들어오는 날 앱이 쓴 문자열로 등록한다.
 DETECT_EP_CPU = "cpu"
 DETECT_EP_NNAPI = "nnapi"
+# XNNPACK. **CPU EP를 통째로 대체하지 않는다** — 커널 일부만 가져가므로 node_counts가
+# `{CPUExecutionProvider: n, XnnpackExecutionProvider: m}`처럼 섞여 나오는 것이 정상이다.
+# 앱은 XNNPACK 노드가 하나라도 있으면 `xnnpack`으로 신고한다(그 규칙은 앱이 소유한다).
+DETECT_EP_XNNPACK = "xnnpack"
 DETECT_EP_UNKNOWN = "unknown"  # 기록되지 않음. 비교 대상으로 쓸 수 없다(LIGHTING_UNKNOWN과 같다)
-DETECT_EPS = (DETECT_EP_CPU, DETECT_EP_NNAPI, DETECT_EP_UNKNOWN)
+DETECT_EPS = (DETECT_EP_CPU, DETECT_EP_NNAPI, DETECT_EP_XNNPACK, DETECT_EP_UNKNOWN)
 
 # 각 detect 열이 **어느 스키마 버전에서 들어왔는가.** COLUMN_ADDED_IN과 같은 용도이며
 # 목록을 가른 이유는 대상 파일이 다르기 때문이다(frames.csv / detect.csv).
@@ -687,6 +691,7 @@ RENDER_ARM_DRAGO_CLAHE_CHAIN_BF_1Q = "drago_clahe_chain_bf_1q"
 RENDER_ARM_DETECT_BIND_ONLY = "detect_bind_only"
 RENDER_ARM_DETECT_CPU = "detect_cpu"
 RENDER_ARM_DETECT_NNAPI = "detect_nnapi"
+RENDER_ARM_DETECT_XNNPACK = "detect_xnnpack"
 
 # ── `_prof` 접미사 = **ORT 프로파일링을 켠 계측** (v6) ─────────────────────
 # 🔴 **렌더·추론 경로는 접미사 없는 짝과 글자 그대로 같다.** 모델도 EP도 전처리도 같고,
@@ -699,6 +704,7 @@ RENDER_ARM_DETECT_NNAPI = "detect_nnapi"
 #   장치이고, E·F·G 숫자와 버짓 칸은 접미사 없는 짝에서만 인용한다.
 RENDER_ARM_DETECT_CPU_PROF = "detect_cpu_prof"
 RENDER_ARM_DETECT_NNAPI_PROF = "detect_nnapi_prof"
+RENDER_ARM_DETECT_XNNPACK_PROF = "detect_xnnpack_prof"
 
 RENDER_ARMS = (
     RENDER_ARM_PASSTHROUGH,
@@ -725,8 +731,10 @@ RENDER_ARMS = (
     RENDER_ARM_DETECT_BIND_ONLY,
     RENDER_ARM_DETECT_CPU,
     RENDER_ARM_DETECT_NNAPI,
+    RENDER_ARM_DETECT_XNNPACK,
     RENDER_ARM_DETECT_CPU_PROF,
     RENDER_ARM_DETECT_NNAPI_PROF,
+    RENDER_ARM_DETECT_XNNPACK_PROF,
     RENDER_ARM_SYNTHETIC,
 )
 
