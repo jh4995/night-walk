@@ -219,7 +219,7 @@
 | 무엇 | 어디 |
 |---|---|
 | 예산표 · 판정선 · 칸별 담당 | `FRAME_BUDGET.md` (v0.9) |
-| 측정 원본 **50건** | `docs/baselines/` (조건·한계는 README) |
+| 측정 원본 **60건** | `docs/baselines/` (조건·한계는 README) |
 | 계약 A 충돌 9건 전체 목록 | `docs/REPORT_20260806_TEAM.md` §3 |
 | NNAPI 판정 근거 (GPU 점유율 원자료) | `docs/REPORT_20260806B_TEAM.md` §3 |
 | 🆕 **폰 이식이 값을 바꾸지 않는다는 근거** | `docs/REPORT_20260806D_TEAM.md` — E 비트 일치 · F 임계 판정 뒤집힘 **0/201,600** |
