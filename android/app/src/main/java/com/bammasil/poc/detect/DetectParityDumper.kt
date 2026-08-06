@@ -79,6 +79,17 @@ class DetectParityDumper(
     /** 이미 **자리를 잡은** 샘플 수. 분석 스레드가 올리고 [finish]가 읽는다. */
     private val reserved = AtomicInteger(0)
 
+    /**
+     * 마지막으로 샘플 자리를 잡은 시각(`elapsedRealtimeNanos`). [NO_CAPTURE]면 아직 없다.
+     * **분석 스레드만 쓴다**(클래스 KDoc의 스레드 규약). [finish]가 읽으므로 `@Volatile`.
+     */
+    @Volatile
+    private var lastCaptureNs: Long = NO_CAPTURE
+
+    /** 첫 샘플 시각. 실제로 몇 초에 걸쳐 샘플을 잡았는지를 매니페스트에 싣기 위해 남긴다. */
+    @Volatile
+    private var firstCaptureNs: Long = NO_CAPTURE
+
     private val lock = Any()
 
     /** 파일까지 다 쓴 샘플. 워커가 넣고 [finish]가 읽는다 → [lock]으로 감싼다. */
@@ -169,6 +180,8 @@ class DetectParityDumper(
         stagingDir = null
         classNames = emptyList()
         reserved.set(0)
+        lastCaptureNs = NO_CAPTURE
+        firstCaptureNs = NO_CAPTURE
         synchronized(lock) {
             samples.clear()
             failures.clear()
@@ -195,6 +208,13 @@ class DetectParityDumper(
     ): Capture? {
         if (!enabled) return null
         if (reserved.get() >= SAMPLE_COUNT) return null
+        // 🔴 **샘플을 런 전체에 퍼뜨린다.** 예전에는 게이트가 이 줄뿐이라 처음 K회 추론을
+        //    **연속으로** 집었다 — 실기기 첫 대조에서 4개가 0.8~1.6초 안에 몰렸고, 60초를
+        //    찍었는데 덤프는 첫 1초만 봤다(추론 311회 중 붙어 있는 4회). 사실상 한 장면이라
+        //    "샘플 4개"라는 말이 실제보다 훨씬 후하게 들린다.
+        //    ⚠ **첫 샘플은 간격을 묻지 않는다** — 아주 짧은 런에서도 최소 1개는 남아야 한다.
+        val last = lastCaptureNs
+        if (last != NO_CAPTURE && tRecvNs - last < SAMPLE_MIN_GAP_NS) return null
         if (box == null) {
             note("샘플을 잡지 못했다: letterbox 기하가 없다 — 전처리를 거치지 않았다")
             return null
@@ -205,6 +225,9 @@ class DetectParityDumper(
             return null
         }
         val index = reserved.getAndIncrement()
+        // 자리를 잡은 시점에 갱신한다. **분석 스레드 전용**이라 경합이 없다(클래스 KDoc).
+        lastCaptureNs = tRecvNs
+        if (firstCaptureNs == NO_CAPTURE) firstCaptureNs = tRecvNs
         return try {
             val copies = ArrayList<PlaneCopy>(PLANE_NAMES.size)
             for (i in PLANE_NAMES.indices) {
@@ -421,6 +444,30 @@ class DetectParityDumper(
                     "폰 쪽 좌표다. PC 쪽(onnxruntime·numpy 버전)은 대조 스크립트가 자기 " +
                         "summary.json에 남긴다. 🔴 **ort_version_runtime이 null이면 " +
                         "'같은 버전이다'라고 말할 수 없다** — 그 경우 버전 대조는 미검증이다"
+                )
+        )
+
+        // 🔴 **샘플이 언제 잡혔는지를 함께 싣는다.** 이게 없으면 0.8초에 몰린 4개와 40초에
+        //    걸친 4개가 보고서에서 똑같이 "샘플 4개"로 보인다 — 실제로 그 일이 났다.
+        val spanNs = if (firstCaptureNs == NO_CAPTURE || lastCaptureNs == NO_CAPTURE) {
+            -1L
+        } else {
+            lastCaptureNs - firstCaptureNs
+        }
+        root.put(
+            "sampling",
+            JSONObject()
+                .put("count_target", SAMPLE_COUNT)
+                .put("count_captured", records.size)
+                .put("min_gap_ms", SAMPLE_MIN_GAP_MS)
+                .put("span_sec", if (spanNs < 0) JSONObject.NULL else spanNs / 1e9)
+                .put(
+                    "note",
+                    "샘플은 **최소 ${SAMPLE_MIN_GAP_MS / 1000}초 간격**으로 잡는다(첫 샘플만 " +
+                        "예외 — 아주 짧은 런에서도 하나는 남게). count_captured가 " +
+                        "count_target보다 적으면 **런이 짧았던 것**이지 결함이 아니다. " +
+                        "🔴 count_target·min_gap_ms는 우리가 선언한 **측정 조건**이지 계약값이 " +
+                        "아니고, 이 표본은 **통계적 표본이 아니다**(규약 §9)"
                 )
         )
 
@@ -707,6 +754,24 @@ class DetectParityDumper(
          * ⚠ **통계적 표본이 아니다.** "4장에서 일치했다"를 "항상 일치한다"로 쓰지 않는다.
          */
         const val SAMPLE_COUNT = 4
+
+        /**
+         * 샘플 사이 **최소 간격**. 🔴 **측정 조건이지 계약값이 아니다**([SAMPLE_COUNT]와 같다).
+         *
+         * 왜 생겼는가: 이 게이트가 없던 첫 실기기 대조에서 샘플 4개가 **0.8~1.6초 안에**
+         * 몰렸다. 60초를 찍고 추론이 311회 돌았는데 덤프는 **붙어 있는 첫 4회**만 봤다 —
+         * 사실상 한 장면이고, 그런데도 보고서에는 "샘플 4개"라고 적힌다.
+         *
+         * 10초를 고른 이유: 실측 실행 주기가 ~300ms이므로(1회 251~263ms) 10초면 그 사이에
+         * 30회쯤 추론이 지나가고 장면이 실제로 바뀐다. 60초 런이면 4개가 30초 이상에 걸친다.
+         * ⚠ **런이 짧으면 K개를 못 채운다** — 그건 결함이 아니라 사실이고, 매니페스트의
+         * `sampling`이 목표·실제·실제 걸친 시간을 함께 실어 그 사실이 드러나게 한다.
+         */
+        const val SAMPLE_MIN_GAP_MS = 10_000L
+        const val SAMPLE_MIN_GAP_NS = SAMPLE_MIN_GAP_MS * 1_000_000L
+
+        /** [lastCaptureNs]의 "아직 없음". 0은 유효한 시각일 수 있어 쓰지 않는다. */
+        const val NO_CAPTURE = Long.MIN_VALUE
 
         /** 🔴 PC는 이 문자열이 다르면 죽는다(규약 §3). */
         const val FORMAT = "bammasil-detect-parity/1"

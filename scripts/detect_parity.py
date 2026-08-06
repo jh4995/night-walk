@@ -71,6 +71,18 @@ DEFAULT_MODEL = (
 # 바꾸면 이 경로도 따라 움직인다(같은 디렉토리에서 찾는다).
 METADATA_NAME = "metadata.json"
 
+# 출력 텐서 `(4+nc, A)`에서 **앞 4채널이 좌표**(cx,cy,w,h)이고 나머지가 클래스별 점수다.
+# 🔴 이 4는 클래스 수가 아니라 **YOLO detect head의 구조**다(`nms:false`로 export 했으므로
+#   박스 디코딩이 그래프 밖에 있다). 클래스 수는 `n_ch - 4`로 **그래프에서 유도**하며 어디에도
+#   박아 넣지 않는다 — 모델이 클래스를 늘려도 여기는 안 바뀐다.
+BOX_CHANNELS = 4
+
+# 샘플이 이 시간 안에 다 몰려 있으면 **사실상 한 장면**이라고 경고한다.
+# 🔴 판정선이 아니라 **읽는 이를 위한 경고선**이다(종료 코드를 흔들지 않는다).
+# 근거: 실측 실행 주기가 ~300ms이므로 5초면 추론 15회쯤이 지나가는데, 그 안에서 장면이
+# 바뀌었다고 보기 어렵다. 실제로 첫 실기기 대조가 0.8~1.6초에 몰렸다.
+SAMPLE_SPAN_WARN_SEC = 5.0
+
 # 🔴 **PC 세션은 CPU EP 고정이다.** 이 스크립트가 만드는 것은 "폰과 비교할 레퍼런스"이고,
 #    PC 쪽 EP까지 흔들면 F의 차이가 폰↔PC 차이인지 PC 쪽 EP 차이인지 구분되지 않는다.
 PC_PROVIDER = "CPUExecutionProvider"
@@ -326,11 +338,11 @@ def postprocess(raw2d, box: Letterbox, conf_thr: float, iou_thr: float,
     """
     f32 = np.float32
     n_ch, n_anchors = raw2d.shape
-    class_count = n_ch - 4
+    class_count = n_ch - BOX_CHANNELS
     if class_count < 1:
-        raise ParityError(f"출력 채널이 {n_ch}개다 — 4+nc 구조가 아니다")
+        raise ParityError(f"출력 채널이 {n_ch}개다 — {BOX_CHANNELS}+nc 구조가 아니다")
 
-    cls_scores = raw2d[4:, :]
+    cls_scores = raw2d[BOX_CHANNELS:, :]
     # `np.argmax`는 동점에서 **첫 인덱스**를 고른다 — Kotlin의 엄격 `>` 비교와 같다.
     best_cls = np.argmax(cls_scores, axis=0).astype(np.int32)
     best = cls_scores[best_cls, np.arange(n_anchors)]
@@ -775,6 +787,13 @@ def _set_verdict(block: dict) -> Optional[bool]:
     return bool(matched and counts)
 
 
+def _set_label(verdict: Optional[bool]) -> str:
+    """3값을 사람이 읽는 말로. **None을 '불일치'라고 쓰지 않는다.**"""
+    if verdict is None:
+        return "판정 불가(양쪽 다 박스 0개 — 비교할 것이 없었다)"
+    return "일치" if verdict else "🔴 불일치"
+
+
 def _tri_all(values) -> Optional[bool]:
     """3값 all(). 하나라도 False면 False, 하나도 판정 못 했으면 None, 그 밖은 True.
 
@@ -837,6 +856,58 @@ def _check_model(dumps: list[Dump], model_path: Path) -> dict:
     return {"path": str(model_path.resolve()), "sha256": pc_sha}
 
 
+def _output_diff_by_channel(pc2d, phone2d, conf_thr: float) -> dict:
+    """출력 텐서의 차이를 **좌표와 점수로 갈라서** 낸다. 🔴 안전 질문은 점수 쪽이다.
+
+    출력은 `(4+nc, A)`이고 채널 0~3은 `cx,cy,w,h`(letterbox 640 픽셀 스케일), 4.. 는
+    클래스별 점수(0~1, 시그모이드 적용됨)다. 둘이 **단위가 다른데** 한 축에 섞여 있어서
+    전체 `max|diff|` 하나로는 "0.006이 픽셀인가 점수인가"를 말할 수 없다.
+
+    🔴 그리고 **진짜 물어야 할 것은 float 차이가 아니라 판정이 뒤집혔는가**다.
+    폰에서는 conf 임계를 넘고 PC에서는 못 넘는 앵커가 있으면, 그건 **박스 하나가 이식
+    때문에 생기거나 사라진 것**이고 그게 안전 문제다. 차이가 아무리 작아도 임계 바로
+    위아래에 있으면 뒤집힌다 — 그래서 개수를 센다.
+    """
+    n_box = BOX_CHANNELS
+    pc_box, ph_box = pc2d[:n_box], phone2d[:n_box]
+    pc_sc, ph_sc = pc2d[n_box:], phone2d[n_box:]
+
+    def _stat(a, b) -> dict:
+        d = np.abs(np.asarray(a, dtype=np.float64) - np.asarray(b, dtype=np.float64))
+        return {
+            "max_abs_diff": float(d.max()) if d.size else 0.0,
+            "mean_abs_diff": float(d.mean()) if d.size else 0.0,
+            "elements": int(d.size),
+        }
+
+    # 앵커별 최대 점수로 임계 판정을 만든다(후처리가 클래스별 최대를 쓰는 것과 같은 기준).
+    pc_pass = pc_sc.max(axis=0) >= conf_thr if pc_sc.size else np.zeros(0, dtype=bool)
+    ph_pass = ph_sc.max(axis=0) >= conf_thr if ph_sc.size else np.zeros(0, dtype=bool)
+    flipped = int(np.count_nonzero(pc_pass != ph_pass))
+    anchors = int(pc_pass.size)
+    return {
+        "box_channels": {"channels": f"0~{n_box - 1} (cx,cy,w,h)",
+                         "unit": "letterbox 640 픽셀", **_stat(pc_box, ph_box)},
+        "score_channels": {"channels": f"{n_box}.. (클래스별 점수)",
+                           "unit": "0~1 (시그모이드 적용됨)", **_stat(pc_sc, ph_sc)},
+        "threshold_flips": {
+            "conf": conf_thr,
+            "anchors_total": anchors,
+            "pc_pass": int(np.count_nonzero(pc_pass)),
+            "phone_pass": int(np.count_nonzero(ph_pass)),
+            "flipped": flipped,
+            "flipped_fraction": round(flipped / anchors, 9) if anchors else None,
+            "note": (
+                "🔴 **이 수가 안전 질문의 답이다.** conf 임계를 폰과 PC가 다르게 판정한 앵커 "
+                "수다 — 0이 아니면 박스 하나가 이식 때문에 생기거나 사라질 수 있다는 뜻이고, "
+                "float 차이가 아무리 작아도 임계 바로 위아래에 있으면 뒤집힌다. "
+                "⚠ 뒤집힌 앵커가 NMS에서 어차피 억제될 수도 있으므로 이 수가 곧 박스 수는 "
+                "아니다 — 최종 결과는 G_postprocess가 말한다"
+            ),
+        },
+    }
+
+
 def _decode_output(arr):
     """`[1, C, A]` → `(C, A)`. 배치 축이 1이 아니면 죽는다."""
     if arr.ndim == 3:
@@ -875,6 +946,32 @@ def _run_dump(dump: Dump, sess, model_io: dict, bar: Optional[dict],
         f"(conf={conf_thr!r} iou={iou_thr!r}). 🔴 0으로 뭉개면 전 앵커가 통과해 "
         f"G가 다른 것을 재게 된다 — 후처리를 시작하지 않는다",
     )
+
+    # 🔴 **샘플이 언제 잡혔는지를 본다.** t_recv_ns 로 직접 계산한다 — 매니페스트의
+    #   sampling.span_sec 은 앱의 자진 신고이고, 여기서 대조해 어긋나면 그것도 말한다.
+    #   (분석 창을 p50×표본수로 유도했다가 잡힌 전례가 있어 span 은 늘 실제 값에서 뽑는다.)
+    ts = [s.get("t_recv_ns") for s in (m.get("samples") or []) if s.get("t_recv_ns") is not None]
+    span = (max(ts) - min(ts)) / 1e9 if len(ts) >= 2 else 0.0
+    sampling = m.get("sampling") or {}
+    if not sampling:
+        warnings.append(
+            f"{dump.label}: 매니페스트에 `sampling` 블록이 없다(구 덤프) — 샘플이 런 전체에 "
+            f"퍼졌는지 **선언으로는 알 수 없다.** t_recv_ns 로 직접 계산한 실제 걸친 시간은 "
+            f"{span:.3f}초다"
+        )
+    declared = sampling.get("span_sec")
+    if declared is not None and abs(float(declared) - span) > 0.01:
+        warnings.append(
+            f"{dump.label}: 매니페스트의 sampling.span_sec={declared}와 t_recv_ns 로 계산한 "
+            f"{span:.3f}초가 다르다 — 앱의 자진 신고와 실제가 어긋난다"
+        )
+    if len(ts) >= 2 and span < SAMPLE_SPAN_WARN_SEC:
+        warnings.append(
+            f"{dump.label}: 🔴 **샘플 {len(ts)}개가 {span:.3f}초 안에 몰려 있다** — 사실상 "
+            f"한 장면이다. 표본 수만 보면 넉넉해 보이지만 **장면 다양성은 사실상 1**이고, "
+            f"이 덤프로 '여러 장면에서 일치했다'고 쓰면 안 된다. 앱이 최소 간격을 두고 "
+            f"샘플을 잡는지 확인할 것(sampling.min_gap_ms)"
+        )
 
     src_info = m.get("source") or {}
     if not src_info.get("rotation_applied", False):
@@ -972,6 +1069,10 @@ def _run_dump(dump: Dump, sess, model_io: dict, bar: Optional[dict],
         pc_out = _decode_output(np.asarray(sess.run([out_name], feed)[0]))
         phone_out2d = _decode_output(phone_out)
         f_diff = _tensor_diff(pc_out, phone_out2d, "output_tensor")
+        # 🔴 **전체 max|diff| 하나로는 안전 질문에 답할 수 없다.** 출력 텐서는 축 하나에
+        #   좌표(letterbox 640 픽셀 스케일)와 클래스 점수(0~1)가 **섞여** 있어서, "최대 0.006"이
+        #   1/1000 픽셀인지 점수 0.006인지 구분되지 않는다. 갈라서 낸다.
+        f_diff["by_channel"] = _output_diff_by_channel(pc_out, phone_out2d, conf_thr)
         # 🔴 raw float 차이만으로는 안전을 말할 수 없다 — **같은 후처리로 디코딩한 탐지
         #    집합**이 같은지를 함께 낸다.
         f_boxes_pc, _, _ = postprocess(pc_out, box, conf_thr, iou_thr, classes)
@@ -1315,6 +1416,26 @@ def main() -> int:
             ),
             "F_detection_set_agrees": f_set_ok,
             "G_detection_set_agrees": g_set_ok,
+            # 🔴 **F 의 안전 지표.** float 차이가 아니라 "판정이 뒤집혔는가"다.
+            "F_threshold_flips_total": sum(
+                ((s["F_inference"].get("by_channel") or {}).get("threshold_flips") or {})
+                .get("flipped", 0)
+                for d in per_dump for s in d["samples"]
+            ),
+            "F_box_channel_max_px": max(
+                [((s["F_inference"].get("by_channel") or {}).get("box_channels") or {})
+                 .get("max_abs_diff", 0.0) for d in per_dump for s in d["samples"]] or [0.0]
+            ),
+            "F_score_channel_max": max(
+                [((s["F_inference"].get("by_channel") or {}).get("score_channels") or {})
+                 .get("max_abs_diff", 0.0) for d in per_dump for s in d["samples"]] or [0.0]
+            ),
+            "F_channel_note": (
+                "🔴 **전체 max|diff| 를 안전 근거로 쓰지 말 것** — 출력 텐서는 한 축에 "
+                "좌표(letterbox 640 픽셀)와 클래스 점수(0~1)가 섞여 있어 단위가 다르다. "
+                "안전 질문의 답은 F_threshold_flips_total 이다: conf 임계를 폰과 PC가 다르게 "
+                "판정한 앵커 수이며, 0이 아니면 박스가 이식 때문에 생기거나 사라질 수 있다"
+            ),
             # 🔴 **불리언보다 이 수를 먼저 본다.** 0이면 위 두 값은 null이고, 그건 일치가
             #    아니라 **비교된 박스가 한 개도 없었다**는 뜻이다.
             "boxes_compared_total": boxes_total,
@@ -1389,9 +1510,21 @@ def _print_report(summary: dict) -> None:
                 "(폰텐서 %s개 ↔ PC %s개)",
                 f.get("max_abs_diff", float("nan")), f.get("mean_abs_diff", float("nan")),
                 f.get("nonzero_count"), f.get("elements"),
-                "일치" if fs["all_matched"] and fs["class_counts_equal"] else "🔴 불일치",
+                # 🔴 **3값이다.** None을 falsy로 접으면 "비교할 것이 없었다"가 화면에서
+                #    "불일치했다"로 둔갑한다 — 요약(_tri_all)은 옳게 내는데 이 줄만 어긋나
+                #    같은 보고서 안에서 두 문장이 서로 모순됐다. 실기기 첫 대조에서 잡혔다.
+                _set_label(_set_verdict(fs)),
                 fs["count_lhs"], fs["count_rhs"],
             )
+            bc = (f.get("by_channel") or {})
+            if bc:
+                tf = bc["threshold_flips"]
+                LOG.info(
+                    "          ↳ 좌표채널 max|d|=%.6g px · 점수채널 max|d|=%.6g · "
+                    "🔴 임계 판정 뒤집힌 앵커 %s/%s (폰 통과 %s ↔ PC 통과 %s)",
+                    bc["box_channels"]["max_abs_diff"], bc["score_channels"]["max_abs_diff"],
+                    tf["flipped"], tf["anchors_total"], tf["phone_pass"], tf["pc_pass"],
+                )
             LOG.info(
                 "        G 박스 폰 %s ↔ PC %s · max_xy=%s px · max_conf_diff=%s · minIoU=%s",
                 g["count_lhs"], g["count_rhs"], g["max_xy_diff_px"],
@@ -1421,8 +1554,22 @@ def _print_report(summary: dict) -> None:
     LOG.info("E 전부 비트 일치: %s", obs["E_all_bitwise_identical"])
     LOG.info("F 전부 비트 일치: %s (🔴 기대하지 않는다 — 다른 아키텍처 빌드다)",
              obs["F_all_bitwise_identical"])
-    LOG.info("F 탐지 집합 일치: %s · G 탐지 집합 일치: %s",
-             obs["F_detection_set_agrees"], obs["G_detection_set_agrees"])
+    # 🔴 **불리언보다 이 수가 먼저다.** 0이면 아래 두 값은 null이고, 그건 "일치"가 아니라
+    #    "비교된 박스가 한 개도 없었다"다.
+    LOG.info(
+        "F 채널별: 좌표 max|d|=%.6g px · 점수 max|d|=%.6g · "
+        "🔴 임계 판정 뒤집힌 앵커 **총 %s개**",
+        obs.get("F_box_channel_max_px", 0.0), obs.get("F_score_channel_max", 0.0),
+        obs.get("F_threshold_flips_total"),
+    )
+    LOG.info("비교된 박스 총수: %s", obs.get("boxes_compared_total"))
+    LOG.info("F 탐지 집합: %s", _set_label(obs["F_detection_set_agrees"]))
+    LOG.info("G 탐지 집합: %s", _set_label(obs["G_detection_set_agrees"]))
+    if obs.get("boxes_compared_total") == 0:
+        LOG.warning(
+            "⚠ **박스가 한 개도 없었다** — 이 덤프로는 G(후처리) 이식을 검증하지 못했다. "
+            "E와 F는 박스와 무관하게 대조됐다. 박스가 나오는 장면으로 다시 찍을 것"
+        )
     for pair in summary.get("cross_ep") or []:
         for s in pair["samples"]:
             LOG.info(
