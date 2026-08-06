@@ -10,11 +10,16 @@ import java.nio.FloatBuffer
  *
  * ## 무엇을 어디까지 재는가 (E의 정의)
  *
- * 🔴 **E는 `t`를 찍는 위치가 정의다.** [convert]가 도는 구간 전체가 E이고, 그 구간은
- * **[ImageProxy]의 평면 버퍼에서 바이트를 꺼내는 것부터 입력 [FloatBuffer]가 준비될 때까지**다.
- * 밖에 있는 것: 프레임 대기 해제, 콜백 디스패치, `ImageProxy.close()`, `OnnxTensor` 생성,
- * `session.run()`. 안에 있는 것: 평면 3개 bulk copy, letterbox 리샘플, YUV→RGB, `/255`,
- * NCHW 배치, 직접 버퍼로의 bulk put.
+ * 🔴 **E는 `t`를 찍는 위치가 정의다.** 그 위치는 이 클래스가 아니라 **`DetectPipeline`이**
+ * 정한다 — E 구간은 **[ImageProxy]의 평면 버퍼에서 바이트를 꺼내는 것부터 `OnnxTensor`가
+ * 준비될 때까지**이고, [convert]는 그중 앞부분이다.
+ * 안에 있는 것: 평면 3개 bulk copy, letterbox 리샘플, YUV→RGB, `/255`, NCHW 배치,
+ * 직접 버퍼로의 bulk put, **그리고 `OnnxTensor` 생성**(이 클래스 밖, 파이프라인 안).
+ * 밖에 있는 것: 프레임 대기 해제, 콜백 디스패치, `ImageProxy.close()`, `session.run()`.
+ *
+ * ⚠ 이 문단은 예전에 `OnnxTensor` 생성을 "밖"이라고 적었는데 **틀렸다** — 파이프라인이
+ * 그것까지 E 안에서 잰다(독립 검증 지적). `session.json`의 `detect_timestamp_sites`가
+ * 처음부터 옳게 적고 있었고, 이 KDoc만 낡아 있었다. **밖으로 나가는 기록이 정답이다.**
  *
  * ⚠ 이 값은 **입력 포맷의 함수**다. `ImageAnalysis`가 `RGBA_8888`을 내주게 두면 변환이
  * CameraX 안에서 일어나 **E 밖에 숨고 E가 과소로 나온다** — 그래서 YUV로 받는다

@@ -99,21 +99,16 @@ class DetectPostprocessor(
                 val cy = raw[numAnchors + a]
                 val hw = raw[2 * numAnchors + a] * 0.5f
                 val hh = raw[3 * numAnchors + a] * 0.5f
-                // 4) letterbox 역변환 — 패딩 offset을 빼고 scale로 나눈다.
-                //    ⚠ NMS 앞에서 해도 IoU 순서는 바뀌지 않는다(같은 아핀 변환이다).
-                //      여기서 하는 이유는 클램프를 **원본 프레임 경계**로 걸기 위해서다.
-                var x1 = (cx - hw - box.padX) * invScale
-                var y1 = (cy - hh - box.padY) * invScale
-                var x2 = (cx + hw - box.padX) * invScale
-                var y2 = (cy + hh - box.padY) * invScale
-                if (x1 < 0f) x1 = 0f
-                if (y1 < 0f) y1 = 0f
-                if (x2 > box.srcW.toFloat()) x2 = box.srcW.toFloat()
-                if (y2 > box.srcH.toFloat()) y2 = box.srcH.toFloat()
-                boxX1[count] = x1
-                boxY1[count] = y1
-                boxX2[count] = x2
-                boxY2[count] = y2
+                // 🔴 **여기서는 letterbox 640 좌표계 그대로 둔다.** 역변환은 NMS **뒤**다
+                //    (아래 4단계) — 상류 README의 후처리 순서와 같다.
+                //    ⚠ 예전에는 여기서 역변환 + 원본 경계 클램프를 함께 하고 "같은 아핀
+                //      변환이라 IoU 순서가 안 바뀐다"고 정당화했는데, **클램프는 아핀이
+                //      아니다.** 화면 밖으로 걸친 박스는 면적이 잘려 IoU가 달라지고, 겹치는
+                //      장면에서 억제 결과가 상류와 갈릴 수 있다(독립 검증 지적).
+                boxX1[count] = cx - hw
+                boxY1[count] = cy - hh
+                boxX2[count] = cx + hw
+                boxY2[count] = cy + hh
                 boxScore[count] = best
                 boxClass[count] = bestClass
                 count++
@@ -151,6 +146,31 @@ class DetectPostprocessor(
                 }
                 oi++
             }
+        }
+
+        // 4) letterbox 역변환 + 원본 프레임 경계 클램프. **NMS 뒤이고, 살아남은 박스만** 한다.
+        //    상류 README 후처리 절의 순서(필터 → xyxy → 클래스별 NMS → 역변환)와 같다.
+        //    부수 효과로 변환 횟수가 count에서 kept로 줄어든다(보통 한 자릿수다).
+        //    ⚠ 클램프를 여기로 옮긴 것이 이 순서의 요점이다 — NMS 앞에서 자르면 화면 밖으로
+        //      걸친 박스의 면적이 달라져 IoU가 바뀐다.
+        val srcWf = box.srcW.toFloat()
+        val srcHf = box.srcH.toFloat()
+        var k = 0
+        while (k < kept) {
+            val idx = keptIndices[k]
+            var x1 = (boxX1[idx] - box.padX) * invScale
+            var y1 = (boxY1[idx] - box.padY) * invScale
+            var x2 = (boxX2[idx] - box.padX) * invScale
+            var y2 = (boxY2[idx] - box.padY) * invScale
+            if (x1 < 0f) x1 = 0f
+            if (y1 < 0f) y1 = 0f
+            if (x2 > srcWf) x2 = srcWf
+            if (y2 > srcHf) y2 = srcHf
+            boxX1[idx] = x1
+            boxY1[idx] = y1
+            boxX2[idx] = x2
+            boxY2[idx] = y2
+            k++
         }
         return Result(boxesPreNms = count, boxesOut = kept, maxConf = maxConf)
     }
