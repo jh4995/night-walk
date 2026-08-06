@@ -1,9 +1,14 @@
-"""폰의 측정 로그(frames.csv / session.json / detect.csv)를 하네스 출력 디렉토리로 가져온다.
+"""폰의 측정 산출물을 하네스 출력 디렉토리로 가져온다.
 
 **필수는 `frames.csv`·`session.json` 둘이고, `detect.csv`는 선택이다** (스키마 v6).
 탐지가 아닌 런에는 그 파일이 아예 없으므로 필수로 두면 기존 워크플로가 통째로 깨진다.
 다만 `session.json`이 `detect.enabled=true`라고 선언했는데 detect.csv가 없으면 **실패**다 —
 조용한 반쪽 회수를 막는 것이 이 스크립트의 존재 이유다.
+
+그 밖에 **이름을 미리 알 수 없는 산출물**이 둘 더 있다 (아래 상수):
+`ort_profile_*.json`(패턴) 과 `parity/`(디렉토리). 둘 다 **기기에 있으면 회수하고, 회수에
+실패하면 실패로 낸다** — "선택"은 *없을 수 있다*는 뜻이지 *있는데 두고 와도 된다*가 아니다.
+그리고 셋 중 어디에도 안 걸린 파일이 기기에 남으면 **경고**한다(§`NOT_A_PRODUCT_NAMES`).
 
 손 `adb pull`에는 두 문제가 있었다:
   (a) pull 대상을 `outputs/` 아래로 잡으면 "outputs 산출물을 손으로 만들지 않는다"와 충돌한다
@@ -34,6 +39,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import re
@@ -68,6 +74,30 @@ REQUIRED_PULL_FILES = ("frames.csv", "session.json")
 #   회수를 막는 것이 이 스크립트의 존재 이유다(평면 폴백을 실패로 만든 것과 같은 논거).
 OPTIONAL_PULL_FILES = ("detect.csv",)
 PULL_FILES = REQUIRED_PULL_FILES + OPTIONAL_PULL_FILES
+
+# ── 이름을 미리 알 수 없는 산출물 ──────────────────────────────────────────
+# 🔴 위 세 이름은 **고정 목록**이라, 앱이 새 산출물을 내기 시작하면 이 스크립트는 그것을
+#   조용히 두고 온다. 실제로 그렇게 됐다: ORT 프로파일러 arm(`*_prof`)이 런 디렉토리에
+#   `ort_profile_<timestamp>.json`을 남기는데 회수 목록에 없어서 **기기에만 쌓였다**
+#   (STATUS 알려진 이슈 31). 파일 이름에 타임스탬프가 들어가 고정 목록에 넣을 수도 없었다.
+#   그래서 이름 대신 **패턴**으로 잡는다.
+OPTIONAL_PULL_PATTERNS = ("ort_profile_*.json",)
+
+# 런 디렉토리 아래의 **하위 디렉토리** 산출물. ③ 이식 정확성 대조 덤프가 여기 온다
+# (`docs/plans/20260806_detect_parity_dump_format.md` §2). 파일이 여러 개이고 크기가 커서
+# (입력 텐서 하나가 4.9MB) 개별 이름을 적는 대신 디렉토리째 가져온다.
+OPTIONAL_PULL_DIRS = ("parity",)
+
+# 🔴 **위 셋 중 어디에도 안 걸리는 파일이 기기에 있으면 경고한다.**
+#   이슈 31의 진짜 교훈은 "ort_profile을 빠뜨렸다"가 아니라 **"빠뜨린 것을 알 방법이
+#   없었다"**는 것이다. 목록을 하나 더 늘리는 것으로는 다음 번 산출물에서 같은 일이 난다.
+#   그래서 회수 후 **남은 것을 세어 보고** 남았으면 사람에게 말한다.
+#
+# 이 집합은 그 경고의 **면제 목록**이다 — "산출물이 아님이 확실해서 두고 와도 되는 이름".
+# ⚠ **지금은 비어 있다**(면제할 것이 아직 없다). 비었다는 것이 곧 "런 디렉토리의 모든 항목이
+#   회수 대상이거나 경고 대상"이라는 뜻이고, 그게 의도한 기본값이다 — 여기에 이름을 더하는
+#   것은 **경고를 끄는 일**이므로 왜 산출물이 아닌지를 함께 적을 것.
+NOT_A_PRODUCT_NAMES: frozenset[str] = frozenset()
 
 # 평면 폴백으로 가져온 것을 담는 로컬 디렉토리 이름. 기기 런 이름(타임스탬프)과 **모양이
 # 다르게** 짓는다 — 경로만 봐도 "이건 런 디렉토리에서 온 게 아니다"가 드러나야 한다.
@@ -304,9 +334,23 @@ def _print_listing(runs: list[dict]) -> None:
                 )
             else:
                 LOG.warning("      %-14s 없음 — 이 런은 회수해도 반쪽이다", name)
-        extra = sorted(set(r["files_on_device"] or {}) - set(PULL_FILES))
-        if extra:
-            LOG.info("      (그 밖의 파일: %s)", ", ".join(extra))
+        # 🔴 고정 목록 **밖**의 항목을 회수 대상과 미회수로 갈라 보여준다. 예전에는 둘을
+        #   "그 밖의 파일"로 뭉쳐 놨는데, 이제 `ort_profile_*.json`과 `parity/`는 **회수한다** —
+        #   뭉쳐 두면 회수되는 것을 안 되는 것처럼 읽게 된다.
+        rest = {n: m for n, m in (r["files_on_device"] or {}).items() if n not in PULL_FILES}
+        will_pull = sorted(
+            n for n, m in rest.items()
+            if (m["mode"].startswith("d") and n in OPTIONAL_PULL_DIRS)
+            or (not m["mode"].startswith("d")
+                and any(fnmatch.fnmatch(n, p) for p in OPTIONAL_PULL_PATTERNS))
+        )
+        leftover = sorted(set(rest) - set(will_pull) - NOT_A_PRODUCT_NAMES)
+        if will_pull:
+            LOG.info("      (함께 회수한다: %s)", ", ".join(will_pull))
+        if leftover:
+            LOG.warning(
+                "      (회수 대상이 아니다 — 회수하면 기기에 남는다: %s)", ", ".join(leftover)
+            )
     LOG.info("=" * 62)
 
 
@@ -584,6 +628,16 @@ def main() -> int:
         files = []
         failed = []
         missing_optional = []
+
+        # 🔴 **런 디렉토리에 실제로 무엇이 있는지 먼저 본다.** 고정 목록만 훑으면 앱이 새로
+        #   내기 시작한 산출물을 영영 못 본다(이슈 31이 정확히 그거였다). 조사에 실패하면
+        #   추측하지 않고 그 사실을 남긴다 — 아래 미회수 경고가 "없다"가 아니라 "모른다"로
+        #   나가야 한다.
+        run_probe = probe_remote_dir(adb_path, serial, sel["remote_dir"])
+        _log_adb_verbatim(f"[ls {sel['name']}]", run_probe["adb"])
+        run_entries = run_probe["entries"] if run_probe["state"] == "entries" else {}
+        run_listing_ok = run_probe["state"] in ("entries", "empty")
+
         for name in PULL_FILES:
             optional = name in OPTIONAL_PULL_FILES
             remote = f"{sel['remote_dir']}/{name}"
@@ -634,6 +688,54 @@ def main() -> int:
             else:
                 LOG.info("%s/%s 가져옴: %s (%d bytes)", sel["name"], name, local, size)
 
+        # ── 패턴 산출물 (`ort_profile_*.json`) ────────────────────────────
+        # 🔴 여기 오는 이름은 **기기 `ls`로 실재를 확인한 것**이다. 그러므로 pull 실패는
+        #   "없어서 못 가져왔다"가 아니라 **회수 실패**이고 필수 파일과 같은 잣대를 댄다.
+        #   detect.csv의 "선언을 읽어 판정"과 논거가 다른 이유가 이것이다 — 저쪽은 없는
+        #   파일의 필요 여부를 파일만 봐서는 알 수 없어 session.json을 읽어야 했고,
+        #   이쪽은 목록에 보이므로 **있다는 사실 자체가 근거**다.
+        pattern_names = sorted(
+            n for n, meta in run_entries.items()
+            if not meta["mode"].startswith("d")
+            and any(fnmatch.fnmatch(n, pat) for pat in OPTIONAL_PULL_PATTERNS)
+        )
+        for name in pattern_names:
+            entry = _pull_file(
+                adb_path, serial, f"{sel['remote_dir']}/{name}", local_dir / name,
+                label=f"{sel['name']}/{name}",
+            )
+            entry["required"] = True   # 기기에 있는 것을 두고 오지 않는다
+            entry["matched_pattern"] = next(
+                p for p in OPTIONAL_PULL_PATTERNS if fnmatch.fnmatch(name, p)
+            )
+            files.append(entry)
+            if not entry["ok"]:
+                failed.append(name)
+                failed_all.append(f"{sel['name']}/{name}")
+
+        # ── 디렉토리 산출물 (`parity/`) ───────────────────────────────────
+        dirs_out = []
+        for dname in OPTIONAL_PULL_DIRS:
+            meta = run_entries.get(dname)
+            if not meta or not meta["mode"].startswith("d"):
+                continue
+            d_entry = _pull_dir(
+                adb_path, serial, f"{sel['remote_dir']}/{dname}", local_dir,
+                label=f"{sel['name']}/{dname}",
+            )
+            dirs_out.append(d_entry)
+            if not d_entry["ok"]:
+                failed.append(f"{dname}/")
+                failed_all.append(f"{sel['name']}/{dname}/")
+
+        # ── 🔴 **회수하지 않고 기기에 남긴 것.** 이 경고가 이슈 31의 진짜 수정이다.
+        #   목록을 하나 늘리는 것은 그 산출물 하나만 고치고, 다음 산출물에서 같은 일이 난다.
+        claimed = (
+            set(PULL_FILES) | set(pattern_names)
+            | {d["name"] for d in dirs_out} | NOT_A_PRODUCT_NAMES
+        )
+        unclaimed = sorted(set(run_entries) - claimed)
+
         # ── 🔴 선택 파일이 **없어도 되는 런인가**를 앱의 자진 신고로 판정한다.
         #    session.json이 detect.enabled=true라고 말하는데 detect.csv가 없으면 그 회수는
         #    반쪽이다 — 그대로 통과시키면 "탐지를 켰는데 탐지 계측이 없는" 런이 조용히
@@ -655,13 +757,40 @@ def main() -> int:
             failed_all.append(f"{sel['name']}/detect.csv")
             LOG.error("%s", why)
 
+        if not run_listing_ok:
+            why = (
+                f"{sel['name']}: 런 디렉토리 목록을 읽지 못했다 "
+                f"({run_probe.get('error_reason') or run_probe['state']}) — 고정 목록 "
+                f"({', '.join(PULL_FILES)}) 밖의 산출물이 기기에 남았는지 **말할 수 없다.** "
+                f"위 [ls {sel['name']}] 원문을 볼 것"
+            )
+            warnings.append(why)
+            LOG.warning("%s", why)
+        elif unclaimed:
+            why = (
+                f"{sel['name']}: 회수하지 않고 기기에 남긴 것이 있다: {', '.join(unclaimed)} — "
+                f"이 스크립트가 아는 이름({', '.join(PULL_FILES)}) · 패턴"
+                f"({', '.join(OPTIONAL_PULL_PATTERNS)}) · 디렉토리"
+                f"({', '.join(OPTIONAL_PULL_DIRS)}) 어디에도 안 걸렸다. 앱이 새 산출물을 "
+                f"내기 시작했다면 위 상수에 더할 것 — **모르는 채로 두고 오는 것이 "
+                f"이슈 31이었다**"
+            )
+            warnings.append(why)
+            LOG.warning("%s", why)
+
         runs_out.append({
             "name": sel["name"],
             "remote_dir": sel["remote_dir"],
             "local_dir": str(local_dir.resolve()),
             "files": files,
+            "dirs": dirs_out,
             "failed_files": failed,
             "missing_optional_files": missing_optional,
+            # 회수 시점에 기기의 런 디렉토리에 실제로 있던 것 전부. 나중에 "그때 뭐가
+            # 있었나"를 되물을 근거이며, 위 미회수 경고의 원본이다.
+            "remote_entries": sorted(run_entries),
+            "remote_listing_ok": run_listing_ok,
+            "unclaimed_remote_entries": unclaimed if run_listing_ok else None,
             # 앱이 선언한 탐지 사용 여부. None = 말할 수 없다(키 없음/session.json 못 읽음).
             # **None과 false는 다르다** — 없는 것을 false로 채우면 없는 근거를 만드는 것이다.
             "detect_declared_enabled": detect_declared,
@@ -717,6 +846,88 @@ def main() -> int:
         LOG.warning("%s", legacy_flat_warning(base_dir))
     LOG.info("=" * 62)
     return EXIT_OK
+
+
+def _pull_file(adb_path: str, serial: str, remote: str, local: Path, label: str) -> dict:
+    """파일 하나를 가져오고 **0바이트를 성공으로 세지 않는다.**
+
+    위 필수/선택 루프와 판정이 같아야 하므로 문장도 같은 것을 쓴다. 저쪽을 이 함수로
+    합치지 않은 이유는 저쪽이 `required`/`optional`로 **다르게 실패**하기 때문이다 —
+    여기 오는 것은 전부 "기기에 있는 것이 확인된" 파일이라 실패가 한 종류다.
+    """
+    res = _adb_raw(adb_path, ["pull", remote, str(local)], serial=serial)
+    _log_adb_verbatim(f"[pull {label}]", res)
+    exists = local.exists()
+    size = local.stat().st_size if exists else 0
+    ok = (res["returncode"] == 0) and exists and size > 0
+    entry = {
+        "name": local.name,
+        "remote_path": remote,
+        "local_path": str(local.resolve()) if exists else None,
+        "exists": exists,
+        "size_bytes": size,
+        "ok": ok,
+        "adb": res,
+    }
+    if ok:
+        LOG.info("%s 가져옴: %s (%d bytes)", label, local, size)
+    else:
+        if res["returncode"] == 0 and exists and size == 0:
+            entry["failure_reason"] = "0바이트 파일 — 앱이 flush하지 않았을 수 있다"
+        elif res["returncode"] == 0 and not exists:
+            entry["failure_reason"] = "adb는 성공을 반환했는데 로컬 파일이 없다"
+        else:
+            entry["failure_reason"] = "adb pull 실패"
+        LOG.error("%s 실패: %s", label, entry["failure_reason"])
+    return entry
+
+
+def _pull_dir(adb_path: str, serial: str, remote_dir: str, local_parent: Path,
+              label: str) -> dict:
+    """디렉토리 하나를 통째로 가져온다.
+
+    `adb pull <remote_dir> <local_parent>` 는 `<local_parent>/<basename>` 을 만든다.
+
+    🔴 **returncode 0을 성공으로 믿지 않는다.** 파일 루프가 0바이트를 성공으로 세지 않는
+    것과 같은 이유다 — 여기서는 **가져온 파일이 0개인 것**이 그 자리다. 기기에 디렉토리가
+    있다는 것을 `ls`로 확인하고 부르므로, 0개면 무언가 잘못된 것이다.
+    ⚠ 빈 디렉토리 자체가 문제일 수 있으나 그것도 회수 실패와 함께 사람이 봐야 한다 —
+    "파일 0개를 성공적으로 가져왔다"는 조용한 성공을 만들지 않는다.
+    """
+    name = remote_dir.rstrip("/").rsplit("/", 1)[-1]
+    res = _adb_raw(adb_path, ["pull", remote_dir, str(local_parent)], serial=serial)
+    _log_adb_verbatim(f"[pull {label}]", res)
+    local_dir = local_parent / name
+    pulled = sorted(p for p in local_dir.rglob("*") if p.is_file()) if local_dir.is_dir() else []
+    total = sum(p.stat().st_size for p in pulled)
+    # 0바이트 파일이 섞여 있으면 그것도 회수 실패다(같은 논거).
+    empty = [p.name for p in pulled if p.stat().st_size == 0]
+    ok = (res["returncode"] == 0) and bool(pulled) and not empty
+    entry = {
+        "name": name,
+        "remote_dir": remote_dir,
+        "local_dir": str(local_dir.resolve()) if local_dir.is_dir() else None,
+        "file_count": len(pulled),
+        "files": [p.name for p in pulled],
+        "empty_files": empty,
+        "total_bytes": total,
+        "ok": ok,
+        "adb": res,
+    }
+    if ok:
+        LOG.info("%s 가져옴: %s (파일 %d개, %d bytes)", label, local_dir, len(pulled), total)
+    else:
+        if res["returncode"] != 0:
+            entry["failure_reason"] = "adb pull 실패"
+        elif not pulled:
+            entry["failure_reason"] = (
+                "기기에는 디렉토리가 있는데 가져온 파일이 0개다 — "
+                "'성공적으로 아무것도 안 가져옴'을 성공으로 세지 않는다"
+            )
+        else:
+            entry["failure_reason"] = f"0바이트 파일이 섞여 있다: {', '.join(empty)}"
+        LOG.error("%s 실패: %s", label, entry["failure_reason"])
+    return entry
 
 
 def _detect_declared_enabled(session_path: Path) -> tuple[bool | None, str | None]:
