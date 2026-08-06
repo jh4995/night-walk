@@ -151,5 +151,5 @@
 | 측정 원본 45건 | [baselines/](baselines/) |
 | 측정 계획 (질문·불변식·한계) | [plans/](plans/) |
 | 상류 대조 (최신) | [RESEARCH_20260803_UPSTREAM.md](research/RESEARCH_20260803_UPSTREAM.md) |
-| 팀 보고 (최신 · 계측 결함) | [REPORT_20260804B_TEAM.md](REPORT_20260804B_TEAM.md) |
-| 팀 보고 (동결 스냅샷) | [REPORT_20260803_TEAM.md](REPORT_20260803_TEAM.md) · [REPORT_20260804_TEAM.md](REPORT_20260804_TEAM.md) |
+| 팀 보고 (최신 · ③ F칸 실측 + NNAPI 판정) | [REPORT_20260806B_TEAM.md](REPORT_20260806B_TEAM.md) |
+| 팀 보고 (동결 스냅샷) | [REPORT_20260803_TEAM.md](REPORT_20260803_TEAM.md) · [REPORT_20260804_TEAM.md](REPORT_20260804_TEAM.md) · [REPORT_20260804B_TEAM.md](REPORT_20260804B_TEAM.md) · [REPORT_20260806_TEAM.md](REPORT_20260806_TEAM.md) ⚠️ NNAPI 결론은 B가 번복 |

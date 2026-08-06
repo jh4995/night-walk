@@ -1,5 +1,11 @@
 # 팀 보고 — ③ 탐지 런타임 착수: **MediaTek에서 NNAPI가 잡힌다**, 그리고 계약 A 충돌 9건
 
+> 🔴🔴 **이 문서의 NNAPI 결론은 같은 날 뒤집혔다.** F를 재기 전에 쓴 것이고, 실측 후
+> **"잡히지만 쓰면 안 된다"**로 바뀌었다 — NNAPI가 NPU가 아니라 **GPU로 내려가** 자기도 23%
+> 느리고 표시 경로의 GPU까지 빼앗는다. **§1을 인용하기 전에 반드시**
+> [`REPORT_20260806B_TEAM.md`](REPORT_20260806B_TEAM.md)를 읽을 것.
+> ✅ **나머지는 그대로 유효하다** — 팀원1 요청 5건(§2)과 계약 A 충돌 9건(§3)은 B 문서가 대체하지 않는다.
+
 > **작성:** 2026-08-06 (팀원2) · **기기:** Galaxy A34 (SM-A346N / MediaTek MT6877 / Mali-G68 MC4 / Android 16, API 36)
 > **빌드:** release · `git_commit=46d1870` · `git_dirty=false` · 조명 `indoor_bright`
 > **런타임:** ONNX Runtime `com.microsoft.onnxruntime:onnxruntime-android` **1.28.0**(full)
