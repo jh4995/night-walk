@@ -1,5 +1,9 @@
 # 팀 보고 (B) — **F칸 실측: 15FPS는 지켜진다. 문제는 탐지 신선도다** + NNAPI 판정 번복
 
+> 📌 **팀 공유용은 [`REPORT_20260806C_TEAM.md`](REPORT_20260806C_TEAM.md)입니다** — 이 문서와
+> A 문서를 end-to-end 관점으로 합치고 비전공자 기준으로 푼 것입니다.
+> **이 문서는 기술 근거(GPU 점유율 원자료·오차 한계·재현 절차)를 담은 원본**으로 남깁니다.
+
 > **작성:** 2026-08-06 (팀원2) · **기기:** Galaxy A34 (SM-A346N / MediaTek MT6877 / Mali-G68 MC4 / Android 16)
 > **조건:** release · `git_commit=3a66ad9` · `git_dirty=false` · `indoor_bright` · 폰 고정
 > **세션:** 11분 × 5런 **교차 배치** · 분석 창 **636.8~641.6초**(`t_recv_ns` 실제 span, **전부 지속 판정선 통과**)
