@@ -1026,6 +1026,28 @@ def check_against_plan(
     #      곧 아무도 안 보게 되고, 정작 탐지 런에서 묻힌다.
     det = detect_facts(session)
     planned_ep = row.get("ep")
+
+    # 🔴 **폴백 검사는 게이트 밖이다.** 아래 게이트(`enabled` 또는 계획 `ep`)는 "대조할 수
+    #    없다"는 **참고**가 탐지 아닌 런에 매번 붙는 잡음을 막으려는 것이지, **폴백을 못 본 척
+    #    하려는 것이 아니다.** 앱이 두 값을 모두 신고했는데 서로 다르면 그건 그 런의 사실이고,
+    #    `enabled`가 false든 계획에 `ep`가 없든 무효인 런이다.
+    #    ⚠ 잡음이 늘지 않는 이유: 탐지가 아닌 런은 애초에 두 값이 없어 `ep_matches`가 None이라
+    #      이 분기에 닿지 않는다. 즉 게이트가 막고 있던 것은 잡음이 아니라 **진짜 어긋남**뿐이었다.
+    #    (독립 검증 지적: `enabled`가 회수 판정과 EP 검사 게이트 두 일을 겸하고 있었다 —
+    #     앱 라운드에서 `enabled`를 true로 올리는 것을 잊으면 방어선이 통째로 사라진다.)
+    if det["ep_matches"] is False:
+        # 🔴 이 스크립트가 이번 라운드에 추가하는 가장 중요한 검사다. 스피너가 맞아도,
+        #    arm이 맞아도, 여기서 무효가 된다 — 요청한 EP로 세션이 열리지 않았으면
+        #    그 런의 F는 다른 실행 공급자의 비용이다.
+        mismatches.append(
+            f"EP 어긋남: {DETECT_EP_REQUESTED_FIELD}={det['ep_requested']!r}인데 "
+            f"{DETECT_EP_RESOLVED_FIELD}={det['ep_resolved']!r}다 — 앱이 요청한 실행 "
+            f"공급자로 세션이 열리지 않았다(폴백). **이 런의 E·F·G는 "
+            f"{det['ep_requested']!r}의 비용이 아니라 {det['ep_resolved']!r}의 비용이며, "
+            f"arm 이름({arm!r})이 무엇이든 그렇다.** 프레임타임과 fps는 정상으로 보일 수 "
+            f"있다. 하네스는 EP를 해석하지 않았다 — 앱이 적은 두 값을 대조했을 뿐이다"
+        )
+
     if det["enabled"] or planned_ep is not None:
         if planned_ep is not None and det["ep_requested"] != planned_ep:
             mismatches.append(
@@ -1033,19 +1055,7 @@ def check_against_plan(
                 f"{det['ep_requested']!r} — 앱에서 EP를 계획대로 고르지 않았을 가능성이 "
                 "가장 크다. **이 런은 계획 칸이 규정한 EP의 숫자가 아니다**"
             )
-        if det["ep_matches"] is False:
-            # 🔴 이 스크립트가 이번 라운드에 추가하는 가장 중요한 검사다. 스피너가 맞아도,
-            #    arm이 맞아도, 여기서 무효가 된다 — 요청한 EP로 세션이 열리지 않았으면
-            #    그 런의 F는 다른 실행 공급자의 비용이다.
-            mismatches.append(
-                f"EP 어긋남: {DETECT_EP_REQUESTED_FIELD}={det['ep_requested']!r}인데 "
-                f"{DETECT_EP_RESOLVED_FIELD}={det['ep_resolved']!r}다 — 앱이 요청한 실행 "
-                f"공급자로 세션이 열리지 않았다(폴백). **이 런의 E·F·G는 "
-                f"{det['ep_requested']!r}의 비용이 아니라 {det['ep_resolved']!r}의 비용이며, "
-                f"arm 이름({arm!r})이 무엇이든 그렇다.** 프레임타임과 fps는 정상으로 보일 수 "
-                f"있다. 하네스는 EP를 해석하지 않았다 — 앱이 적은 두 값을 대조했을 뿐이다"
-            )
-        elif det["ep_matches"] is None:
+        if det["ep_matches"] is None:
             missing = []
             if det["ep_requested"] is None:
                 missing.append(
@@ -1062,7 +1072,10 @@ def check_against_plan(
                 "어느 실행 공급자에서 나온 값인지 **말할 수 없다**(**값이 없는 것은 '같다'가 "
                 "아니다**). 그래서 어긋남으로 잡지 않았다. 앱이 두 값을 모두 적어야 한다"
             )
-        elif det["ep_requested"] not in DETECT_EPS:
+        # ⚠ `is True`를 명시한다. 폴백 검사를 위 게이트 밖으로 뺐으므로 여기까지 `ep_matches`가
+        #   **False인 채로 내려올 수 있고**, 그때 이 문장의 "요청과 해소가 같으므로"가 거짓이
+        #   된다. `not None`으로 쓰면 폴백 런에 "어긋남은 아니다"가 붙는다.
+        elif det["ep_matches"] is True and det["ep_requested"] not in DETECT_EPS:
             notes.append(
                 f"EP가 하네스 어휘 밖이다: {det['ep_requested']!r} — 앱이 새 EP를 하네스보다 "
                 f"먼저 낸 것일 수 있다(요청과 해소가 같으므로 어긋남은 아니다). "

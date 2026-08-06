@@ -422,6 +422,14 @@ def _stages_block(
     return block
 
 
+# `safety_regression_block`의 `scope`가 가질 수 있는 값. **자유 문자열이 아니다.**
+# 🔴 검증하지 않으면 오타(`"sesion"`)가 **조용히 run 분기로 떨어져** 세션 리포트에
+#    "이 런에서 재지 않았다"가 실린다 — 이 함수가 고치려던 결함과 정확히 같은 형태다
+#    (문장이 그 자리의 사실을 말하지 않는다). 그래서 죽인다: 스코프가 틀린 것은 데이터
+#    문제가 아니라 호출자의 버그이고, 조용히 틀린 문장을 내보내는 것보다 죽는 편이 낫다.
+SAFETY_SCOPES = ("run", "session")
+
+
 def _detect_status_clause(detect_block: Optional[dict], scope: str) -> str:
     """안전 회귀 사유의 **탐지 현황 한 문장**을 그 런의 데이터에서 만든다.
 
@@ -478,6 +486,13 @@ def safety_regression_block(
     `detect_block`이 None이면 `--detect`를 주지 않은 것이다 — "탐지가 0이었다"가 아니라
     **재지 않았다**는 뜻이므로 그렇게 말한다.
     """
+    if scope not in SAFETY_SCOPES:
+        raise ValueError(
+            f"safety_regression_block(scope={scope!r})는 알 수 없는 스코프다 — "
+            f"허용: {', '.join(SAFETY_SCOPES)}. 조용히 run으로 떨어뜨리지 않는다: "
+            "세션 리포트에 '이 런에서 재지 않았다'가 실리면 그 문장이 그 자리의 사실을 "
+            "말하지 않는 것이고, 그게 이 함수가 고치려던 결함 자체다"
+        )
     return {
         "evaluated": False,
         "reason": (
