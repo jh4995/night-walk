@@ -82,8 +82,42 @@ object DetectContract {
     const val EP_CPU = "cpu"
     const val EP_NNAPI = "nnapi"
 
+    /**
+     * XNNPACK EP. `OrtEnvironment.getAvailableProviders()`가 이 AAR에 실제로 들어 있음을
+     * 보여 줬고(CPU/NNAPI/WEBGPU/XNNPACK), NNAPI가 CPU보다 느렸던 실측 뒤 남은 후보다.
+     *
+     * 🔴 **`lib/frame_log.py`의 `DETECT_EPS`에 이 토큰이 없으면** 하네스가 "어휘 밖 EP"
+     * 참고를 붙이고 `run_session.py`의 계획 어휘 검사가 막는다 — 하네스 트랙에 함께 등록할 것.
+     */
+    const val EP_XNNPACK = "xnnpack"
+
     /** 🔴 **판별하지 못했다는 뜻이며 "CPU였다"가 아니다.** 요청값을 베껴 넣는 자리가 아니다. */
     const val EP_UNKNOWN = "unknown"
+
+    // ── XNNPACK 세션 옵션 ─────────────────────────────────────────────────
+
+    /**
+     * XNNPACK EP에 넘기는 provider option. **비어 있다 = ORT 기본값을 그대로 썼다.**
+     *
+     * 🔴 **값을 지어내지 않았다.** ORT 문서는 XNNPACK에 `intra_op_num_threads`를 함께 주고
+     * 세션 쪽 intra-op을 1로 낮추라고 안내하지만, 그 숫자는 어느 계약에도 없고 이 기기에서
+     * 재 본 적도 없다. 근거 없는 스레드 수를 넣으면 이 arm과 `detect_cpu`의 차이가
+     * **EP 차이 + 스레딩 차이**가 되어 이번 라운드의 질문("XNNPACK이 CPU보다 빠른가")에
+     * 답할 수 없게 된다 — 세션 옵션을 짝 arm과 글자 그대로 같게 두는 쪽을 택했다.
+     * 실제로 쓴 값은 `session.json`의 `detect.ep.provider_options`에 그대로 나간다.
+     */
+    val XNNPACK_PROVIDER_OPTIONS: Map<String, String> = emptyMap()
+
+    /** 위 선택을 사람이 읽는 문장으로. `session.json`에 함께 실린다. */
+    const val XNNPACK_THREAD_OPTIONS_NOTE =
+        "⚠ **스레드 옵션을 하나도 건드리지 않았다(ORT 기본값).** provider option은 빈 맵이고 " +
+            "세션의 intra/inter-op 스레드 수도 설정하지 않았다 — detect_cpu arm과 **글자 " +
+            "그대로 같은 세션 옵션**이며 다른 것은 addXnnpack 호출 하나뿐이다. " +
+            "ORT 문서는 XNNPACK에 provider option `intra_op_num_threads`를 주고 세션 " +
+            "intra-op을 1로 낮추라고 안내하지만, **그 숫자는 계약에도 없고 이 기기에서 잰 적도 " +
+            "없다.** 지어 넣으면 arm 차분이 EP 차이가 아니라 스레딩 차이를 섞게 된다. " +
+            "🔴 그러므로 이 런은 '기본 스레딩에서의 XNNPACK'이며 **XNNPACK의 최적 구성이 " +
+            "아니다** — 스레드 수를 흔드는 것은 별 라운드의 질문이다"
 
     // ── EP 판별 수단 이름(`resolution_method`) ─────────────────────────────
 
@@ -91,8 +125,8 @@ object DetectContract {
      * 1순위. **프로브 세션**의 ORT 프로파일 JSON에서 노드별 provider를 세어 판별했다.
      *
      * 왜 측정 세션이 아니라 프로브 세션인가: 프로파일러는 노드마다 기록을 남겨 추론 시간에
-     * 자기 비용을 얹는다. 그래서 `detect_cpu`/`detect_nnapi`(시간을 인용하는 arm)의 측정
-     * 세션에는 프로파일러를 켤 수 없는데, 그러면 그 arm이 영원히 `unknown`이 된다.
+     * 자기 비용을 얹는다. 그래서 `detect_cpu`/`detect_nnapi`/`detect_xnnpack`(시간을 인용하는
+     * arm)의 측정 세션에는 프로파일러를 켤 수 없는데, 그러면 그 arm이 영원히 `unknown`이 된다.
      * 프로브 세션은 **같은 모델·같은 EP 요청·같은 옵션**으로 따로 연 세션이고 파티셔닝은
      * 그 입력들의 결정적 함수이므로, 여기서 나온 배치가 측정 세션의 배치다.
      * ⚠ 다만 **같은 세션 객체에서 관측한 것이 아니다** — 그 사실을 이 이름이 말한다.

@@ -78,6 +78,13 @@ class DetectReport(
     val verboseLogNote: String,
     /** NNAPI 가드 결과(런타임 API 레벨). 요청이 cpu면 "해당 없음"이 들어온다. */
     val nnapiGuard: String,
+    /**
+     * EP에 실제로 넘긴 provider option. 🔴 **빈 맵은 "안 잰 칸"이 아니라 "ORT 기본값을 썼다"는
+     * 사실**이며, 그 구분을 [threadOptionsNote]가 문장으로 말한다.
+     */
+    val epProviderOptions: Map<String, String>,
+    /** 스레드 관련 옵션을 어떻게 두었는가(사람이 읽는 문장). 값을 지어내지 않은 이유가 여기 있다. */
+    val threadOptionsNote: String,
 
     // ── 시간(스모크 확인용. 🔴 인용 금지 — 준비 1회이고 분포가 아니다) ────
     val envInitMs: Long,

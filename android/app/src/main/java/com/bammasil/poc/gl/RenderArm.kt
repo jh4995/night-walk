@@ -309,11 +309,11 @@ enum class RenderArm(
     ),
 
     // ── ③ 탐지 arm ────────────────────────────────────────────────────────
-    // 🔴 **[gpuColumns]는 다섯 arm 모두 짝 arm [BLIT_2PASS]와 글자 그대로 같다** — 탐지는
+    // 🔴 **[gpuColumns]는 일곱 arm 모두 짝 arm [BLIT_2PASS]와 글자 그대로 같다** — 탐지는
     // 별 스레드에서 돌고 렌더 경로를 하나도 건드리지 않으므로, 렌더가 같아야 표시 경로
     // 차분이 "탐지를 켜서 생긴 변화"라는 뜻을 갖는다(`_1q` arm과 같은 관행).
     //
-    // 🔴 [pipelineStages]는 **다르다.** 프레임 경로에서 실제로 추론이 도는 arm 넷에만
+    // 🔴 [pipelineStages]는 **다르다.** 프레임 경로에서 실제로 추론이 도는 arm 여섯에만
     // `detect` 토큰을 더했다. [DETECT_BIND_ONLY]는 `ImageAnalysis`만 붙이고 추론이 없으므로
     // `["blit_2pass"]` 그대로다 — 그 토큰의 뜻은 "그 단계가 프레임 경로에서 돌았는가"이고,
     // 분모 arm에서는 돌지 않았다. 이 문자열은 `baseline_diff.py`의 **비교 조건**이라
@@ -366,6 +366,30 @@ enum class RenderArm(
     /** [DETECT_NNAPI] + **ORT 프로파일러**. 🔴 시간 인용 금지 ([DETECT_PROF_NOT_QUOTABLE]). */
     DETECT_NNAPI_PROF(
         "detect_nnapi_prof",
+        listOf("blit_2pass", "detect"),
+        listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
+    ),
+
+    /**
+     * ORT **XNNPACK EP**로 세션을 연다.
+     *
+     * 왜 이 arm이 생겼는가: 교차 배치 5런 실측에서 **NNAPI가 CPU보다 느렸다**(F p50 기준).
+     * 남은 후보가 이것이고, `getAvailableProviders()`가 이 AAR에 XNNPACK이 실제로 들어 있음을
+     * 이미 보여 줬다.
+     *
+     * 🔴 **요청과 실제가 다를 수 있다**([DETECT_NNAPI]와 같다). ⚠ 게다가 XNNPACK은 **CPU EP의
+     * 커널을 일부만 대체**하므로 노드가 CPU/XNNPACK로 **섞여** 나오는 것이 정상이다 —
+     * 그 모양은 `session.json`의 `detect.ep.node_counts`가 그대로 드러낸다.
+     */
+    DETECT_XNNPACK(
+        "detect_xnnpack",
+        listOf("blit_2pass", "detect"),
+        listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
+    ),
+
+    /** [DETECT_XNNPACK] + **ORT 프로파일러**. 🔴 시간 인용 금지 ([DETECT_PROF_NOT_QUOTABLE]). */
+    DETECT_XNNPACK_PROF(
+        "detect_xnnpack_prof",
         listOf("blit_2pass", "detect"),
         listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
     );
@@ -484,8 +508,8 @@ enum class RenderArm(
      * 추론을 돌리지 않는 분모이므로 세션을 열면 그 자체가 조건 오염이다.
      */
     val usesDetectSession: Boolean
-        get() = this == DETECT_CPU || this == DETECT_NNAPI ||
-            this == DETECT_CPU_PROF || this == DETECT_NNAPI_PROF
+        get() = this == DETECT_CPU || this == DETECT_NNAPI || this == DETECT_XNNPACK ||
+            this == DETECT_CPU_PROF || this == DETECT_NNAPI_PROF || this == DETECT_XNNPACK_PROF
 
     /**
      * 이 arm이 **요청하는** 실행 공급자. 어휘는 `lib/frame_log.py`의 `DETECT_EPS`와 같다.
@@ -497,12 +521,14 @@ enum class RenderArm(
         get() = when (this) {
             DETECT_CPU, DETECT_CPU_PROF -> "cpu"
             DETECT_NNAPI, DETECT_NNAPI_PROF -> "nnapi"
+            DETECT_XNNPACK, DETECT_XNNPACK_PROF -> "xnnpack"
             else -> null
         }
 
     /** ORT 프로파일러를 **측정 세션에** 켜는 arm인가. 🔴 [DETECT_PROF_NOT_QUOTABLE]. */
     val detectProfilingEnabled: Boolean
-        get() = this == DETECT_CPU_PROF || this == DETECT_NNAPI_PROF
+        get() = this == DETECT_CPU_PROF || this == DETECT_NNAPI_PROF ||
+            this == DETECT_XNNPACK_PROF
 
     /**
      * 조합 arm인가(체인이든 융합이든, bf가 붙었든). 둘의 계수를 나란히 낼 때 쓴다.
@@ -1562,26 +1588,28 @@ enum class RenderArm(
          *
          * ORT 프로파일러는 노드마다 기록을 남기므로 F(그리고 그것을 포함하는 모든 값)에
          * **자기 비용을 얹는다.** 이 arm은 "어느 노드가 어느 EP에 갔고 무엇이 비싼가"를 보는
-         * 장치이고, E·F·G 숫자와 버짓 칸은 **접미사 없는 짝(`detect_cpu`/`detect_nnapi`)에서만**
-         * 인용한다. `_1q` 접미사와 같은 취지로 arm을 가른 것이다 — 계측 방식이 다르면 같은
-         * 코드라도 같은 조건이 아니고, 그 사실을 담을 키가 `pipeline_stages`에는 없다.
+         * 장치이고, E·F·G 숫자와 버짓 칸은 **접미사 없는 짝(`detect_cpu`/`detect_nnapi`/
+         * `detect_xnnpack`)에서만** 인용한다. `_1q` 접미사와 같은 취지로 arm을 가른 것이다 —
+         * 계측 방식이 다르면 같은 코드라도 같은 조건이 아니고, 그 사실을 담을 키가
+         * `pipeline_stages`에는 없다.
          */
         const val DETECT_PROF_NOT_QUOTABLE =
             "🔴 **이 arm의 시간을 인용하지 말 것.** ORT 프로파일러가 노드마다 기록을 남겨 " +
                 "추론 시간에 자기 비용을 얹는다. 이 arm이 답하는 질문은 '어느 노드가 어느 " +
                 "EP에 배치됐는가' 하나이고, E·F·G와 버짓 칸은 접미사 없는 짝 arm" +
-                "(detect_cpu / detect_nnapi)에서만 인용한다"
+                "(detect_cpu / detect_nnapi / detect_xnnpack)에서만 인용한다"
 
         /**
          * ③ arm의 프레임타임을 읽는 법. **arm마다 뜻이 다르다.**
          *
          * - [DETECT_BIND_ONLY]: 분석 use case 하나를 더 붙인 값. 추론은 없다.
-         * - 나머지 넷: **탐지를 idle-gated로 최대한 돌린 상태**의 값 → [DETECT_UPPER_BOUND].
+         * - 나머지 여섯: **탐지를 idle-gated로 최대한 돌린 상태**의 값 → [DETECT_UPPER_BOUND].
          */
         const val DETECT_ROUND_SCOPE =
             "이 arm의 프레임타임을 읽는 법: **detect_bind_only는 분석 use case 하나를 더 붙인 " +
                 "값**이고 추론이 없다(pipeline_stages에 detect 토큰이 없는 이유다). " +
-                "detect_cpu / detect_nnapi / _prof 둘은 프레임 경로에서 **실제로 추론이 돈다** — " +
+                "detect_cpu / detect_nnapi / detect_xnnpack / _prof 셋은 프레임 경로에서 " +
+                "**실제로 추론이 돈다** — " +
                 "렌더 경로 자체는 blit_2pass와 글자 그대로 같으므로, 그 arm들의 프레임타임 " +
                 "차이는 GL 변경이 아니라 **같은 SoC를 탐지 스레드와 나눠 쓴 결과**다. " +
                 "🔴 E·F·G의 분포는 프레임타임이 아니라 **detect.csv**에 있다"

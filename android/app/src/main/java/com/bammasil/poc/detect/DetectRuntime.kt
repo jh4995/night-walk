@@ -221,8 +221,24 @@ class DetectRuntime(
 
         val warnings = mutableListOf<String>()
 
+        // 4-1) EP에 넘길 provider option. 🔴 **XNNPACK도 값을 지어내지 않는다** — 빈 맵이면
+        //      "ORT 기본값을 썼다"는 사실이고, 그 사실이 session.json에 그대로 나간다.
+        val providerOptions: Map<String, String> =
+            if (epRequested == DetectContract.EP_XNNPACK) {
+                DetectContract.XNNPACK_PROVIDER_OPTIONS
+            } else {
+                emptyMap()
+            }
+        val threadOptionsNote = if (epRequested == DetectContract.EP_XNNPACK) {
+            DetectContract.XNNPACK_THREAD_OPTIONS_NOTE
+        } else {
+            "해당 없음 (ep.requested=$epRequested — 스레드 옵션을 설정하지 않았다. ORT 기본값)"
+        }
+
         // 5) 프로브 세션 — EP 판별 전용. 프로파일러를 켜고 더미 추론 1회.
-        val probe = openSession(env, modelFile, epRequested, profiling = true, verbose = true)
+        val probe = openSession(
+            env, modelFile, epRequested, providerOptions, profiling = true, verbose = true,
+        )
         if (probe.session == null) {
             return failed(arm, "프로브 세션 생성 실패: ${probe.error}")
         }
@@ -276,6 +292,7 @@ class DetectRuntime(
             env,
             modelFile,
             epRequested,
+            providerOptions,
             profiling = arm.detectProfilingEnabled,
             verbose = false,
         )
@@ -344,6 +361,8 @@ class DetectRuntime(
             verboseLogLines = logcat.lines,
             verboseLogNote = logcat.note,
             nnapiGuard = nnapiGuard,
+            epProviderOptions = providerOptions,
+            threadOptionsNote = threadOptionsNote,
             envInitMs = envMs,
             probeCreateMs = probe.createMs,
             probeInferMs = probeInferMs,
@@ -369,6 +388,8 @@ class DetectRuntime(
         env: OrtEnvironment,
         modelFile: File,
         epRequested: String,
+        /** EP에 그대로 넘기는 provider option. 빈 맵 = ORT 기본값. */
+        providerOptions: Map<String, String>,
         profiling: Boolean,
         verbose: Boolean,
     ): OpenResult {
@@ -394,6 +415,18 @@ class DetectRuntime(
                 // ⚠ 플래그 없는 기본 호출이다. USE_FP16 등은 **정확도를 바꾸는 결정**이라
                 //   임의로 켜지 않는다(INTERFACES.md A-1의 정밀도 칸이 아직 ☐다).
                 options.addNnapi()
+            } else if (epRequested == DetectContract.EP_XNNPACK) {
+                // ⚠ **시그니처를 AAR에서 직접 확인하고 쓴다**(기억으로 쓰지 않는다).
+                //   `javap -classpath classes.jar ai.onnxruntime.OrtSession$SessionOptions`:
+                //     public void addXnnpack(java.util.Map<String,String>) throws OrtException
+                //   무인자 오버로드는 **없다** — 맵은 반드시 넘겨야 하고, 빈 맵이면
+                //   `OrtUtil.unpackMap`이 빈 배열 두 개를 만들어 옵션 없이 등록한다.
+                //   바이트코드상 provider 이름은 문자열 "XNNPACK"이다.
+                // 🔴 스레드 옵션을 여기서 지어내지 않는다 —
+                //   [DetectContract.XNNPACK_THREAD_OPTIONS_NOTE]가 그 선택의 이유다.
+                // ⚠ 이 빌드에 XNNPACK이 없으면 이 호출이 **던진다** → 아래 catch가 준비 실패로
+                //   만들고 런이 거부된다. 조용히 CPU로 떨어지는 경로는 없다.
+                options.addXnnpack(providerOptions)
             }
             val session = env.createSession(modelFile.absolutePath, options)
             OpenResult(session, null, SystemClock.elapsedRealtime() - start, prefix)
@@ -714,18 +747,28 @@ class DetectRuntime(
     }
 
     /**
-     * provider 원문 문자열 집계 → 어휘(`cpu`/`nnapi`/`unknown`).
+     * provider 원문 문자열 집계 → 어휘(`cpu`/`nnapi`/`xnnpack`/`unknown`).
      *
      * - NNAPI 노드가 **하나라도** 있으면 `nnapi`다(부분 파티셔닝도 NNAPI가 실행에 관여한
      *   것이다). 얼마나 가져갔는지는 `ep.node_counts`가 말한다 — 그 값을 함께 인용할 것.
-     * - NNAPI가 없고 나머지가 전부 CPU면 `cpu`(= 통째 폴백).
+     * - XNNPACK도 같은 규칙이다. ⚠ **XNNPACK은 CPU EP의 커널을 일부만 대체하므로 섞여 나오는
+     *   것이 정상**이고(Conv/Pool 등만 가져간다), 그래서 "전부 XNNPACK"을 요구하면 실제로
+     *   XNNPACK이 돌았는데도 영원히 `unknown`이 된다.
+     * - 위 둘이 없고 나머지가 전부 CPU면 `cpu`(= 통째 폴백).
      * - 그 밖(집계가 비었거나 모르는 provider가 섞였다)은 `unknown`이다.
      *   🔴 **모름과 CPU는 다른 사실이다.**
+     *
+     * 원문 문자열은 ORT가 정한다 — AAR의 `ai.onnxruntime.OrtProvider`에 박힌 값이
+     * `CPUExecutionProvider` / `NnapiExecutionProvider` / `XnnpackExecutionProvider`라
+     * 부분 일치(ignoreCase)로 잡는다.
      */
     private fun resolveEp(counts: Map<String, Int>): String {
         if (counts.isEmpty()) return DetectContract.EP_UNKNOWN
         if (counts.keys.any { it.contains("nnapi", ignoreCase = true) }) {
             return DetectContract.EP_NNAPI
+        }
+        if (counts.keys.any { it.contains("xnnpack", ignoreCase = true) }) {
+            return DetectContract.EP_XNNPACK
         }
         if (counts.keys.all { it.contains("cpu", ignoreCase = true) }) {
             return DetectContract.EP_CPU
@@ -828,6 +871,8 @@ class DetectRuntime(
         verboseLogLines = emptyList(),
         verboseLogNote = "준비가 실패해 회수하지 않았다",
         nnapiGuard = "미확인 (준비 실패)",
+        epProviderOptions = emptyMap(),
+        threadOptionsNote = "미확인 (준비 실패 — 세션 옵션을 확정하기 전에 죽었을 수 있다)",
         envInitMs = 0L,
         probeCreateMs = 0L,
         probeInferMs = 0L,

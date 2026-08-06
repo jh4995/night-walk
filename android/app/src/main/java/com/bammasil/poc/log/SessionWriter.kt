@@ -835,8 +835,10 @@ object SessionWriter {
             RenderArm.DETECT_BIND_ONLY,
             RenderArm.DETECT_CPU,
             RenderArm.DETECT_NNAPI,
+            RenderArm.DETECT_XNNPACK,
             RenderArm.DETECT_CPU_PROF,
-            RenderArm.DETECT_NNAPI_PROF -> {
+            RenderArm.DETECT_NNAPI_PROF,
+            RenderArm.DETECT_XNNPACK_PROF -> {
                 putBlit2Pass(json)
                 // 🔴 ② 서술만 보고 "탐지가 프레임타임에 안 들어간다"를 유도하지 못하게 한다.
                 json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
@@ -1254,7 +1256,11 @@ object SessionWriter {
             "resolved_meaning",
             "🔴 **판별하지 못했으면 unknown이며 그것은 'CPU였다'와 다른 사실이다.** " +
                 "요청값을 이 칸에 베끼지 않는다. 판별 규칙: 프로파일에 NNAPI 노드가 하나라도 " +
-                "있으면 nnapi, 없고 나머지가 전부 CPU면 cpu(=통째 폴백), 그 밖은 unknown"
+                "있으면 nnapi, XNNPACK 노드가 하나라도 있으면 xnnpack, 둘 다 없고 나머지가 " +
+                "전부 CPU면 cpu(=통째 폴백), 그 밖은 unknown. " +
+                "⚠ **XNNPACK은 CPU EP의 커널을 일부만 대체한다** — 노드가 CPU/XNNPACK로 섞여 " +
+                "나오는 것이 정상이고(Conv/Pool 등만 가져간다), '전부 XNNPACK'을 요구하면 " +
+                "실제로 돌았는데도 unknown이 된다. 섞인 모양은 아래 node_counts가 말한다"
         )
         val nodes = JSONObject()
         for ((provider, count) in report.providerNodeCounts) nodes.put(provider, count)
@@ -1281,6 +1287,17 @@ object SessionWriter {
                 "프로파일에 담길 것이 없다(세션을 닫을 때 확정 경로를 logcat에 남긴다). " +
                 "다음 라운드에는 이 파일이 런 디렉토리로 들어가야 한다"
         )
+        // 🔴 **어떤 옵션으로 EP를 붙였는가.** 빈 객체는 "안 잰 칸"이 아니라 "ORT 기본값을
+        //    썼다"는 사실이며, 그 구분을 옆의 문장이 말한다.
+        val providerOptions = JSONObject()
+        for ((key, value) in report.epProviderOptions) providerOptions.put(key, value)
+        json.put("provider_options", providerOptions)
+        json.put(
+            "provider_options_note",
+            "EP를 붙일 때 넘긴 provider option 원문이다. **빈 객체 = 아무 옵션도 넘기지 않았다" +
+                "(ORT 기본값)**이며 '기록하지 않았다'가 아니다"
+        )
+        json.put("thread_options", report.threadOptionsNote)
         json.put("nnapi_guard", report.nnapiGuard)
         json.put(
             "nnapi_deprecation_note",
