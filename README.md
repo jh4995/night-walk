@@ -35,7 +35,8 @@
 |---|---|
 | [PROGRESS.md](docs/PROGRESS.md) | **진행 현황판 — 훑어보는 용도.** 6단계 · 🟢지금 가능 / ⏸대기 구분 · 남이 풀어야 열리는 것. ⚠️ **ms 숫자를 담지 않는다**(측정 한 번에 썩는다) — 수치는 아래 두 문서 |
 | [STATUS.md](docs/STATUS.md) | **현재 상태 — 읽는 용도.** 어디까지 왔나 · 다음 한 수 · 알려진 이슈 · 막혀 있는 것 · 단서와 한계 |
-| [REPORT_20260806B_TEAM.md](docs/REPORT_20260806B_TEAM.md) | **팀 보고 (2026-08-06, 최신).** ③ **F칸을 쟀다** — 1회 251.5~263.3ms(CPU EP). 🟢 **15FPS는 지켜진다**(비동기 설계가 작동했다) · 문제는 **탐지 신선도**(실측 3.4Hz) · 🔴 **NNAPI는 쓰면 안 된다**(GPU로 내려가 표시 경로와 경쟁). ⚠️ **동결 스냅샷이다** |
+| [REPORT_20260806C_TEAM.md](docs/REPORT_20260806C_TEAM.md) | 🟢 **팀 공유용 (2026-08-06, 최신) — 회의에 이것만 내면 된다.** 아래 두 보고를 **end-to-end 관점**으로 합치고 비전공자 기준으로 푼 것. **①②③④가 한 줄로 이어졌고, ③→④만 클래스 번호 충돌로 끊겨 있다** |
+| [REPORT_20260806B_TEAM.md](docs/REPORT_20260806B_TEAM.md) | **기술 근거 원본 (2026-08-06).** ③ **F칸을 쟀다** — 1회 251.5~263.3ms(CPU EP). 🟢 **15FPS는 지켜진다**(비동기 설계가 작동했다) · 문제는 **탐지 신선도**(실측 3.4Hz) · 🔴 **NNAPI는 쓰면 안 된다**(GPU로 내려가 표시 경로와 경쟁). ⚠️ **동결 스냅샷이다** |
 | [REPORT_20260806_TEAM.md](docs/REPORT_20260806_TEAM.md) | 팀 보고 (2026-08-06, ③ 착수). 계약 A 충돌 9건 · 팀원1 요청 5건 — **이 둘은 여전히 유효**. ⚠️ **NNAPI 결론은 위 B가 번복했다** |
 | [REPORT_20260804B_TEAM.md](docs/REPORT_20260804B_TEAM.md) | 팀 보고 (2026-08-04B). 🔴 우리 GPU 계측이 프레임을 31~43% 중복 계상하고 있었다 · `bf`·④ I칸 실측. ⚠️ **동결 스냅샷이다** |
 | [REPORT_20260804_TEAM.md](docs/REPORT_20260804_TEAM.md) | 팀 보고 (2026-08-04). ② **조합**(D1+A1)을 폰에서 쟀다 — 720p 게이트 안 · 융합이 체인보다 싸다 · 🔴 착수 가설의 메커니즘이 틀렸다. ⚠️ **동결 스냅샷이다** |
@@ -134,7 +135,14 @@ python scripts/pull_frames.py --list     # 기기에 어떤 런이 있는지만 
 python scripts/pull_frames.py --all      # 쌓아 둔 런을 한 번에 (야간에 여러 런 찍고 복귀했을 때)
 python scripts/analyze_frames.py --frames <csv>   # 집계 + 판정 → summary.json
 python scripts/baseline_diff.py --baseline <a> --current <b>   # 회귀 판정
+python scripts/detect_parity.py --dump <run>/parity   # ③ 이식 정확성 대조 (폰 ↔ PC ORT)
 ```
+
+> ⚠️ **`detect_parity.py`만 stdlib 밖을 쓴다** (`onnxruntime`·`numpy`). 지연 import라 나머지
+> 스크립트는 그대로 무의존이고, 없으면 설치 안내와 함께 깔끔히 죽는다:
+> `python -m pip install onnxruntime numpy`.
+> 무엇을 대조하고 **무엇은 대조하지 못하는지**는
+> [docs/plans/20260806_detect_parity_dump_format.md](docs/plans/20260806_detect_parity_dump_format.md) §0.
 
 프레임 로그 형식은 [docs/FRAME_LOG_SCHEMA.md](docs/FRAME_LOG_SCHEMA.md). 판정선은
 [lib/targets.py](lib/targets.py) 한 곳에만 있고 `FRAME_BUDGET.md` §1에서 온다.
