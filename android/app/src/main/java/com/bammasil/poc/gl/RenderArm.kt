@@ -309,25 +309,26 @@ enum class RenderArm(
     ),
 
     // ── ③ 탐지 arm ────────────────────────────────────────────────────────
-    // 🔴 **이번 라운드에 이 arm들이 재는 것은 표시 경로뿐이다.** ONNX Runtime 세션을 열고
-    // EP를 판별하는 데까지가 이번 범위이고, `ImageAnalysis`·전처리·후처리는 **다음 라운드**다
-    // ([DETECT_ROUND_SCOPE]). 그래서 [gpuColumns]·[pipelineStages]가 짝 arm [BLIT_2PASS]와
-    // **글자 그대로 같다** — 렌더가 같아야 표시 경로 차분이 뜻을 갖는다(`_1q` arm과 같은 관행).
+    // 🔴 **[gpuColumns]는 다섯 arm 모두 짝 arm [BLIT_2PASS]와 글자 그대로 같다** — 탐지는
+    // 별 스레드에서 돌고 렌더 경로를 하나도 건드리지 않으므로, 렌더가 같아야 표시 경로
+    // 차분이 "탐지를 켜서 생긴 변화"라는 뜻을 갖는다(`_1q` arm과 같은 관행).
     //
-    // ⚠ 다음 라운드에 프레임당 추론이 붙으면 `pipeline_stages`에 `detect` 토큰을 더할지가
-    //   결정 사항이 된다. 그 문자열은 `baseline_diff.py`의 비교 조건이라 **바꾸는 순간 이번
-    //   라운드의 런과 비교가 끊긴다** — 다음 라운드가 시작할 때 먼저 정할 것.
+    // 🔴 [pipelineStages]는 **다르다.** 프레임 경로에서 실제로 추론이 도는 arm 넷에만
+    // `detect` 토큰을 더했다. [DETECT_BIND_ONLY]는 `ImageAnalysis`만 붙이고 추론이 없으므로
+    // `["blit_2pass"]` 그대로다 — 그 토큰의 뜻은 "그 단계가 프레임 경로에서 돌았는가"이고,
+    // 분모 arm에서는 돌지 않았다. 이 문자열은 `baseline_diff.py`의 **비교 조건**이라
+    // ③ 세션 라운드(커밋 46d1870)의 런과는 여기서 조건이 갈린다 — **그게 맞다.** 그 런들의
+    // 프레임타임에는 탐지가 들어 있지 않고 이 런들에는 들어 있다.
     //
     // ⚠ 목록에 **뒤에** 붙인다. 스피너는 entries 순서라 중간에 끼우면 기존 arm의 위치가
     //   전부 밀린다(측정자가 손으로 고르는 UI다).
 
     /**
-     * ③의 **분모**. `ImageAnalysis`를 바인딩만 하고 추론은 돌리지 않는다 — 이 arm과 짝 arm의
-     * 차이가 "use case를 하나 더 붙인 값"이고 그 **위의** 차이가 추론 비용이다.
+     * ③의 **분모**. `ImageAnalysis`를 바인딩만 하고 추론은 돌리지 않는다 — 이 arm과 짝 arm
+     * ([BLIT_2PASS])의 차이가 "use case를 하나 더 붙인 값"이고 그 **위의** 차이가 추론 비용이다.
      *
-     * 🔴 **이번 라운드에는 `ImageAnalysis` 자체가 없다.** 어휘를 먼저 등록해 둔 것뿐이고,
-     * 이 arm으로 런을 시작하면 실제로 도는 것은 3패스 골격이라 `detect_bind_only`라는
-     * 라벨이 거짓이 된다 — 그래서 `MainActivity`가 **이 arm의 런을 거부한다.**
+     * 이 arm은 ORT 세션도 열지 않고([usesDetectSession]이 false다) `detect.csv`도 내지 않는다
+     * (`detect.enabled=false`). 재는 것은 **분석 use case 하나의 비용**뿐이다.
      */
     DETECT_BIND_ONLY(
         "detect_bind_only",
@@ -335,10 +336,10 @@ enum class RenderArm(
         listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
     ),
 
-    /** ORT **CPU EP**로 세션을 연다. */
+    /** ORT **CPU EP**로 세션을 열고 프레임 경로에서 추론을 돌린다. */
     DETECT_CPU(
         "detect_cpu",
-        listOf("blit_2pass"),
+        listOf("blit_2pass", "detect"),
         listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
     ),
 
@@ -351,21 +352,21 @@ enum class RenderArm(
      */
     DETECT_NNAPI(
         "detect_nnapi",
-        listOf("blit_2pass"),
+        listOf("blit_2pass", "detect"),
         listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
     ),
 
     /** [DETECT_CPU] + **ORT 프로파일러**. 🔴 시간 인용 금지 ([DETECT_PROF_NOT_QUOTABLE]). */
     DETECT_CPU_PROF(
         "detect_cpu_prof",
-        listOf("blit_2pass"),
+        listOf("blit_2pass", "detect"),
         listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
     ),
 
     /** [DETECT_NNAPI] + **ORT 프로파일러**. 🔴 시간 인용 금지 ([DETECT_PROF_NOT_QUOTABLE]). */
     DETECT_NNAPI_PROF(
         "detect_nnapi_prof",
-        listOf("blit_2pass"),
+        listOf("blit_2pass", "detect"),
         listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
     );
 
@@ -1572,18 +1573,32 @@ enum class RenderArm(
                 "(detect_cpu / detect_nnapi)에서만 인용한다"
 
         /**
-         * 🔴 **이번 라운드 ③ arm의 프레임타임은 탐지 비용을 포함하지 않는다.**
+         * ③ arm의 프레임타임을 읽는 법. **arm마다 뜻이 다르다.**
          *
-         * 세션을 열고 EP를 판별하는 데까지가 이번 범위이고, `ImageAnalysis`도 프레임당 추론도
-         * 없다. 그래서 이 arm의 렌더는 [BLIT_2PASS]와 글자 그대로 같고 프레임타임도 그래야
-         * 한다 — 그 숫자를 "탐지를 켜도 프레임타임이 그대로다"로 읽으면 **정반대로 틀린다.**
+         * - [DETECT_BIND_ONLY]: 분석 use case 하나를 더 붙인 값. 추론은 없다.
+         * - 나머지 넷: **탐지를 idle-gated로 최대한 돌린 상태**의 값 → [DETECT_UPPER_BOUND].
          */
         const val DETECT_ROUND_SCOPE =
-            "🔴 **이 런의 프레임타임에는 탐지가 들어 있지 않다.** 이번 라운드는 ONNX Runtime " +
-                "세션을 열고 EP를 판별하는 데까지이며 ImageAnalysis·전처리·추론·후처리가 " +
-                "**하나도 붙어 있지 않다**(다음 라운드). 렌더 경로는 blit_2pass와 글자 그대로 " +
-                "같으므로 프레임타임도 그래야 하고, 그 사실을 '탐지를 켜도 프레임타임이 " +
-                "그대로다'로 읽으면 **정반대로 틀린다.** 이 런이 근거가 되는 것은 " +
-                "detect 블록의 ep·model·graph·classes 뿐이다"
+            "이 arm의 프레임타임을 읽는 법: **detect_bind_only는 분석 use case 하나를 더 붙인 " +
+                "값**이고 추론이 없다(pipeline_stages에 detect 토큰이 없는 이유다). " +
+                "detect_cpu / detect_nnapi / _prof 둘은 프레임 경로에서 **실제로 추론이 돈다** — " +
+                "렌더 경로 자체는 blit_2pass와 글자 그대로 같으므로, 그 arm들의 프레임타임 " +
+                "차이는 GL 변경이 아니라 **같은 SoC를 탐지 스레드와 나눠 쓴 결과**다. " +
+                "🔴 E·F·G의 분포는 프레임타임이 아니라 **detect.csv**에 있다"
+
+        /**
+         * 🔴 **idle-gated는 상한이지 배포 구성이 아니다.**
+         *
+         * 탐지 주기 N이 `INTERFACES.md`에서 `☐`라 앱이 값을 지어내지 않고, 대신 "유휴면 즉시
+         * 다음 프레임"으로 돈다. 그건 **탐지를 최대로 돌린 조건**이며 SoC 경쟁·발열이 최악이다.
+         */
+        const val DETECT_UPPER_BOUND =
+            "🔴 **이 런은 탐지 주기의 상한 조건이지 배포 구성이 아니다.** 탐지 주기 N은 " +
+                "INTERFACES.md에서 아직 ☐라 앱이 값을 지어내지 않고, 분석 프레임이 올 때 " +
+                "**탐지가 유휴이면 즉시** 추론한다(idle-gated). 그래서 이 런의 SoC 경쟁과 " +
+                "발열은 최악이고, 그 아래에서 관측된 표시 경로 프레임타임은 **'탐지를 최대로 " +
+                "돌렸을 때의 하한'**이다. N을 정해 드물게 돌리면 프레임타임은 이보다 좋아진다. " +
+                "실측 실행 주기는 하네스가 detect_cadence_ms 분포로 말한다 — " +
+                "선언된 N이 아니라 관측값이다"
     }
 }

@@ -21,9 +21,8 @@ import java.util.concurrent.Executors
 /**
  * ③ 탐지용 ONNX Runtime 세션의 **준비와 EP 판별**.
  *
- * 이번 라운드의 범위는 **여기까지다** — `ImageAnalysis`도 전처리도 후처리도 붙이지 않는다.
- * 프레임당 추론이 없으므로 `detect.csv`도 나오지 않고 `detect.enabled`는 false다
- * (`SessionWriter.buildDetect` 참고).
+ * 준비가 끝나면 [ready]가 프레임당 추론에 필요한 것(환경·세션·입출력 이름/shape)을 들고 있고,
+ * 그걸 실제로 쓰는 것은 [DetectPipeline]이다 — 이 클래스는 프레임 경로를 모른다.
  *
  * ## 이 클래스가 지키는 것
  *
@@ -49,9 +48,39 @@ class DetectRuntime(
     private val worker: ExecutorService =
         Executors.newSingleThreadExecutor { r -> Thread(r, "detect-init") }
 
-    /** 열려 있는 **측정 세션**. 다음 라운드의 추론이 이것을 쓴다. */
-    private var measuredSession: OrtSession? = null
+    /**
+     * 열려 있는 **측정 세션**과 그래프 사실. 프레임당 추론이 이것을 쓴다.
+     *
+     * ⚠ 워커 스레드가 쓰고 분석/워커/GL 스레드가 읽는다 → volatile.
+     */
+    @Volatile
+    var ready: ReadySession? = null
+        private set
+
     private var environment: OrtEnvironment? = null
+
+    /**
+     * 준비가 끝난 세션 한 벌. 🔴 **shape·이름을 여기 다시 적지 않는다** — 전부 그래프에서
+     * 읽은 값을 그대로 들고 다니는 자리이며, 이 클래스 밖에서 숫자를 지어낼 수 없게 하는
+     * 것이 목적이다.
+     */
+    class ReadySession(
+        val env: OrtEnvironment,
+        val session: OrtSession,
+        val inputName: String,
+        val inputShape: LongArray,
+        val outputName: String,
+        val outputShape: LongArray,
+    ) {
+        /** `[1, C, H, W]`에서 읽은 값. */
+        val inputChannels: Int get() = inputShape[1].toInt()
+        val inputHeight: Int get() = inputShape[2].toInt()
+        val inputWidth: Int get() = inputShape[3].toInt()
+
+        /** `[1, 4+nc, N]`에서 읽은 값. */
+        val outputChannels: Int get() = outputShape[1].toInt()
+        val outputAnchors: Int get() = outputShape[2].toInt()
+    }
 
     /** 마지막 준비 결과. GL/UI 스레드가 읽는다. */
     @Volatile
@@ -253,15 +282,31 @@ class DetectRuntime(
         if (measured.session == null) {
             return failed(arm, "측정 세션 생성 실패: ${measured.error}")
         }
-        measuredSession = measured.session
 
-        val warmupStart = SystemClock.elapsedRealtime()
-        val warmupError = runDummyInference(env, measured.session, graph)
-        val warmupMs = SystemClock.elapsedRealtime() - warmupStart
-        if (warmupError != null) {
-            closeMeasured()
-            return failed(arm, "측정 세션 더미 추론 실패: $warmupError")
+        // 🔴 **A8 warmup.** 1회차 추론은 그래프 초기화·lazy alloc으로 크게 튄다. 기록 전에
+        //    여러 번 돌려 두지 않으면 그 한 번이 p99를 통째로 오염시킨다. 첫 회 값은
+        //    분포에 섞지 않고 **따로** 낸다(first_inference_ms).
+        val warmupMs = LongArray(WARMUP_INFERENCES)
+        var w = 0
+        while (w < WARMUP_INFERENCES) {
+            val start = SystemClock.elapsedRealtime()
+            val error = runDummyInference(env, measured.session, graph)
+            warmupMs[w] = SystemClock.elapsedRealtime() - start
+            if (error != null) {
+                closeQuietly(measured.session)
+                return failed(arm, "측정 세션 warmup 추론 ${w + 1}회차 실패: $error")
+            }
+            w++
         }
+
+        ready = ReadySession(
+            env = env,
+            session = measured.session,
+            inputName = graph.inputName ?: return failed(arm, "입력 이름을 모른다"),
+            inputShape = graph.inputShape,
+            outputName = graph.outputName ?: return failed(arm, "출력 이름을 모른다"),
+            outputShape = graph.outputShape,
+        )
 
         return DetectReport(
             arm = arm,
@@ -303,7 +348,8 @@ class DetectRuntime(
             probeCreateMs = probe.createMs,
             probeInferMs = probeInferMs,
             measuredCreateMs = measured.createMs,
-            warmupInferMs = warmupMs,
+            warmupInferMs = warmupMs[0],
+            warmupInferMsAll = warmupMs.toList(),
             ortPackage = BuildConfig.ORT_PACKAGE,
             ortVersion = BuildConfig.ORT_VERSION,
         )
@@ -362,20 +408,74 @@ class DetectRuntime(
     }
 
     private fun closeMeasured() {
-        val session = measuredSession ?: return
+        val open = ready ?: return
         // `_prof` arm이면 프로파일 파일을 여기서 확정한다 — 안 부르면 파일이 마감되지 않아
-        // 나중에 열어도 반쪽 JSON일 수 있다. 확정 경로는 logcat에만 남는다(보고는 세션 준비
-        // 시점에 이미 만들어져 있다). ⚠ **다음 라운드**에는 이 호출이 런 정지 시점으로 가고
-        // 결과 파일이 런 디렉토리로 들어가야 한다 — 그때가 이 프로파일이 뜻을 갖는 시점이다.
+        // 나중에 열어도 반쪽 JSON일 수 있다. 정상 경로에서는 [collectProfiles]가 런 정지
+        // 시점에 이미 확정하고 런 디렉토리로 옮겼다. 여기 남은 것은 그 경로를 타지 않고
+        // 앱이 내려가는 경우의 마지막 방어선이다.
         try {
-            val path = session.endProfiling()
+            val path = open.session.endProfiling()
             Log.i(TAG, "측정 세션 프로파일 확정: $path")
         } catch (t: Throwable) {
             // 프로파일러를 안 켠 세션에서는 실패가 정상이다. 조용히 넘기지 않고 남긴다.
             Log.d(TAG, "endProfiling 생략/실패(프로파일러 미사용이면 정상): ${t.message}")
         }
-        closeQuietly(session)
-        measuredSession = null
+        closeQuietly(open.session)
+        ready = null
+    }
+
+    /**
+     * 런 정지 시점에 **프로파일 JSON을 런 디렉토리로 옮긴다.** GL 스레드에서 부른다
+     * (탐지 워커가 quiesce된 뒤여야 한다 — 그 순서가 `MainActivity`의 A12다).
+     *
+     * 🔴 **왜 옮기는가:** 예전에는 앱 내부 캐시(`/data/user/0/...`)에 떨어져 **루트 없이
+     * 못 꺼냈다.** 프로파일은 `_prof` arm의 유일한 산출물인데 꺼낼 수 없으면 그 arm이 아무
+     * 답도 못 낸다. 이제 파일은 `files/runs/<run_ts>/` 안에 있어 `pull_frames`와 같은 경로로
+     * 회수된다.
+     *
+     * ⚠ **`_prof` arm에서는 측정 세션을 여기서 닫는다.** `endProfiling()`은 한 번뿐이라
+     * 그 뒤의 런은 프로파일이 없는데 그 사실이 파일 이름에는 안 남는다 — 조용한 절반보다
+     * 다음 런에서 세션을 다시 준비하게 하는 쪽을 택한다([ready]를 비우면 `MainActivity`의
+     * 게이트가 "arm을 다시 고를 것"이라고 말한다).
+     *
+     * @return 런 디렉토리에 남긴 파일 이름들(사람이 읽는 기록).
+     */
+    fun collectProfiles(runDir: File, arm: RenderArm): List<String> {
+        val written = ArrayList<String>()
+        // 1) 프로브 프로파일 — EP 판별의 원문. arm과 무관하게 항상 있다.
+        report?.probeProfilePath?.let { path ->
+            copyInto(File(path), File(runDir, PROBE_PROFILE_NAME), written)
+        }
+        // 2) 측정 세션 프로파일 — `_prof` arm만.
+        if (!arm.detectProfilingEnabled) return written
+        val open = ready ?: return written
+        try {
+            val finalized = open.session.endProfiling()
+            copyInto(File(finalized), File(runDir, MEASURED_PROFILE_NAME), written)
+        } catch (t: Throwable) {
+            Log.w(TAG, "측정 세션 endProfiling 실패", t)
+        }
+        closeQuietly(open.session)
+        ready = null
+        // 🔴 세션을 닫았으므로 이 보고는 더 이상 "열려 있는 세션"의 보고가 아니다.
+        //    비워 두면 다음 런 시작 시 게이트가 준비를 다시 요구한다.
+        report = null
+        return written
+    }
+
+    private fun copyInto(src: File, dst: File, written: ArrayList<String>) {
+        if (!src.isFile) {
+            Log.w(TAG, "프로파일 파일이 없다: ${src.absolutePath}")
+            return
+        }
+        try {
+            src.inputStream().use { input ->
+                dst.outputStream().use { output -> input.copyTo(output) }
+            }
+            written.add(dst.name)
+        } catch (t: Throwable) {
+            Log.w(TAG, "프로파일 복사 실패: ${src.absolutePath} → ${dst.absolutePath}", t)
+        }
     }
 
     private fun closeQuietly(session: OrtSession) {
@@ -733,6 +833,7 @@ class DetectRuntime(
         probeInferMs = 0L,
         measuredCreateMs = 0L,
         warmupInferMs = 0L,
+        warmupInferMsAll = emptyList(),
         ortPackage = BuildConfig.ORT_PACKAGE,
         ortVersion = BuildConfig.ORT_VERSION,
     )
@@ -762,6 +863,19 @@ class DetectRuntime(
         const val LOGCAT_MAX_KEPT = 200
 
         const val SHA_BUFFER_BYTES = 1 shl 16
+
+        /**
+         * **A8 warmup 횟수.** 기록 전에 이만큼 돌린다.
+         *
+         * ⚠ 값의 근거는 계약이 아니라 관측이다 — 1회차만 크게 튀고 그 뒤로는 평평해지므로
+         * 여유를 조금 두었다. 실제 값은 `session.json`의 `warmup` 블록에 회차별로 나가므로
+         * "몇 회부터 평평해지는가"를 그 로그로 되물을 수 있다.
+         */
+        const val WARMUP_INFERENCES = 5
+
+        /** 런 디렉토리로 옮긴 프로파일의 이름. `pull_frames`가 통째로 회수한다. */
+        const val PROBE_PROFILE_NAME = "ort_profile_probe.json"
+        const val MEASURED_PROFILE_NAME = "ort_profile_measured.json"
 
         /** 640×640×3 = 1,228,800. 상한은 그 10배쯤으로 잡아 터무니없는 shape을 막는다. */
         const val MAX_DUMMY_ELEMENTS = 16L * 1024L * 1024L

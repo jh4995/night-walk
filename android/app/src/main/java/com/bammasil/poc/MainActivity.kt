@@ -20,13 +20,18 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import com.bammasil.poc.detect.DetectContract
+import com.bammasil.poc.detect.DetectPipeline
 import com.bammasil.poc.detect.DetectRuntime
 import com.bammasil.poc.gl.PassthroughRenderer
 import com.bammasil.poc.gl.RenderArm
+import com.bammasil.poc.log.DetectLogRecorder
+import com.bammasil.poc.log.DetectRunFacts
 import com.bammasil.poc.log.FrameLogRecorder
 import com.bammasil.poc.log.LightingCondition
 import com.bammasil.poc.log.SessionFacts
 import com.bammasil.poc.log.SessionWriter
+import com.bammasil.poc.source.AnalysisConfig
 import com.bammasil.poc.source.CameraFrameSource
 import com.bammasil.poc.source.FrameRequest
 import com.bammasil.poc.source.FrameSource
@@ -62,12 +67,29 @@ class MainActivity : ComponentActivity() {
      */
     private lateinit var detectRuntime: DetectRuntime
 
+    /**
+     * ③ 탐지를 프레임 경로에 붙이는 쪽. `ImageAnalysis` 프레임을 받아 E·F·G를 재고
+     * `detect.csv`를 채운다. **③ arm이 아니면 `ImageAnalysis` 자체가 안 붙으므로** 이
+     * 객체는 있어도 아무 프레임도 받지 않는다.
+     */
+    private lateinit var detectPipeline: DetectPipeline
+
+    /** 🔴 [FrameLogRecorder]와 **다른 인스턴스다** — 그쪽 규약은 GL 스레드 전용이다. */
+    private val detectRecorder = DetectLogRecorder()
+
     /** `onFrameAvailable` 전용 스레드. 메인 루퍼를 쓰면 UI 지연이 `t_recv_ns`에 섞인다. */
     private var signalThread: HandlerThread? = null
 
     private var glReady = false
     private var sourceStarted = false
     private var recording = false
+
+    /**
+     * 지금 바인딩돼 있는 소스에 **분석 use case가 붙어 있는가.** arm이 ③ 계열로 바뀌면
+     * 이 값이 desired와 어긋나고, 그때만 카메라를 다시 바인딩한다 — 매번 다시 바인딩하면
+     * arm을 고를 때마다 프리뷰가 끊기고, 안 하면 use case가 조용히 안 붙는다.
+     */
+    private var sourceAnalysisBound = false
 
     /**
      * **측정 시작 시점에 잠근 arm.** 스피너의 현재 값을 쓰면, 어쩌다 런 도중 바뀌었을 때
@@ -106,10 +128,15 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         // ③ 모델은 adb push로 외부 파일 디렉토리에 들어온다(APK 동봉이 아니다).
-        // 프로파일 JSON은 cacheDir에 쓴다 — 런 산출물이 아니라 판별용 원문이다.
+        // 🔴 프로파일 JSON은 **외부 파일 디렉토리**에 쓴다. 예전엔 cacheDir(내부)라
+        //    `/data/user/0/...`에 떨어져 **루트 없이 못 꺼냈다** — `_prof` arm의 유일한
+        //    산출물인데 회수가 안 되면 그 arm이 아무 답도 못 낸다. 런 정지 시점에
+        //    `DetectRuntime.collectProfiles`가 런 디렉토리로 옮긴다.
         // ⚠ **arm 스피너 리스너보다 먼저** 만든다. 스피너는 붙는 즉시 선택 콜백을 내고,
         //   그 콜백이 ③ arm이면 여기를 만진다.
-        detectRuntime = DetectRuntime(getExternalFilesDir(null), cacheDir)
+        val externalDir = getExternalFilesDir(null)
+        detectRuntime = DetectRuntime(externalDir, File(externalDir, DETECT_PROFILE_DIR))
+        detectPipeline = DetectPipeline(detectRuntime, detectRecorder)
 
         statusText = findViewById(R.id.status_text)
         toggleButton = findViewById(R.id.toggle_button)
@@ -154,6 +181,7 @@ class MainActivity : ComponentActivity() {
                 val arm = RenderArm.fromId(armSpinner.getItemAtPosition(position)?.toString())
                 glView.queueEvent { renderer.setArm(arm) }
                 prepareDetectIfNeeded(arm)
+                rebindSourceIfAnalysisChanged(arm)
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
@@ -163,7 +191,7 @@ class MainActivity : ComponentActivity() {
             if (recording) stopRecording() else startRecording()
         }
 
-        frameSource = CameraFrameSource(this, this)
+        frameSource = CameraFrameSource(this, this, detectPipeline)
         ensureCameraPermission()
         uiHandler.post(statusTicker)
     }
@@ -189,6 +217,7 @@ class MainActivity : ComponentActivity() {
         signalThread = null
         // ORT 세션은 네이티브 메모리를 잡고 있다. 프로세스가 살아 있는 채로 Activity만
         // 재생성되면 새 세션이 또 열리므로 여기서 닫는다.
+        detectPipeline.shutdown()
         detectRuntime.shutdown()
         super.onDestroy()
     }
@@ -223,9 +252,18 @@ class MainActivity : ComponentActivity() {
     private fun detectGateMessage(arm: RenderArm): String? {
         if (!arm.isDetectArm) return null
         if (arm == RenderArm.DETECT_BIND_ONLY) {
-            return "🔴 detect_bind_only는 아직 못 쓴다 — ImageAnalysis가 이번 라운드에 " +
-                "붙지 않았다. 지금 재면 라벨은 detect_bind_only인데 실제로 도는 것은 " +
-                "3패스 골격이라 그 런은 거짓이다(다음 라운드)"
+            // 분모 arm이다 — ORT 세션을 열지 않으므로 준비 게이트가 없다. 다만
+            // ImageAnalysis가 실제로 붙어 있어야 라벨이 참이 된다.
+            return if (sourceAnalysisBound) {
+                null
+            } else {
+                "🔴 분석 use case가 아직 안 붙었다 — arm을 다시 고른 뒤 프리뷰가 " +
+                    "돌아오면 시작할 것(라벨만 detect_bind_only인 런을 만들지 않는다)"
+            }
+        }
+        if (!sourceAnalysisBound) {
+            return "🔴 분석 use case가 아직 안 붙었다 — 탐지가 프레임을 받지 못한다. " +
+                "arm을 다시 고른 뒤 프리뷰가 돌아오면 시작할 것"
         }
         if (detectRuntime.preparing) {
             return "③ ONNX Runtime 세션을 준비 중이다 — 끝난 뒤 다시 시작할 것"
@@ -239,6 +277,9 @@ class MainActivity : ComponentActivity() {
         if (!report.ok) {
             return "🔴 ③ 준비 실패라 런을 시작하지 않는다:\n${report.failure}"
         }
+        // 🔴 후처리 임계를 숫자로 못 읽으면 시작하지 않는다. 0으로 뭉개면 **전량 통과하는
+        //    임계**가 되어 그 런의 G는 다른 것을 잰 숫자가 된다.
+        DetectContract.thresholdFailure?.let { return it }
         return null
     }
 
@@ -258,9 +299,26 @@ class MainActivity : ComponentActivity() {
         if (!glReady || sourceStarted) return
         if (!hasCameraPermission()) return
         sourceStarted = true
-        frameSource.start(FRAME_REQUEST, renderer) { message ->
+        // 🔴 ③ arm일 때만 분석 use case를 붙인다. 다른 arm에 붙여 두면 그 arm의 프레임타임에
+        //    use case 하나의 비용이 섞여 승격본 45건과의 비교가 끊긴다.
+        val bindAnalysis = selectedArm().isDetectArm
+        sourceAnalysisBound = bindAnalysis
+        frameSource.start(FRAME_REQUEST, renderer, bindAnalysis) { message ->
             uiHandler.post { showMessage(message) }
         }
+    }
+
+    /**
+     * arm이 바뀌어 분석 use case의 유무가 달라지면 소스를 다시 바인딩한다.
+     * **측정 중에는 부르지 않는다** — 스피너가 잠겨 있으므로 실제로 그럴 일이 없다.
+     */
+    private fun rebindSourceIfAnalysisChanged(arm: RenderArm) {
+        if (!sourceStarted) return
+        if (recording) return
+        if (arm.isDetectArm == sourceAnalysisBound) return
+        frameSource.stop()
+        sourceStarted = false
+        startSourceIfReady()
     }
 
     private fun hasCameraPermission(): Boolean =
@@ -286,6 +344,17 @@ class MainActivity : ComponentActivity() {
             showMessage(it)
             return
         }
+        // ③ 추론을 돌리는 arm이면 탐지 기록도 함께 켠다. 🔴 **여기서 실패하면 런을 시작하지
+        //    않는다** — 라벨은 detect_cpu인데 detect.csv가 비는 런을 만들지 않기 위해서다.
+        if (arm.usesDetectSession) {
+            detectPipeline.start()?.let {
+                showMessage("🔴 ③ 탐지 기록을 시작하지 못했다:\n$it")
+                return
+            }
+        } else if (arm == RenderArm.DETECT_BIND_ONLY) {
+            // 분모 arm — 추론은 안 하고 **분석 프레임이 실제로 오고 있다는 사실만** 센다.
+            detectPipeline.startBindOnly()
+        }
         recording = true
         toggleButton.setText(R.string.stop)
         // 런 도중 조건이 바뀌면 그 분포는 오염된 것이다 → 둘 다 잠근다.
@@ -307,23 +376,36 @@ class MainActivity : ComponentActivity() {
         Log.i(TAG, "측정 시작 (arm=${arm.id}, run=${runDirName})")
     }
 
+    /**
+     * A12 정지 순서. 🔴 **순서를 바꾸면 마지막 행이 찢기거나 회계가 안 닫힌다.**
+     *
+     * ```
+     * (1) 기록 플래그 off  ← 여기(UI 스레드)
+     * (2) 탐지 스레드 quiesce (진행 중 추론 완료 대기, 타임아웃)  ┐
+     * (3) frames.csv(GL) + detect.csv 쓰기                        ├ writeLogs (GL 스레드)
+     * (4) session.json                                            ┘
+     * ```
+     */
     private fun stopRecording() {
         if (!recording) return
         recording = false
         // 기록을 먼저 멈춘 뒤 파일 쓰기를 GL 스레드에 태운다. 측정 중 파일 I/O를 피하려고
         // 메모리에 모아 둔 것이므로, 쓰는 시점은 반드시 기록이 끝난 다음이어야 한다.
         recorder.stop(SystemClock.elapsedRealtimeNanos())
+        // (1) 탐지 쪽도 같은 시점에 내린다. 여기 이후로 새 추론은 시작되지 않는다.
+        detectPipeline.stopRecording()
         toggleButton.setText(R.string.start)
         toggleButton.isEnabled = false
 
         val outDir = getExternalFilesDir(null)
         val lighting = lightingSpinner.selectedItem?.toString() ?: LightingCondition.UNKNOWN
         val negotiated = frameSource.negotiated
+        val analysis = frameSource.analysisConfig
         val sourceKind = frameSource.kind
         val arm = armAtStart
         val runName = runDirName ?: newRunDirName()
         glView.queueEvent {
-            val message = writeLogs(outDir, runName, lighting, arm, negotiated, sourceKind)
+            val message = writeLogs(outDir, runName, lighting, arm, negotiated, analysis, sourceKind)
             uiHandler.post {
                 toggleButton.isEnabled = true
                 lightingSpinner.isEnabled = true
@@ -341,10 +423,18 @@ class MainActivity : ComponentActivity() {
         lighting: String,
         arm: RenderArm,
         negotiated: NegotiatedConfig?,
+        analysis: AnalysisConfig?,
         sourceKind: String,
     ): String {
         if (dir == null) {
             return "getExternalFilesDir(null)이 null이다 — 로그를 쓰지 못했다"
+        }
+        // A12 (2) — 🔴 **파일을 쓰기 전에** 탐지 스레드를 조용히 만든다. 여기서 기다리는
+        //   시간은 기록이 이미 멈춘 뒤라 측정에 섞이지 않는다.
+        val quiesced = if (arm.usesDetectSession) {
+            detectPipeline.quiesce(DETECT_QUIESCE_TIMEOUT_MS)
+        } else {
+            true
         }
         return try {
             // ⚠ 런별 디렉토리. 예전처럼 파일명이 고정이면 FileWriter가 truncate라
@@ -359,6 +449,29 @@ class MainActivity : ComponentActivity() {
             //   회수 가능한 tail을 행에 채우고, 남은 미해소 개수를 확정한다.
             val gpuTimer = renderer.finishGpuTimerRun()
             val rows = recorder.writeCsv(framesFile, gpuTimer.instrumented)
+            // A12 (3) — detect.csv도 여기서 쓴다. 행이 0개면 파일을 만들지 않는다
+            // (빈 CSV는 read_detect가 죽는 입력이고, "한 번도 안 돌았다"는 사실은
+            //  아래 회계 블록이 말한다).
+            val detectRows = if (arm.usesDetectSession) {
+                detectRecorder.writeCsv(File(runDir, "detect.csv"))
+            } else {
+                0
+            }
+            // 🔴 **보고를 먼저 붙잡는다.** 아래 collectProfiles는 `_prof` arm에서 세션을
+            //    닫고 report를 비운다(프로파일은 한 번만 확정할 수 있다) — 순서를 뒤집으면
+            //    그 arm의 session.json에서 detect 블록이 통째로 사라진다.
+            // ⚠ **런 시작 시점에 잠근 arm의 보고여야 한다** — 다른 arm의 보고가 실리면
+            //    EP·모델이 이 런의 것이 아니게 된다(armAtStart를 잠근 것과 같은 이유다).
+            val detectReport = detectRuntime.report?.takeIf { it.arm == arm }
+            // `_prof` arm의 Chrome-trace JSON을 런 디렉토리로 옮긴다 — 예전에는 내부 캐시라
+            // 루트 없이 못 꺼냈다.
+            // ⚠ **세션을 연 arm에서만** 한다. 분모 arm에서 부르면 직전에 다른 arm이 남긴
+            //   프로파일이 이 런 디렉토리로 딸려 들어가 다른 런의 증거가 섞인다.
+            val profiles = if (arm.usesDetectSession) {
+                detectRuntime.collectProfiles(runDir, arm)
+            } else {
+                emptyList()
+            }
             SessionWriter.write(
                 sessionFile,
                 SessionFacts(
@@ -373,6 +486,8 @@ class MainActivity : ComponentActivity() {
                     arm = arm,
                     request = FRAME_REQUEST,
                     negotiated = negotiated,
+                    // ③ 분석 use case가 실제로 물어온 조건. Preview 값과 **섞지 않는다**.
+                    analysis = analysis,
                     sourceKind = sourceKind,
                     framesEmitted = rows,
                     surfaceFramesAvailable = recorder.surfaceFramesAvailable.get(),
@@ -394,14 +509,40 @@ class MainActivity : ComponentActivity() {
                     colorTransformSites = renderer.colorTransformSites,
                     gpuTimer = gpuTimer,
                     // ③ arm이 아니면 null이고 그때는 detect 블록 자체가 안 나간다.
-                    // ⚠ **런 시작 시점에 잠근 arm의 보고여야 한다** — 다른 arm의 보고가
-                    //   실리면 EP·모델이 이 런의 것이 아니게 된다(armAtStart를 잠근 것과
-                    //   같은 이유다). detectGateMessage가 시작 시점에 그 일치를 확인했다.
-                    detect = detectRuntime.report?.takeIf { it.arm == arm },
+                    // detectGateMessage가 시작 시점에 arm 일치를 확인했다.
+                    detect = detectReport,
+                    // 프레임 경로에서 실제로 무슨 일이 있었나. 🔴 회계 불변식이 여기 있다.
+                    detectRun = if (arm.isDetectArm) {
+                        DetectRunFacts(
+                            csvRows = detectRows,
+                            analysisFramesReceived = detectPipeline.analysisFramesReceived.get(),
+                            inferencesRun = detectPipeline.inferencesRun.get(),
+                            skippedWhileBusy = detectPipeline.skippedWhileBusy.get(),
+                            errors = detectPipeline.errors.get(),
+                            lastError = detectPipeline.lastError,
+                            inferenceEnabled = detectPipeline.inferenceWasEnabled,
+                            quiesced = quiesced,
+                            quiesceTimeoutMs = DETECT_QUIESCE_TIMEOUT_MS,
+                            letterbox = detectPipeline.lastLetterbox,
+                            profileFiles = profiles,
+                        )
+                    } else {
+                        null
+                    },
                 ),
             )
             lastRunPath = runDir.absolutePath
             Log.i(TAG, "로그 저장: ${framesFile.absolutePath} ($rows 행, arm=${arm.id})")
+            if (arm.isDetectArm) {
+                Log.i(
+                    TAG,
+                    "③ detect.csv $detectRows 행 | 받음=${detectPipeline.analysisFramesReceived.get()} " +
+                        "추론=${detectPipeline.inferencesRun.get()} " +
+                        "건너뜀=${detectPipeline.skippedWhileBusy.get()} " +
+                        "오류=${detectPipeline.errors.get()} quiesced=$quiesced " +
+                        "프로파일=${profiles.joinToString(",")}"
+                )
+            }
             // 스모크 확인용. 인용 가능한 숫자는 여전히 파일에 남은 것뿐이다.
             Log.i(
                 TAG,
@@ -478,9 +619,20 @@ class MainActivity : ComponentActivity() {
             detectRuntime.preparing -> "\n③ 준비 중…"
             else -> detectRuntime.report?.let { "\n${it.oneLine()}" } ?: "\n③ 준비 안 됨"
         }
+        // 배선이 실제로 도는지 현장에서 봐야 한다(추론 행이 안 늘면 바로 보인다).
+        val detectRunLine = if (!armNow.isDetectArm) {
+            ""
+        } else {
+            "\n③ 분석 %d | 추론 %d | 건너뜀 %d | 오류 %d".format(
+                detectPipeline.analysisFramesReceived.get(),
+                detectPipeline.inferencesRun.get(),
+                detectPipeline.skippedWhileBusy.get(),
+                detectPipeline.errors.get(),
+            )
+        }
         // ⚠ 화면 숫자는 인용 근거가 아니다. 인용 가능한 숫자는 파일로 남긴 것뿐이다.
         statusText.text =
-            head + detectLine + saved +
+            head + detectLine + detectRunLine + saved +
                 "\n(진행 확인용 — 인용은 frames.csv / session.json 으로만)"
     }
 
@@ -496,6 +648,16 @@ class MainActivity : ComponentActivity() {
         /** 런별 출력 레이아웃: `.../files/runs/<YYYYMMDD_HHMMSS>/{frames.csv,session.json}` */
         const val RUNS_DIR = "runs"
         const val RUN_DIR_PATTERN = "yyyyMMdd_HHmmss"
+
+        /** ORT 프로파일러의 작업 디렉토리. 결과는 런 정지 시점에 런 디렉토리로 옮겨진다. */
+        const val DETECT_PROFILE_DIR = "detect_profiles"
+
+        /**
+         * A12 (2)의 quiesce 상한. 🔴 **무한 대기를 하지 않는다** — 추론이 끝내 안 끝나면
+         * 앱이 멈춘 것처럼 보이고, 그러면 측정자는 그 런을 통째로 버린다. 못 기다렸다는
+         * 사실은 `session.json`의 `detect.run.quiesced=false`로 나간다.
+         */
+        const val DETECT_QUIESCE_TIMEOUT_MS = 3000L
 
         /** ①②는 GLES 3.x 셰이더 전제(`PIPELINE_STACK.md` §G)라 컨텍스트를 미리 맞춰 둔다. */
         const val EGL_CONTEXT_CLIENT_VERSION = 3

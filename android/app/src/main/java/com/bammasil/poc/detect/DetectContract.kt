@@ -37,6 +37,28 @@ object DetectContract {
     /** 빌드 시점에 metadata.json을 못 읽으면 이 값이 들어온다. 그 상태로는 대조가 불가능하다. */
     const val UNKNOWN = "unknown"
 
+    // ── 후처리 임계 (앱이 실제로 **쓰는** 값. 위 대조 기준들과 성격이 다르다) ──
+    // 🔴 **파싱 실패를 0.0으로 뭉개지 않는다.** conf가 0.0이면 전 앵커가 통과해 NMS가
+    //    8400개를 물고, 그 런의 G는 "그럴듯하지만 다른 것을 잰 숫자"가 된다.
+
+    /** `metadata.json`의 `inference.conf`. 못 읽었거나 파싱 실패면 **null**. */
+    val confThreshold: Float?
+        get() = BuildConfig.DETECT_CONF_THRESHOLD.toFloatOrNull()
+
+    /** `metadata.json`의 `inference.iou`. 못 읽었거나 파싱 실패면 **null**. */
+    val iouThreshold: Float?
+        get() = BuildConfig.DETECT_IOU_THRESHOLD.toFloatOrNull()
+
+    /** 임계를 못 읽었으면 그 사유(사람이 읽는 문장), 읽었으면 null. */
+    val thresholdFailure: String?
+        get() {
+            if (confThreshold != null && iouThreshold != null) return null
+            return "🔴 후처리 임계를 숫자로 읽지 못했다 — conf=\"${BuildConfig.DETECT_CONF_THRESHOLD}\" " +
+                "iou=\"${BuildConfig.DETECT_IOU_THRESHOLD}\" (출처 ${declaredSource}의 inference 블록). " +
+                "0으로 뭉개면 **전량 통과하는 임계**가 되어 G가 다른 것을 재게 되므로 " +
+                "후처리를 시작하지 않는다"
+        }
+
     /**
      * `metadata.json`을 못 읽었을 때 [declaredSource]에 들어오는 값.
      * **생산자는 `build.gradle.kts`의 `detectDeclaredSource`다** — 두 곳이 갈리면 아래
@@ -93,15 +115,16 @@ object DetectContract {
      * 그래서 center는 **제안값이며 확정 계약이 아니다.**
      *
      * ⚠ 이게 틀리면 박스가 통째로 세로로 밀린다(§A-2가 직접 그렇게 경고한다).
-     * 실제 전처리는 다음 라운드이므로 **이번 라운드에 이 가정을 쓴 코드는 없다** —
-     * 지금 기록해 두는 이유는 다음 라운드가 이 문장을 읽고 시작하게 하기 위해서다.
+     * 🔴 **이번 라운드부터 이 가정을 실제로 쓴다**([LETTERBOX_ALIGN]) — 그래서 가정이라는
+     * 사실이 `session.json`에 계속 남아야 한다.
      */
     const val LETTERBOX_ALIGN_ASSUMPTION =
         "🔴 **가정이다(미확정).** metadata.json의 preprocess.resize는 한국어 산문이고 " +
             "align 키가 없다. INTERFACES.md §A-2의 'letterbox pad 위치 = 상하 균등 " +
             "분배(center)'도 ☐ 제안값이다. 이 값이 틀리면 **박스가 통째로 세로로 밀린다.** " +
-            "이번 라운드는 전처리를 붙이지 않았으므로 이 가정을 **쓴 코드가 없다** — " +
-            "다음 라운드가 letterbox를 구현할 때 상류에 확정을 받고 시작할 것"
+            "⚠ **이번 라운드는 이 가정을 실제로 썼다**(center). 상류에 확정을 요청해 둔 " +
+            "상태이며, 답이 center가 아니면 이 런의 박스 좌표는 세로로 밀린 값이다 — " +
+            "E·F 비용은 영향이 없고(패딩 면적이 같다) G의 좌표만 틀린다"
 
     /**
      * 패딩 색. `metadata.json`의 산문과 README 표에는 `(114,114,114)`가 적혀 있고
@@ -112,7 +135,62 @@ object DetectContract {
         "🔴 **산문에서 읽은 값이다(미확정).** metadata.json preprocess.resize의 " +
             "'회색 114 패딩'과 README 표의 (114,114,114)가 출처이며, 기계가 읽을 수 있는 " +
             "키는 없다. INTERFACES.md §A-2의 같은 칸도 ☐다. 학습 시 값과 다르면 조용히 " +
-            "정확도만 떨어진다 — 이번 라운드는 전처리가 없어 쓰지 않았다"
+            "정확도만 떨어진다 — ⚠ **이번 라운드는 이 값을 실제로 썼다**(114/255)"
+
+    /** letterbox 정렬. 위 [LETTERBOX_ALIGN_ASSUMPTION]이 이 값의 근거이자 경고다. */
+    const val LETTERBOX_ALIGN = "center"
+
+    /** 패딩 값(0..255). 위 [PAD_VALUE_ASSUMPTION]이 이 값의 근거이자 경고다. */
+    const val PAD_VALUE_U8 = 114
+
+    /**
+     * 🔴 **리샘플링 방식은 어디에도 적혀 있지 않다.**
+     *
+     * `INTERFACES.md` §A-2의 "리사이즈 방식" 칸은 `letterbox (종횡비 유지)`까지만 적고
+     * 보간을 말하지 않으며 그 칸도 `☐`다. 상류 README도 "긴 변을 640에 맞춰 축소"까지다.
+     * 학습·평가 파이프라인(ultralytics `LetterBox`)은 `cv2.resize`의 기본
+     * `INTER_LINEAR`(이중선형)를 쓰므로 **그쪽에 맞추는 것이 이탈이 가장 작은 선택**이라
+     * 판단해 이중선형을 골랐다. 최근접으로 바꾸면 **E가 싸지고 정확도가 조용히 달라진다** —
+     * 그 둘을 함께 움직이는 값이라 여기 남긴다.
+     */
+    const val RESIZE_INTERPOLATION_ASSUMPTION =
+        "🔴 **가정이다(미확정).** 보간 방식은 INTERFACES.md §A-2에도 상류 README에도 없다. " +
+            "학습·평가 쪽 ultralytics LetterBox가 cv2.resize 기본값 INTER_LINEAR를 쓰므로 " +
+            "**이중선형**을 골랐다(휘도 Y는 이중선형, 색차 U/V는 최근접 — 색차는 이미 " +
+            "2:1로 서브샘플된 평면이고 저주파라 표준 관행이다). " +
+            "⚠ 최근접으로 바꾸면 **E가 싸지고 정확도가 함께 바뀐다** — 둘을 같이 움직이는 " +
+            "값이라 성능 보고에 이 문장을 붙일 것"
+
+    /**
+     * 🔴 **YUV→RGB 계수도 계약에 없다.**
+     *
+     * 상류는 이미 RGB인 이미지를 받으므로 이 변환 자체가 상류 파이프라인에 존재하지 않는다.
+     * 우리는 카메라에서 `YUV_420_888`을 받으므로 반드시 변환해야 하고, 그 계수 선택이
+     * 픽셀값을 바꾼다(따라서 점수도 바꾼다).
+     */
+    const val YUV_TO_RGB_ASSUMPTION =
+        "🔴 **가정이다(계약에 없다).** BT.601 **full range**(JFIF) 계수를 썼다: " +
+            "R=Y+1.402(V−128), G=Y−0.344136(U−128)−0.714136(V−128), B=Y+1.772(U−128). " +
+            "상류는 이미 RGB인 이미지를 읽으므로 이 변환이 상류에 아예 없다 — 대조할 원본이 " +
+            "없다는 뜻이다. limited range(16..235)였다면 대비가 약간 낮은 입력이 되어 " +
+            "점수가 소수점에서 달라진다. 골든 샘플(INTERFACES.md §A-6)이 오면 여기서 걸린다"
+
+    /**
+     * 회전을 적용하지 않는다는 사실의 기록.
+     *
+     * 🔴 **비용에는 영향이 없지만 탐지 품질에는 있다.** 둘을 한 문장으로 뭉치면 "무해하다"로
+     * 읽히는데, 모델은 옆으로 누운 장면을 보게 되므로 그렇지 않다.
+     */
+    const val ROTATION_NOT_APPLIED =
+        "⚠ **분석 프레임의 rotationDegrees를 적용하지 않았다.** " +
+            "**비용(E·F·G)에는 영향이 없다** — 회전은 letterbox 앞뒤 어디에 넣어도 픽셀 수가 " +
+            "같고, 세로 프레임이면 letterbox 패딩 면적도 같다. " +
+            "🔴 **그러나 탐지 품질에는 영향이 있다.** 회전을 안 하면 모델이 **옆으로 누운 " +
+            "장면**을 보므로 사람·계단의 재현율이 실제보다 낮게 나온다. 그래서 이 런의 " +
+            "**boxes_out · max_conf 분포를 탐지 정확도로 읽으면 안 된다** — 그 열들의 " +
+            "용도는 'G가 실제로 일을 했는가'와 'G 비용의 설명 변수'까지다. " +
+            "🔴 ③→④를 연결하는 라운드는 이 값을 반드시 반영할 것 — 안 하면 박스가 90° " +
+            "어긋난 채로 그럭저럭 보인다. 실제 값은 detect.input.rotation_degrees에 있다"
 
     /**
      * `INTERFACES.md` §A-4가 정한 클래스 인덱스. **모델은 이것과 반대다.**
@@ -153,6 +231,43 @@ object DetectContract {
      * ⚠ 패딩을 **어느 쪽에** 붙이는지는 이 값에 영향이 없다(면적은 같다) —
      * 그 미확정은 [LETTERBOX_ALIGN_ASSUMPTION]이 따로 들고 있다.
      */
+    /**
+     * letterbox 기하. **전처리와 후처리가 같은 값을 써야** 역변환이 성립하므로 한 곳에서 낸다
+     * (두 곳에서 각자 계산하면 반올림이 어긋나는 날 박스가 조용히 몇 px씩 밀린다).
+     *
+     * [padX]/[padY]는 **왼쪽/위쪽** 패딩이다. 총 패딩이 홀수면 남는 1px은 오른쪽/아래로 간다 —
+     * `align=center`의 통상 구현(ultralytics `LetterBox`도 같다)이다.
+     */
+    class Letterbox(
+        val srcW: Int,
+        val srcH: Int,
+        val dstW: Int,
+        val dstH: Int,
+        val scale: Float,
+        val contentW: Int,
+        val contentH: Int,
+        val padX: Int,
+        val padY: Int,
+    )
+
+    fun letterbox(srcW: Int, srcH: Int, dstW: Int, dstH: Int): Letterbox {
+        val scale = minOf(dstW.toFloat() / srcW, dstH.toFloat() / srcH)
+        val contentW = Math.round(srcW * scale).coerceIn(1, dstW)
+        val contentH = Math.round(srcH * scale).coerceIn(1, dstH)
+        return Letterbox(
+            srcW = srcW,
+            srcH = srcH,
+            dstW = dstW,
+            dstH = dstH,
+            scale = scale,
+            contentW = contentW,
+            contentH = contentH,
+            // align=center. 🔴 이 한 줄이 LETTERBOX_ALIGN_ASSUMPTION의 실체다.
+            padX = (dstW - contentW) / 2,
+            padY = (dstH - contentH) / 2,
+        )
+    }
+
     fun paddingPixelFraction(srcW: Int, srcH: Int, dstW: Int, dstH: Int): Double? {
         if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return null
         val scale = minOf(dstW.toDouble() / srcW, dstH.toDouble() / srcH)

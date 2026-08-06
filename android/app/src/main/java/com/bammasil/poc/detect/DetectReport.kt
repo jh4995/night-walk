@@ -84,7 +84,13 @@ class DetectReport(
     val probeCreateMs: Long,
     val probeInferMs: Long,
     val measuredCreateMs: Long,
+    /**
+     * **A8 warmup의 1회차**(= `first_inference_ms`). 🔴 **분포 밖에 따로 낸다** —
+     * 그래프 초기화·lazy alloc이 여기 다 들어 있어 섞으면 p99가 초기화 비용에 오염된다.
+     */
     val warmupInferMs: Long,
+    /** warmup 회차별 ms 전부. "몇 회부터 평평해지는가"를 로그로 되물을 수 있게 남긴다. */
+    val warmupInferMsAll: List<Long>,
 
     // ── 런타임 좌표 ───────────────────────────────────────────────────────
     val ortPackage: String,

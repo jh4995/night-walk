@@ -12,6 +12,7 @@ import com.bammasil.poc.detect.DetectReport
 import com.bammasil.poc.gl.HighlightOverlay
 import com.bammasil.poc.gl.LabGlsl
 import com.bammasil.poc.gl.RenderArm
+import com.bammasil.poc.source.AnalysisConfig
 import com.bammasil.poc.source.FrameRequest
 import com.bammasil.poc.source.NegotiatedConfig
 import org.json.JSONArray
@@ -35,6 +36,12 @@ class SessionFacts(
     val arm: RenderArm,
     val request: FrameRequest,
     val negotiated: NegotiatedConfig?,
+    /**
+     * ③ 분석 use case가 **실제로** 물어온 조건. 바인딩하지 않았거나 프레임이 하나도 안
+     * 왔으면 null. 🔴 [negotiated]와 **섞지 않는다** — 다른 use case의 값이라 한 칸에 담으면
+     * 그 런의 조건이 거짓말을 한다.
+     */
+    val analysis: AnalysisConfig?,
     val sourceKind: String,
     val framesEmitted: Int,
     val surfaceFramesAvailable: Long,
@@ -77,6 +84,45 @@ class SessionFacts(
      * (`overlay` 블록과 같은 규약 — 다른 arm에 빈 블록을 내면 "잰 적 없는 칸"이 생긴다).
      */
     val detect: DetectReport?,
+    /**
+     * 프레임 경로에서 ③가 실제로 한 일. **③ arm이 아니면 null**이다.
+     * [detect]가 "세션을 어떻게 준비했나"라면 이쪽은 "이 런에서 몇 번 돌았나"다.
+     */
+    val detectRun: DetectRunFacts?,
+)
+
+/**
+ * ③ 탐지의 **런 회계**. 🔴 불변식은 하나다:
+ *
+ * ```
+ * analysisFramesReceived == inferencesRun + skippedWhileBusy + errors
+ * ```
+ *
+ * 앱은 이 식을 **맞춰 주지 않는다.** 어긋나면 어긋난 채로 싣고 그 사실을 함께 낸다 —
+ * 맞춰 버리면 프레임이 조용히 사라지는 경로를 영영 못 찾는다.
+ */
+class DetectRunFacts(
+    /** 실제로 `detect.csv`에 쓴 행 수. 0이면 파일 자체를 만들지 않았다. */
+    val csvRows: Int,
+    val analysisFramesReceived: Long,
+    val inferencesRun: Long,
+    /** 탐지가 바빠 건너뛴 프레임의 **누적**. */
+    val skippedWhileBusy: Long,
+    val errors: Long,
+    val lastError: String?,
+    /** A12 (2)의 quiesce가 시간 안에 끝났는가. false면 마지막 행이 찢겼을 수 있다. */
+    /**
+     * 이 런이 **추론을 돌렸는가.** 분모 arm(`detect_bind_only`)에서는 false이고, 그때는
+     * 회계 불변식을 적용하지 않는다(추론 경로 자체가 없으므로 받은 프레임이 어느 칸에도
+     * 안 들어가는 것이 정상이다).
+     */
+    val inferenceEnabled: Boolean,
+    val quiesced: Boolean,
+    val quiesceTimeoutMs: Long,
+    /** 이 런에서 실제로 쓴 letterbox 기하(마지막 프레임). 추론이 없었으면 null. */
+    val letterbox: DetectContract.Letterbox?,
+    /** 런 디렉토리로 옮긴 ORT 프로파일 JSON 파일 이름들. */
+    val profileFiles: List<String>,
 )
 
 object SessionWriter {
@@ -224,11 +270,11 @@ object SessionWriter {
      * 쓰는 유일한 세션 블록이다** — `enabled`가 회수 실패(exit 4)를, `ep.requested` ≠
      * `ep.resolved`가 계획 어긋남을 만든다(`docs/FRAME_LOG_SCHEMA.md` §5).
      *
-     * ⚠ **이 앱은 아직 `detect.csv`를 내지 않는다.** 이번 라운드는 ORT 세션을 열고 EP를
-     * 판별하는 데까지이고 `ImageAnalysis`·전처리·추론·후처리는 다음 라운드다. 그래서
-     * `detect.enabled`는 **false**이며(그래야 반쪽 회수 실패가 안 뜬다) 이 상수를 6으로
-     * 올린 이유는 `detect` **블록**을 실제로 내기 시작했기 때문이다 — v5를 선언한 채 v6
-     * 블록을 실으면 위 v5 사례와 똑같은 거짓 경고가 붙는다. 하네스는 이미 v6다.
+     * ⚠ **버전은 6 그대로다.** 이 라운드에서 `ImageAnalysis`·전처리·추론·후처리가 붙어
+     * `detect.csv`를 **실제로 내기 시작했지만**, 그 열들은 전부 v6에서 이미 정의된 것이고
+     * 새 열이 하나도 늘지 않았다(스키마 v6 = "`detect.csv`라는 파일과 그 열들"이다).
+     * 앞선 라운드가 v6를 선언한 채 `detect` **블록만** 낸 것도 같은 이유였다 — 그때는
+     * `detect.enabled`가 false였고 지금은 추론이 도는 arm에서 true다.
      */
     const val SCHEMA_VERSION = 6
 
@@ -306,23 +352,32 @@ object SessionWriter {
             }
         }
         root.put("camera_actual", actual)
+        // ③ 분석 use case의 조건. 🔴 위 camera_actual과 **따로** 낸다 — 다른 use case라
+        //   CameraX가 서로 다른 해상도를 줄 수 있고, 섞으면 E의 전제가 거짓말이 된다.
+        //   ③ arm이 아니면 키 자체를 내지 않는다(빈 블록은 "잰 적 없는 칸"처럼 보인다).
+        if (facts.arm.isDetectArm) {
+            root.put("camera_analysis_actual", buildAnalysisInput(facts))
+        }
 
         root.put("frames_emitted", facts.framesEmitted)
         // ⚠ 0으로 채우면 "드롭 없음"이라는 거짓 주장이 된다. 모르므로 null이다.
         root.put("camera_frames_offered", JSONObject.NULL)
         root.put("frames_dropped", JSONObject.NULL)
-        // ⚠ **다음 라운드 대상 문장이다.** 아래 "표시 경로 2-C에는 ImageProxy가 없어…"는
-        //   ImageAnalysis가 붙는 순간 **부분적으로 거짓이 된다** — 그 use case는 ImageProxy를
-        //   주므로 탐지 경로에서는 드롭을 셀 수 있게 된다(표시 경로 2-C는 그때도 못 센다).
-        //   🔴 이번 라운드는 ImageAnalysis를 붙이지 않았으므로 **지금은 그대로 참이다.**
-        //   ③ 카메라 라운드가 이 문장을 두 경로로 갈라 쓸 것.
+        // 🔴 **경로가 둘이므로 문장도 둘이다.** 아래 문장은 **표시 경로에 대해서만** 참이고,
+        //   ③ arm에서 함께 도는 탐지 경로에는 ImageProxy가 있어 드롭을 셀 수 있다 —
+        //   그 계수는 `detect.run` 블록에 따로 있다(여기 섞으면 어느 경로의 수인지 사라진다).
         root.put(
             "drop_accounting_note",
-            "표시 경로 2-C에는 ImageProxy가 없어 버려진 프레임 수를 셀 수 없다. " +
+            "**표시 경로 2-C**에는 ImageProxy가 없어 버려진 프레임 수를 셀 수 없다. " +
                 "frames.csv의 dropped_since_last는 전부 -1이며, camera_frames_offered/" +
                 "frames_dropped는 0이 아니라 null이다(0은 '드롭 없음'이라는 적극적 주장이다). " +
                 "아래 surface_frames_available은 카메라 출력 수가 아니라 우리 SurfaceTexture " +
-                "큐에 도착한 수이므로 드롭의 하한 단서일 뿐이다"
+                "큐에 도착한 수이므로 드롭의 하한 단서일 뿐이다. " +
+                "⚠ **③ 탐지 경로는 다르다** — 그쪽은 ImageAnalysis use case라 ImageProxy가 " +
+                "있고 건너뛴 프레임을 실제로 센다. 그 계수는 이 키가 아니라 " +
+                "**detect.run**(analysis_frames_received / inferences_run / " +
+                "skipped_while_busy / errors)에 있으며, 두 경로는 **다른 use case라 프레임 " +
+                "수가 서로 같지 않다.** 한쪽 수를 다른 쪽에 옮겨 적지 말 것"
         )
         // 우리가 실제로 관측한 것만 싣는다.
         root.put("surface_frames_available", facts.surfaceFramesAvailable)
@@ -383,6 +438,11 @@ object SessionWriter {
                         "onDrawFrame 반환 후에 하므로 우리가 잴 수 없다"
                 )
         )
+        // ③ 탐지 계측의 타임스탬프 자리. 🔴 **E는 t를 찍는 위치가 정의다** — 어디서
+        // 어디까지인지 여기 없으면 그 숫자의 뜻을 나중에 되물을 수 없다.
+        if (facts.arm.usesDetectSession) {
+            root.put("detect_timestamp_sites", buildDetectTimestampSites())
+        }
         root.put(
             "render_latency_meaning",
             "render_latency_ms(t_render_end - t_render_start)는 glDrawArrays가 즉시 반환하므로 " +
@@ -1057,25 +1117,34 @@ object SessionWriter {
      * (`docs/FRAME_LOG_SCHEMA.md` §5): `enabled`는 반쪽 회수 실패(exit 4)를,
      * `ep.requested` ≠ `ep.resolved`는 계획 어긋남을 만든다. 나머지 키는 해석하지 않고 싣는다.
      *
-     * 🔴 **`enabled`는 false다.** 그 키의 뜻은 "이 런이 `detect.csv`를 내는가"이고, 이번
-     * 라운드는 `ImageAnalysis`가 없어 **추론 1회당 1행을 낼 원천 자체가 없다.** true로 두면
-     * `pull_frames.py`가 없는 파일을 요구해 회수가 exit 4로 죽는다 — 세션을 연 사실은
-     * 아래 `session_loaded`와 `ep` 블록이 말하므로 정보가 사라지지도 않는다.
+     * 🔴 **`enabled`의 뜻은 "이 런이 `detect.csv`를 내는가"다.** 추론이 실제로 도는 arm에서만
+     * true이고, 분모 arm(`detect_bind_only`)은 추론이 없으므로 false다 — true로 두면
+     * `pull_frames.py`가 없는 파일을 요구해 회수가 exit 4로 죽는다.
      */
     private fun buildDetect(facts: SessionFacts): JSONObject {
         val json = JSONObject()
         val report = facts.detect
+        val run = facts.detectRun
 
-        // 🔴 하네스의 회수 판정 기준. 이번 라운드는 detect.csv를 내지 않으므로 false다.
-        json.put("enabled", false)
+        // 🔴 하네스의 회수 판정 기준.
+        val enabled = facts.arm.usesDetectSession && (run?.csvRows ?: 0) > 0
+        json.put("enabled", enabled)
         json.put(
             "enabled_reason",
-            "🔴 **false인 이유: 이 런은 detect.csv를 내지 않는다.** enabled의 뜻은 " +
-                "'③ 탐지를 켠 런인가'이자 pull_frames.py의 반쪽 회수 판정 기준이고" +
-                "(true인데 파일이 없으면 exit 4), 이번 라운드는 ImageAnalysis·전처리·추론· " +
-                "후처리가 붙지 않아 **추론 1회당 1행을 낼 원천이 없다.** ORT 세션을 열고 EP를 " +
-                "판별한 사실은 아래 session_loaded / ep 블록에 그대로 있다 — " +
-                "다음 라운드에 프레임당 추론이 붙으면 그때 true가 된다"
+            if (enabled) {
+                "이 런은 detect.csv를 낸다(추론 ${run?.csvRows ?: 0}행). enabled의 뜻은 " +
+                    "'③ 탐지를 켠 런인가'이자 pull_frames.py의 반쪽 회수 판정 기준이다 " +
+                    "— true인데 파일이 없으면 exit 4다"
+            } else if (!facts.arm.usesDetectSession) {
+                "🔴 **false인 이유: 이 arm은 추론을 돌리지 않는다**(detect_bind_only는 " +
+                    "ImageAnalysis만 붙이는 분모 arm이다). 추론 1회당 1행을 낼 원천이 " +
+                    "없으므로 detect.csv도 없다"
+            } else {
+                "🔴 **false인 이유: 추론이 한 번도 기록되지 않아 detect.csv를 만들지 " +
+                    "않았다.** 빈 CSV를 내면 하네스의 read_detect가 '행이 하나도 없다'로 " +
+                    "죽고, 그건 사실을 파일 존재로 덮는 것이다. 무슨 일이 있었는지는 " +
+                    "아래 run 블록(회계)이 말한다"
+            }
         )
         json.put("session_loaded", report?.ok == true)
         json.put("round_scope", RenderArm.DETECT_ROUND_SCOPE)
@@ -1089,9 +1158,18 @@ object SessionWriter {
         json.put(
             "period_n_reason",
             "탐지 주기 N은 INTERFACES.md에서 아직 ☐ 미정이라 앱이 값을 지어내지 않는다. " +
-                "실제 주기는 하네스가 detect_cadence_ms 분포로 말한다 " +
-                "(이번 라운드는 추론이 없어 그 분포도 없다)"
+                "대신 **idle-gated**로 돈다 — 분석 프레임이 올 때 탐지가 유휴이면 즉시 " +
+                "추론하고, 바쁘면 skipped_while_busy를 올리고 버린다. 실제 주기는 하네스가 " +
+                "detect_cadence_ms 분포로 말한다(선언된 N이 아니라 관측값이다)"
         )
+        json.put("trigger", "idle_gated")
+        json.put("upper_bound_note", RenderArm.DETECT_UPPER_BOUND)
+        if (facts.arm.isDetectArm) {
+            json.put("input", buildAnalysisInput(facts))
+        }
+        if (run != null) {
+            json.put("run", buildDetectRun(run))
+        }
 
         if (report == null) {
             json.put(
@@ -1335,15 +1413,30 @@ object SessionWriter {
      */
     private fun buildDetectPreprocess(): JSONObject = JSONObject()
         .put("letterbox_align", DetectContract.LETTERBOX_ALIGN_ASSUMPTION)
+        .put("letterbox_align_value", DetectContract.LETTERBOX_ALIGN)
         .put("pad_value", DetectContract.PAD_VALUE_ASSUMPTION)
+        .put("pad_value_u8", DetectContract.PAD_VALUE_U8)
+        .put("resize_interpolation", DetectContract.RESIZE_INTERPOLATION_ASSUMPTION)
+        .put("yuv_to_rgb", DetectContract.YUV_TO_RGB_ASSUMPTION)
+        .put("rotation", DetectContract.ROTATION_NOT_APPLIED)
+        .put(
+            "normalization",
+            "0..255 → 0..1 (/255) 하나뿐이다. **평균/표준편차 정규화 없음** — " +
+                "metadata.json preprocess.mean_std_normalization = null이고 " +
+                "INTERFACES.md §A-2의 mean/std 칸도 '없음(단순 /255)'이다"
+        )
+        .put("layout", "NCHW float32 [1,C,H,W] — C·H·W는 그래프에서 읽은 값이다")
         .put(
             "used_this_round",
-            false
+            true
         )
         .put(
             "used_this_round_note",
-            "이번 라운드는 전처리를 붙이지 않았으므로 위 가정을 **쓴 코드가 없다.** " +
-                "지금 기록해 두는 이유는 다음 라운드가 이 문장을 읽고 시작하게 하기 위해서다"
+            "🔴 **이번 라운드는 위 가정 넷을 실제로 썼다**(letterbox 정렬 center · 패딩 114 · " +
+                "이중선형 보간 · BT.601 full range YUV→RGB). 넷 다 기계로 확인된 계약값이 " +
+                "아니다 — 상류 사이드카가 한국어 산문이라 기계 판독이 안 되고, INTERFACES.md " +
+                "§A-2의 해당 칸들도 여전히 ☐다. 확정을 요청해 둔 상태이며, 답이 다르면 " +
+                "**E·F 비용은 그대로이고 G의 좌표와 점수만 달라진다**"
         )
 
     /**
@@ -1351,12 +1444,14 @@ object SessionWriter {
      * 협상된 해상도가 없거나 그래프 shape을 못 읽었으면 **값을 지어내지 않고 null**이다.
      */
     private fun detectPaddingFraction(facts: SessionFacts, report: DetectReport): Any {
-        val negotiated = facts.negotiated ?: return JSONObject.NULL
+        // 🔴 **분석 use case의 해상도**로 계산한다. Preview 값을 쓰면 두 use case가 다른
+        //    해상도를 받은 런에서 조용히 틀린다 — 실제로 letterbox를 한 것은 분석 프레임이다.
+        val analysis = facts.analysis ?: return JSONObject.NULL
         val shape = report.inputShape
         if (shape.size != 4) return JSONObject.NULL
         val fraction = DetectContract.paddingPixelFraction(
-            negotiated.width,
-            negotiated.height,
+            analysis.width,
+            analysis.height,
             shape[3].toInt(),
             shape[2].toInt(),
         ) ?: return JSONObject.NULL
@@ -1364,42 +1459,252 @@ object SessionWriter {
     }
 
     private fun detectPaddingNote(facts: SessionFacts, report: DetectReport): String {
-        val negotiated = facts.negotiated
+        val analysis = facts.analysis
         val shape = report.inputShape
-        if (negotiated == null || shape.size != 4) {
-            return "카메라 해상도나 입력 shape을 알 수 없어 계산하지 않았다 — 값을 지어내지 않는다"
+        if (analysis == null || shape.size != 4) {
+            return "분석 프레임 해상도나 입력 shape을 알 수 없어 계산하지 않았다 — " +
+                "값을 지어내지 않는다(분석 use case가 붙지 않았거나 프레임이 하나도 오지 않았다)"
         }
         return "1 − (내용 픽셀 수 / 입력 픽셀 수). 소스 " +
-            "${negotiated.width}x${negotiated.height}(camera_actual) → 입력 " +
-            "${shape[3]}x${shape[2]}(그래프에서 읽은 값)로 **계산한 값이며 상수 복사가 " +
-            "아니다.** 🔴 **F의 일부는 회색 패딩을 미는 비용**이라 이 값 없이 다른 입력 " +
-            "크기의 F와 비교하면 안 된다. " +
-            "⚠ 이번 라운드는 실제로 letterbox를 한 프레임이 하나도 없다 — 다음 라운드가 " +
-            "이 해상도 쌍으로 전처리할 것이라는 **선언**이다. " +
+            "${analysis.width}x${analysis.height}(**camera_analysis_actual** — Preview가 " +
+            "아니라 분석 use case의 값이다) → 입력 ${shape[3]}x${shape[2]}(그래프에서 읽은 " +
+            "값)로 **계산한 값이며 상수 복사가 아니다.** 🔴 **F의 일부는 회색 패딩을 미는 " +
+            "비용**이라 이 값 없이 다른 입력 크기의 F와 비교하면 안 된다. " +
             "⚠ 패딩을 어느 쪽에 붙이는지는 이 값에 영향이 없다(면적은 같다) — " +
             "그 미확정은 preprocess_assumptions.letterbox_align에 있다"
     }
+
+    /**
+     * ③ 분석 use case의 입력 조건. 🔴 **포맷 선택이 E의 뜻을 바꾼다** — 그 문장을 값 옆에
+     * 붙여 둔다. `camera_analysis_actual`과 `detect.input` 두 자리에 같은 블록이 나간다
+     * (전자는 다른 카메라 조건들과 나란히 읽히고, 후자는 detect 블록만 보는 사람을 위한 것이다).
+     */
+    private fun buildAnalysisInput(facts: SessionFacts): JSONObject {
+        val json = JSONObject()
+        val analysis = facts.analysis
+        if (analysis == null) {
+            json.put("resolution", JSONObject.NULL)
+            json.put("input_format", JSONObject.NULL)
+            json.put(
+                "note",
+                "분석 use case가 붙지 않았거나 프레임이 하나도 도착하지 않았다 — " +
+                    "값을 지어내지 않는다"
+            )
+            return json
+        }
+        json.put("resolution", "${analysis.width}x${analysis.height}")
+        json.put("input_format", analysis.imageFormatName)
+        json.put("input_format_raw", analysis.imageFormat)
+        json.put("input_format_requested", analysis.requestedFormatName)
+        json.put("backpressure_strategy", analysis.backpressureStrategy)
+        json.put("rotation_degrees", analysis.rotationDegrees)
+        json.put(
+            "input_format_meaning",
+            "🔴 **이 선택이 E의 뜻을 바꾼다.** YUV_420_888을 받아 letterbox·RGB 변환·/255· " +
+                "NCHW 배치를 **앱이 직접** 하므로 그 비용이 전부 stage_e_ms 안에 있다. " +
+                "RGBA_8888을 요청했다면 CameraX가 색 변환을 대신 해 주고 **그 비용이 E 밖에 " +
+                "숨어 E가 과소로 나온다** — 같은 파이프라인의 E라도 두 선택은 비교 대상이 " +
+                "아니다. ⚠ 이 값은 요청이 아니라 **실제로 받은 ImageProxy의 포맷**이다"
+        )
+        json.put(
+            "resolution_meaning",
+            "⚠ **Preview(camera_actual)와 다른 use case의 값이다.** CameraX가 둘에 서로 " +
+                "다른 해상도를 줄 수 있으므로 섞어 읽지 말 것 — padding_pixel_fraction은 " +
+                "이 값으로 계산한다"
+        )
+        return json
+    }
+
+    /**
+     * ③ 런 회계. 🔴 **불변식이 여기서 닫혀야 한다.** 앱은 맞춰 주지 않고 어긋난 채로 싣는다 —
+     * 맞춰 버리면 프레임이 조용히 사라지는 경로를 영영 못 찾는다.
+     */
+    private fun buildDetectRun(run: DetectRunFacts): JSONObject {
+        val json = JSONObject()
+        json.put("detect_csv_rows", run.csvRows)
+        json.put("analysis_frames_received", run.analysisFramesReceived)
+        json.put("inferences_run", run.inferencesRun)
+        json.put("skipped_while_busy", run.skippedWhileBusy)
+        json.put("errors", run.errors)
+        json.put("last_error", run.lastError ?: JSONObject.NULL)
+        json.put("inference_enabled", run.inferenceEnabled)
+        if (run.inferenceEnabled) {
+            val holds = run.analysisFramesReceived ==
+                run.inferencesRun + run.skippedWhileBusy + run.errors
+            json.put("accounting_holds", holds)
+            json.put(
+                "accounting_invariant",
+                "analysis_frames_received == inferences_run + skipped_while_busy + errors. " +
+                    "🔴 **앱이 맞춰 주지 않는다** — 어긋나면 어긋난 채로 싣는다. false면 " +
+                    "분석 프레임 하나가 어느 칸에도 계상되지 않은 것이고, 그건 코드 결함이다"
+            )
+        } else {
+            // 🔴 분모 arm에는 추론 경로가 없다 → 불변식을 적용하지 않는다. null로 두는 이유:
+            //    false로 두면 "회계가 깨졌다"로 읽히고 true로 두면 검사하지 않은 것을
+            //    통과했다고 말하는 셈이다.
+            json.put("accounting_holds", JSONObject.NULL)
+            json.put(
+                "accounting_invariant",
+                "이 arm은 추론을 돌리지 않으므로(detect_bind_only) 불변식을 적용하지 않는다. " +
+                    "analysis_frames_received만 뜻이 있다 — **분석 use case가 실제로 프레임을 " +
+                    "받고 있었다는 증거**이고, 그래야 이 arm이 분모로서 참이 된다"
+            )
+        }
+        json.put("rows_match_inferences", run.csvRows.toLong() == run.inferencesRun)
+        json.put(
+            "rows_match_inferences_note",
+            "detect.csv의 행 수와 inferences_run이 같아야 한다. 다르면 정지 순서(A12)에서 " +
+                "행이 찢겼거나 기록 창 밖의 추론이 섞인 것이다"
+        )
+        json.put(
+            "box_counts_meaning",
+            "🔴 **boxes_pre_nms / boxes_out / max_conf를 탐지 정확도로 읽지 말 것.** " +
+                "이 라운드가 재는 것은 E·F·G이고, 그 열들의 용도는 (a) G가 실제로 일을 " +
+                "했는가와 (b) G 비용의 설명 변수까지다. 정확도로 못 읽는 이유가 둘 있다: " +
+                "회전을 적용하지 않아 모델이 옆으로 누운 장면을 본다" +
+                "(preprocess_assumptions.rotation), 그리고 전처리 가정 넷이 아직 미확정이다" +
+                "(preprocess_assumptions.used_this_round_note). 정확도 판정은 골든 샘플" +
+                "(INTERFACES.md §A-6)이 와야 가능하다"
+        )
+        json.put("quiesced", run.quiesced)
+        json.put("quiesce_timeout_ms", run.quiesceTimeoutMs)
+        json.put(
+            "quiesce_note",
+            "A12 정지 순서: (1) 기록 플래그 off → (2) **탐지 스레드 quiesce** → " +
+                "(3) frames.csv + detect.csv → (4) session.json. quiesced=false면 " +
+                "진행 중이던 추론을 시간 안에 못 기다린 것이고 마지막 행이 없을 수 있다"
+        )
+        val box = run.letterbox
+        if (box == null) {
+            json.put("letterbox", JSONObject.NULL)
+        } else {
+            json.put(
+                "letterbox",
+                JSONObject()
+                    .put("src", "${box.srcW}x${box.srcH}")
+                    .put("dst", "${box.dstW}x${box.dstH}")
+                    .put("scale", box.scale.toDouble())
+                    .put("content", "${box.contentW}x${box.contentH}")
+                    .put("pad_left", box.padX)
+                    .put("pad_top", box.padY)
+                    .put(
+                        "note",
+                        "이 런에서 **실제로 쓴** 값이다(마지막 프레임 기준. 해상도가 고정이라 " +
+                            "전 프레임 같다). 전처리와 후처리가 **같은 객체**를 쓰므로 " +
+                            "역변환이 반올림에서 어긋나지 않는다"
+                    )
+            )
+        }
+        val profiles = JSONArray()
+        for (name in run.profileFiles) profiles.put(name)
+        json.put("profile_files_in_run_dir", profiles)
+        json.put(
+            "profile_files_note",
+            "ORT 프로파일 JSON(Chrome trace)을 **런 디렉토리로 옮겼다.** 예전에는 앱 내부 " +
+                "캐시(/data/user/0/...)에 떨어져 루트 없이 못 꺼냈다 — `_prof` arm의 유일한 " +
+                "산출물인데 회수가 안 되면 그 arm이 아무 답도 못 낸다. " +
+                "⚠ measured 프로파일을 확정하면(endProfiling) 그 세션은 다시 프로파일할 수 " +
+                "없으므로 앱이 세션을 닫는다 — `_prof` arm으로 연속 측정하려면 arm을 다시 " +
+                "고를 것"
+        )
+        return json
+    }
+
+    /**
+     * ③ 계측의 타임스탬프 자리. 🔴 **E·F·G는 `t`를 찍는 위치가 정의다.**
+     * 이 블록이 없으면 그 숫자가 무엇의 비용인지 나중에 되물을 수 없다.
+     */
+    private fun buildDetectTimestampSites(): JSONObject = JSONObject()
+        .put(
+            "t_detect_recv_ns",
+            "분석 콜백 진입 후 **idle 게이트를 통과한 직후**(전용 detect-analysis 스레드). " +
+                "SystemClock.elapsedRealtimeNanos() — frames.csv의 t_recv_ns와 **같은 시계**다. " +
+                "⚠ 건너뛴 프레임에는 이 시각이 없다(행 자체가 없다)"
+        )
+        .put(
+            "t_detect_end_ns",
+            "후처리(G)가 끝난 직후, 행을 기록하기 전. t_detect_recv_ns와 같은 시계"
+        )
+        .put(
+            "t_image_capture_ns",
+            "ImageProxy.imageInfo.timestamp 원본. 앱이 보정하지 않는다. " +
+                "⚠ 기준 시계가 기기마다 다르므로(frames.csv의 t_capture_ns와 같은 부류) " +
+                "우리 시계와 빼지 않는다"
+        )
+        .put(
+            "stage_e_ms",
+            "🔴 **ImageProxy의 평면 버퍼에서 바이트를 꺼내는 것부터 입력 텐서가 준비될 " +
+                "때까지.** 안에 있는 것: Y/U/V 평면 3개 bulk copy, letterbox 리샘플(휘도 " +
+                "이중선형·색차 최근접), YUV→RGB, /255, NCHW 배치, 직접 버퍼로의 bulk put, " +
+                "OnnxTensor.createTensor. 밖에 있는 것: 프레임 대기 해제, 콜백 디스패치, " +
+                "ImageProxy.close(), session.run(). 시계는 System.nanoTime()(구간 길이 전용)"
+        )
+        .put(
+            "stage_f_ms",
+            "🔴 **session.run() 호출 하나뿐이다.** 출력 텐서를 읽는 비용은 여기가 아니라 G에 " +
+                "있다. 시계는 System.nanoTime()"
+        )
+        .put(
+            "stage_g_ms",
+            "🔴 **출력 텐서를 네이티브에서 읽어 오는 복사부터** conf 필터 → cxcywh→xyxy → " +
+                "letterbox 역변환 → 클래스별 NMS까지. 시계는 System.nanoTime()"
+        )
+        .put(
+            "thread_split",
+            "E는 **detect-analysis 스레드**에서, F·G는 **detect-infer 스레드**에서 잰다. " +
+                "🔴 둘을 가른 이유: 하나였다면 CameraX가 콜백 반환까지 다음 프레임을 주지 " +
+                "않아 **skipped_while_busy가 영원히 0**이 된다(관측하려던 것이 관측 방법 " +
+                "때문에 사라진다). E가 끝나면 ImageProxy를 닫고 분석 스레드가 즉시 다음 " +
+                "프레임을 받으므로 건너뛴 수가 실제로 세어진다. " +
+                "⚠ 그래서 **E와 F 사이에는 스레드 핸드오프가 하나 있다** — 그 비용은 E에도 " +
+                "F에도 없고, 하네스의 detect_wall_ms(= end − recv) 안에서 미계상분으로 " +
+                "나타난다"
+        )
+        .put(
+            "clock_note",
+            "🔴 **E·F·G는 CPU 벽시계 구간 길이이고 GPU 시계가 아니다.** stage_b_ms·D 계열· " +
+                "stage_i_ms·gpu_present_ms와 물리량이 다르므로 gpu_sum_ms에도 " +
+                "stage_d_total_ms에도 들어가지 않는다"
+        )
 
     /**
      * 🔴 **인용 금지.** 준비 1회의 벽시계이고 표본이 1개이며, 첫 추론은 지연 초기화를
      * 포함하고 입력도 실제 프레임이 아니다(0으로 채운 더미). E·F·G는 다음 라운드에
      * `detect.csv`로 나온다 — 이 숫자를 F로 옮겨 적지 말 것.
      */
-    private fun buildDetectPrepareTiming(report: DetectReport): JSONObject = JSONObject()
-        .put("env_init_ms", report.envInitMs)
-        .put("sha256_ms", report.sha256Ms)
-        .put("probe_session_create_ms", report.probeCreateMs)
-        .put("probe_dummy_infer_ms", report.probeInferMs)
-        .put("measured_session_create_ms", report.measuredCreateMs)
-        .put("measured_warmup_infer_ms", report.warmupInferMs)
-        .put(
+    private fun buildDetectPrepareTiming(report: DetectReport): JSONObject {
+        val json = JSONObject()
+        json.put("env_init_ms", report.envInitMs)
+        json.put("sha256_ms", report.sha256Ms)
+        json.put("probe_session_create_ms", report.probeCreateMs)
+        json.put("probe_dummy_infer_ms", report.probeInferMs)
+        json.put("measured_session_create_ms", report.measuredCreateMs)
+        // 🔴 **A8.** 1회차는 그래프 초기화·lazy alloc으로 크게 튄다 → 분포 밖에 따로 낸다.
+        json.put("first_inference_ms", report.warmupInferMs)
+        val warmup = JSONArray()
+        for (ms in report.warmupInferMsAll) warmup.put(ms)
+        json.put("warmup_inference_ms", warmup)
+        json.put("warmup_inferences", report.warmupInferMsAll.size)
+        json.put(
+            "warmup_note",
+            "🔴 **A8 — 기록 전 warmup.** 측정 세션에서 ${report.warmupInferMsAll.size}회를 " +
+                "미리 돌린 뒤에야 detect.csv 기록이 시작된다. 안 하면 1회차의 초기화 비용이 " +
+                "F 분포에 들어가 **p99가 통째로 오염된다.** first_inference_ms가 그 1회차이고 " +
+                "**분포 밖의 값**이다 — F로 인용하지 말 것. " +
+                "⚠ warmup 입력은 실제 프레임이 아니라 **0으로 채운 더미**다(그래프 초기화가 " +
+                "목적이므로 내용은 무관하다). warmup_inference_ms 배열을 보면 몇 회차부터 " +
+                "평평해지는지 되물을 수 있다"
+        )
+        json.put(
             "note",
             "🔴 **인용 금지 — F가 아니다.** 준비 1회의 벽시계이고 표본이 1개다. 첫 추론은 " +
                 "EP 커널 준비·메모리 아레나 같은 지연 초기화를 포함하고, 입력도 실제 프레임이 " +
                 "아니라 **0으로 채운 더미**다. 여기서 확인한 것은 '세션이 실제로 도는가'와 " +
-                "'프로파일러가 노드 이벤트를 내는가' 둘뿐이다. E·F·G의 분포는 다음 라운드에 " +
-                "detect.csv로 나온다"
+                "'프로파일러가 노드 이벤트를 내는가' 둘뿐이다. E·F·G의 분포는 **detect.csv**에 " +
+                "있다"
         )
+        return json
+    }
 
     /**
      * ② 조합 arm(`drago_clahe_chain`)의 서술.
