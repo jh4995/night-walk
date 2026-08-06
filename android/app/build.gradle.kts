@@ -82,6 +82,16 @@ val detectShapeOf: (String, String) -> String = { section, key ->
     }
 }
 
+// ③ 후처리 임계. 🔴 **코드에 숫자를 박지 않는다** — sha256과 **같은 방식**으로 커밋된
+// metadata.json에서 빌드 시점에 읽는다. ⚠ 실제 키는 `inference.conf` / `inference.iou`다.
+// `INTERFACES.md` §A-5 예시의 `recommended_thresholds` 키는 **이 파일에 없다** — 예시를 믿고
+// 그 이름으로 읽으면 조용히 "unknown"이 되고, 앱이 그 상태로 임계를 지어내게 된다.
+val detectInferenceBlock = detectMeta?.get("inference") as? Map<*, *>
+val detectConfThreshold: String =
+    (detectInferenceBlock?.get("conf") as? Number)?.toString() ?: "unknown"
+val detectIouThreshold: String =
+    (detectInferenceBlock?.get("iou") as? Number)?.toString() ?: "unknown"
+
 val detectModelSha256: String = (detectModelBlock?.get("sha256") as? String) ?: "unknown"
 val detectModelFileName: String = (detectModelBlock?.get("file") as? String) ?: "unknown"
 // `{"0": "person", "1": "stairs"}` → `"0=person,1=stairs"`. 인덱스 순으로 정렬한다 —
@@ -139,6 +149,11 @@ android {
         buildConfigField(
             "String", "DETECT_OUTPUT_SHAPE", "\"${detectShapeOf("outputs", "shape")}\""
         )
+        // ③ 후처리 임계. **위 대조 기준들과 성격이 다르다** — 이 둘은 앱이 실제로 **쓰는 값**이다.
+        // 그래서 String으로 싣고 앱이 파싱하며, "unknown"이면 후처리를 시작하지 않는다
+        // (숫자로 구우면 파싱 실패가 0.0이 되어 조용히 전량 통과하는 임계가 된다).
+        buildConfigField("String", "DETECT_CONF_THRESHOLD", "\"$detectConfThreshold\"")
+        buildConfigField("String", "DETECT_IOU_THRESHOLD", "\"$detectIouThreshold\"")
 
         ndk {
             // 측정 기기는 A34(arm64-v8a) 하나다. ORT AAR은 ABI 4종의 네이티브 라이브러리를
