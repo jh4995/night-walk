@@ -101,10 +101,12 @@ class DetectPostprocessor(
                 val hh = raw[3 * numAnchors + a] * 0.5f
                 // 🔴 **여기서는 letterbox 640 좌표계 그대로 둔다.** 역변환은 NMS **뒤**다
                 //    (아래 4단계) — 상류 README의 후처리 순서와 같다.
-                //    ⚠ 예전에는 여기서 역변환 + 원본 경계 클램프를 함께 하고 "같은 아핀
-                //      변환이라 IoU 순서가 안 바뀐다"고 정당화했는데, **클램프는 아핀이
-                //      아니다.** 화면 밖으로 걸친 박스는 면적이 잘려 IoU가 달라지고, 겹치는
-                //      장면에서 억제 결과가 상류와 갈릴 수 있다(독립 검증 지적).
+                //    ⚠ **역사**: 예전에는 여기서 역변환 + 원본 경계 클램프를 함께 하고
+                //      "같은 아핀 변환이라 IoU 순서가 안 바뀐다"고 정당화했는데, 그때 같이
+                //      하던 **클램프가 아핀이 아니었다** — 화면 밖으로 걸친 박스의 면적이
+                //      잘려 IoU가 달라지고 억제 결과가 상류와 갈릴 수 있었다(독립 검증 지적).
+                //      그 클램프는 2026-08-07에 **아예 없앴다**(아래 4단계). 남은 것은
+                //      "역변환을 NMS 뒤로 둔다"는 순서 규칙 하나뿐이고, 그건 상류와 같다.
                 boxX1[count] = cx - hw
                 boxY1[count] = cy - hh
                 boxX2[count] = cx + hw
@@ -148,35 +150,49 @@ class DetectPostprocessor(
             }
         }
 
-        // 4) letterbox 역변환 + 원본 프레임 경계 클램프. **NMS 뒤이고, 살아남은 박스만** 한다.
-        //    상류 README 후처리 절의 순서(필터 → xyxy → 클래스별 NMS → 역변환)와 같다.
+        // 4) letterbox 역변환. **NMS 뒤이고, 살아남은 박스만** 한다.
+        //    상류 README 후처리 절의 **네 단계 그대로**다(필터 → xyxy → 클래스별 NMS → 역변환).
         //    부수 효과로 변환 횟수가 count에서 kept로 줄어든다(보통 한 자릿수다).
-        //    ⚠ 클램프를 여기로 옮긴 것이 이 순서의 요점이다 — NMS 앞에서 자르면 화면 밖으로
-        //      걸친 박스의 면적이 달라져 IoU가 바뀐다.
-        val srcWf = box.srcW.toFloat()
-        val srcHf = box.srcH.toFloat()
+        //
+        // 🔴 **원본 프레임 경계 클램프를 없앴다(2026-08-07).** 상류 명세에 없는 5번째 단계였고,
+        //    이탈로 기록된 적도 없다. 게다가 **비대칭**이었다 — `x1`/`y1`은 아래만, `x2`/`y2`는
+        //    위만 잘라서, 탐지가 letterbox 패딩 **안에만** 있으면 `x2 < x1`인 **역전 박스**가
+        //    나왔다(독립 검증이 `pad_x=159`에서 재현: `x1=0.0, x2=-148.75`).
+        //    ⚠ 대칭으로 고치는 길도 있었지만 그러면 **면적 0인 박스가 화면 가장자리에** 남고,
+        //      ④ 오버레이가 그걸 그리면 테두리에 얇은 선이 생긴다 — 사용자에게 보이는 쓰레기다.
+        //      클램프를 빼면 패딩·경계 때문에 생기던 역전이 사라지고 상류와도 같아진다.
+        //
+        // 🔴 **부등호 `x1 < x2`를 보장하는 것은 `scale`이 아니라 모델이다.**
+        //    `x2 - x1 = w · invScale`이므로 부호는 **`w`가 정한다**(`scale`은 크기만 바꾼다).
+        //    ⚠ 이 자리에 "scale > 0이라 항상 성립한다"고 적었다가 독립 검증에 잡혔다 —
+        //    `w < 0`이면 클램프가 없어도 역전이다. 근거는 이렇다:
+        //      · 실측 — 덤프 출력 텐서 25개(앵커 201,600개)에서 `min(w)=4.599 min(h)=6.470`,
+        //        음수·0 관측 **0건**. 적대적 입력 8종(0/1/회색114/난수/±1e3 등)에서도 0건.
+        //      · 구조 — YOLO11 DFL 헤드는 `w = (lt + rb) · stride`이고 `lt,rb ≥ 0`이다.
+        //    🔴 **그러므로 이 불변식은 "이 모델이 그렇다"이지 산술적 보장이 아니다.**
+        //    계약 A는 모델 교체를 허용하므로 **모델이 바뀌면 조용히 깨질 수 있다.**
+        //    ⚠ "화면 밖 박스는 GL이 잘라 낸다"는 ③→④가 이어진 **뒤에** 성립할 이야기다 —
+        //      지금은 `HighlightOverlay.draw`가 개수만 받아 음수 좌표가 GL에 간 적이 없다.
+        //    ⚠ 이 값을 쓰는 소비자는 현재 **대조 덤프 하나뿐**이다(`HighlightOverlay.draw`는
+        //      개수만 받는다 — ③→④는 계약 A-4 충돌로 아직 연결하지 않았다). 그래서 지금이
+        //      고치기 가장 싼 시점이다. 🔴 **PC 레퍼런스(`scripts/detect_parity.py`)도 같이
+        //      고쳤다** — 한쪽만 고치면 이식 대조가 그 자리에서 어긋난다.
         var k = 0
         while (k < kept) {
             val idx = keptIndices[k]
-            var x1 = (boxX1[idx] - box.padX) * invScale
-            var y1 = (boxY1[idx] - box.padY) * invScale
-            var x2 = (boxX2[idx] - box.padX) * invScale
-            var y2 = (boxY2[idx] - box.padY) * invScale
-            if (x1 < 0f) x1 = 0f
-            if (y1 < 0f) y1 = 0f
-            if (x2 > srcWf) x2 = srcWf
-            if (y2 > srcHf) y2 = srcHf
-            boxX1[idx] = x1
-            boxY1[idx] = y1
-            boxX2[idx] = x2
-            boxY2[idx] = y2
+            boxX1[idx] = (boxX1[idx] - box.padX) * invScale
+            boxY1[idx] = (boxY1[idx] - box.padY) * invScale
+            boxX2[idx] = (boxX2[idx] - box.padX) * invScale
+            boxY2[idx] = (boxY2[idx] - box.padY) * invScale
             k++
         }
         return Result(boxesPreNms = count, boxesOut = kept, maxConf = maxConf)
     }
 
     /**
-     * 최종 박스 하나. **원본 프레임 좌표계**다(역변환 + 클램프까지 거친 값).
+     * 최종 박스 하나. **원본 프레임 좌표계**다(역변환까지 거친 값).
+     * 🔴 **화면 밖으로 나갈 수 있다** — 경계 클램프를 하지 않는다(위 4단계 주석).
+     * 음수이거나 프레임 폭·높이를 넘을 수 있으므로 **소비자가 in-frame을 가정하면 안 된다.**
      * ③ 이식 정확성 덤프(`DetectParityDumper`)가 매니페스트에 싣는 자리에서만 쓴다.
      */
     class Box(

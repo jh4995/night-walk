@@ -321,12 +321,18 @@ def preprocess(raw: bytes, src: dict, box: Letterbox, pad_value_u8: int):
 
 
 # ══ G: 후처리 재구현 ══════════════════════════════════════════════════════
-# 🔴 **순서가 규약 §5 그대로여야 한다:**
+# 🔴 **순서가 규약 §5 그대로여야 한다** — 상류 README 의 네 단계다:
 #      conf 필터 → cxcywh→xyxy → **클래스별 NMS를 letterbox 640 좌표계에서** →
-#      살아남은 것만 역변환 + 원본 경계 클램프
-#    예전 앱 코드는 NMS 앞에서 역변환+클램프를 했고 "같은 아핀이라 IoU 순서 불변"이라고
-#    정당화했는데 **클램프는 아핀이 아니다**(독립 검증이 잡아 고쳤다). 순서를 바꾸면
-#    불일치가 이식 결함이 아니라 **PC 쪽 결함**이 된다.
+#      살아남은 것만 역변환
+#    예전 앱 코드는 NMS 앞에서 역변환을 했고 "같은 아핀이라 IoU 순서 불변"이라고
+#    정당화했는데, 그때 함께 하던 **클램프가 아핀이 아니었다**(독립 검증이 잡아 고쳤다).
+#    순서를 바꾸면 불일치가 이식 결함이 아니라 **PC 쪽 결함**이 된다.
+#
+# 🔴 **원본 경계 클램프는 없다(2026-08-07, 폰과 함께 제거).** 상류에 없는 5번째 단계였고
+#    비대칭이라 역전 박스를 만들었다. ⚠ **그 이전 빌드가 만든 덤프를 이 코드로 대조하면
+#    경계에 걸친 박스에서 차이가 난다** — 실제로 `20260806_230424` 덤프의 박스 하나가
+#    `y2`를 720(프레임 높이)에 잘린 채로 남아 있어 `max_xy=3.874px`가 나온다.
+#    그것은 **이식 결함이 아니라 코드 버전 차이**이며, 폰을 다시 돌려 새 덤프를 뜨면 사라진다.
 
 
 def postprocess(raw2d, box: Letterbox, conf_thr: float, iou_thr: float,
@@ -397,25 +403,24 @@ def postprocess(raw2d, box: Letterbox, conf_thr: float, iou_thr: float,
         )
         suppressed[cand[iou > f32(iou_thr)]] = True
 
-    # 4) 역변환 + 원본 경계 클램프. **살아남은 것만** 한다.
-    #    ⚠ 클램프가 비대칭이다(x1/y1은 아래만, x2/y2는 위만) — 폰과 글자 그대로 같다.
+    # 4) 역변환. **살아남은 것만** 한다. 상류 README 후처리 절의 **네 단계 그대로**다.
+    #
+    # 🔴 **원본 경계 클램프를 없앴다(2026-08-07). 폰과 함께 고쳤다.**
+    #    상류 명세에 없는 5번째 단계였고 **비대칭**이라(x1/y1은 아래만, x2/y2는 위만) 탐지가
+    #    letterbox 패딩 안에만 있으면 `x2 < x1`인 역전 박스가 나왔다.
+    #    🔴 **부등호를 보장하는 것은 `scale`이 아니라 모델이다** — `x2 - x1 = w · invScale`이라
+    #    부호는 `w`가 정한다("scale > 0이라 항상 성립"이라고 적었다가 독립 검증에 잡혔다).
+    #    이 모델은 실측(앵커 201,600개, `min(w)=4.599`)과 구조(DFL: `w=(lt+rb)·stride ≥ 0`)
+    #    양쪽으로 `w > 0`이지만 **산술적 보장은 아니다.** 자세한 논거는
+    #    `DetectPostprocessor.kt`의 같은 자리에 있다.
+    #    ⚠ **한쪽만 고치면 이식 대조가 그 자리에서 어긋난다** — 두 파일은 함께 움직인다.
     inv_scale = f32(1) / box.scale
-    src_wf = f32(box.src_w)
-    src_hf = f32(box.src_h)
     out: list[dict] = []
     for idx in kept:
         x1 = (bx1[idx] - box.pad_x) * inv_scale
         y1 = (by1[idx] - box.pad_y) * inv_scale
         x2 = (bx2[idx] - box.pad_x) * inv_scale
         y2 = (by2[idx] - box.pad_y) * inv_scale
-        if x1 < f32(0):
-            x1 = f32(0)
-        if y1 < f32(0):
-            y1 = f32(0)
-        if x2 > src_wf:
-            x2 = src_wf
-        if y2 > src_hf:
-            y2 = src_hf
         ci = int(cls[idx])
         out.append({
             "cls": ci,
