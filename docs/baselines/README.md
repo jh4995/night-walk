@@ -46,6 +46,12 @@ python scripts/baseline_diff.py \
 
 | 파일 | 무엇 | 조건 |
 |---|---|---|
+| `20260807_indoor_blit2pass_s11rot_a34.json` | **패스별 분모 — 세션 `s11rot`** (08-07 저녁, ③ 회전 라운드). `gpu_sum` p50 **3.452** | A34 / release / **`5bb42d0`** / `blit_2pass` / `indoor_bright` / warmup 30s / 분석 창 **663.085s** |
+| `20260807_indoor_gamma_only_s11rot_a34.json` | 🏆 **② `gamma_only`의 지속 런 — 알려진 이슈 7을 닫았다.** `gpu_sum` p50 3.927 → ② 증분 **+0.475ms**(같은 세션 분모 차분). 기존 +0.44는 **158.9초 런**이라 지속 판정선을 통과한 적이 없었다 | 〃 `s11rot` / `gamma_only` / **668.460s** |
+| `20260807_indoor_detect_cpu_noiseA_s11rot_a34.json` | **③ 회전 적용 A** — E p50 **16.589** · F **262.854** · G **0.362**(🔴 **박스 1개 기준**, `boxes_pre_nms` 10) | 〃 `s11rot` / `detect_cpu` / **671.185s** |
+| `20260807_indoor_detect_cpu_noiseB_s11rot_a34.json` | **③ 회전 적용 B (반복)** — E **16.443** · F **263.607** · G **0.343**. A와 쌍이 이 arm의 **노이즈 바닥 0.146ms(E)** 다 | 〃 `s11rot` / `detect_cpu` / **670.291s** |
+| `20260807_indoor_detect_cpu_norot_noiseA_s11rot_a34.json` | 🔴 **③ 회전 미적용 A — 열 전환 구간을 물고 있다.** E **17.276** · F **262.833**. 런을 3등분하면 F가 256.6→265.7(**+3.0%**)로 오른다(앞 두 런이 가벼운 GPU arm이라 CPU가 식어 있었다). **이 런의 E를 회전 효과 계산에 그대로 쓰면 편향된다** | 〃 `s11rot` / `detect_cpu_norot` / **672.438s** |
+| `20260807_indoor_detect_cpu_norot_noiseB_s11rot_a34.json` | **③ 회전 미적용 B (반복)** — E **16.214** · F **262.833** · G **0.328**(박스 **0개**). `boxes_out`이 전 구간 0이고 `max_conf` p50 **0.032** | 〃 `s11rot` / `detect_cpu_norot` / **670.321s** |
 | `20260807_indoor_blit2pass_s10rest_a34.json` | **패스별 분모 — 세션 `s10rest`** (08-07). `gpu_sum` p50 **3.504** | A34 / release / **`93589d8`** / `blit_2pass` / `indoor_bright` / warmup 30s / 분석 창 **638.841s** |
 | `20260807_indoor_blit2pass_1q_s10rest_a34.json` | **단일 query 분모** — `gpu_frame` p50 **2.426**. 🔴 아래 하한 셋이 전부 이 값에서 빠진다 | 〃 `s10rest` / `blit_2pass_1q` / **637.944s** |
 | `20260807_indoor_fused_s10rest_a34.json` | **② 융합, 패스별** — `gpu_sum` p50 16.433 → D칸 **상한 +12.929** | 〃 `s10rest` / `drago_clahe_fused` / **639.379s** |
