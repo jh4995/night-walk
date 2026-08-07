@@ -29,9 +29,14 @@ from lib.frame_log import (  # noqa: E402
     DETECT_ROW_SKIP_REASON_TEXT,
     DETECT_TIME_COLUMNS,
     DETECT_WALL_SERIES,
+    FRAME_COUNT_COLUMNS,
+    FRAME_CPU_TIME_COLUMNS,
+    FRAME_OVERLAY_COLUMNS,
+    FRAME_OVERLAY_SOURCE_COLUMNS,
     GPU_FRAME_COLUMN,
     GPU_SUM_COLUMNS,
     GPU_TIME_COLUMNS,
+    OVERLAY_FRESHNESS_SERIES,
     PIPELINE_STAGES,
     ROW_SKIP_REASON_TEXT,
     SCHEMA_VERSION,
@@ -128,15 +133,51 @@ DETECT_BUDGET_CELL_OF = {
     DETECT_CADENCE_SERIES: None,
 }
 
-# 🔴 두 매핑이 **한 열도 공유하지 않는지**를 import 시점에 확인한다. 위 주석이 정한 경계는
+# ④ 오버레이 열 → 버짓 칸. **위 두 dict와 또 다른 별 dict다** (v7).
+#
+# 🔴 **왜 세 번째 dict가 필요한가.** `stage_h_ms`는 `frames.csv`의 열이지만 **CPU 벽시계**
+#   구간 길이다 — 그래서 둘 중 어디에도 맞지 않는다:
+#     BUDGET_CELL_OF        : frames.csv 열이지만 **GPU 시계** 전용 라벨 체계다. 여기 넣으면
+#                             `_stage_series_order`·stages 블록의 `budget_cell`을 타고 GPU 합산
+#                             경로의 표에 실리고, 그 표에서 두 시계가 같은 자리에 놓인다.
+#     DETECT_BUDGET_CELL_OF : CPU 벽시계이긴 하지만 **`detect.csv`**(모집단=추론) 전용이다.
+#                             여기 넣으면 `_detect_block`의 조회 경로(summary["detect"])에서
+#                             찾게 되어 **조용히 count=0**이 된다(그 값은 frames 쪽에 있다).
+#   위 두 dict의 주석이 "한 dict에 넣는 순간 두 시계가 같은 표에서 더해진다"고 이미 못 박아
+#   뒀고, 그 논거가 여기에도 그대로 적용된다. 그래서 시계 × 파일 조합마다 dict가 하나다.
+#
+# ⚠ 위 두 dict와 **같은 성질**은 그대로다: 이 매핑은 "이 열이 어느 칸을 채울 열인가"라는
+#   스키마 사실이지, 그 런의 오버레이가 실제로 평활을 돌았다는 주장이 아니다. 숫자를 옮길
+#   때는 arm과 **박스 개수 분포**를 함께 옮긴다(H·I는 박스 개수의 함수다).
+FRAME_CPU_BUDGET_CELL_OF = {
+    "stage_h_ms": "H",   # ④ 좌표 평활·hold (GL 스레드 CPU 구간)
+    # 🔴 개수와 파생 시계열은 **칸 없음**이다. `gpu_present_ms`·`gpu_frame_ms`·
+    #   `detect_wall_ms`와 같은 이유로 **키를 빼지 않고 명시적으로 None을 적는다** —
+    #   키가 없으면 "칸이 없다"와 "매핑 등록을 잊었다"가 구분되지 않는다.
+    "overlay_boxes": None,          # 개수다. 비용이 아니라 **비용의 조건**이다
+    OVERLAY_FRESHNESS_SERIES: None,  # 결과의 나이다. 단계 비용이 아니다
+}
+
+# 🔴 세 매핑이 **한 열도 공유하지 않는지**를 import 시점에 확인한다. 위 주석이 정한 경계는
 #    사람이 지키는 것이라, 다음 사람이 detect 열을 BUDGET_CELL_OF에 넣어도 아무 일도
 #    일어나지 않으면 그 경계는 없는 것과 같다. `lib/frame_log.py`의 상수 자기검사와 같은 부류다.
-_cell_overlap = sorted(set(DETECT_BUDGET_CELL_OF) & set(BUDGET_CELL_OF))
-if _cell_overlap:
+_cell_maps = {
+    "BUDGET_CELL_OF(GPU 시계·frames.csv)": BUDGET_CELL_OF,
+    "DETECT_BUDGET_CELL_OF(CPU 벽시계·detect.csv)": DETECT_BUDGET_CELL_OF,
+    "FRAME_CPU_BUDGET_CELL_OF(CPU 벽시계·frames.csv)": FRAME_CPU_BUDGET_CELL_OF,
+}
+_cell_overlaps = [
+    (a, b, sorted(set(_cell_maps[a]) & set(_cell_maps[b])))
+    for i, a in enumerate(_cell_maps)
+    for b in list(_cell_maps)[i + 1:]
+    if set(_cell_maps[a]) & set(_cell_maps[b])
+]
+if _cell_overlaps:
     raise RuntimeError(
-        f"analyze_frames.py 상수 불일치 — {_cell_overlap}이 GPU 시계 매핑(BUDGET_CELL_OF)과 "
-        f"CPU 벽시계 매핑(DETECT_BUDGET_CELL_OF) 양쪽에 있다. 두 매핑은 물리량이 다른 열의 "
-        f"칸 라벨이며, 겹치면 CPU 시계 열이 GPU 합산 경로의 라벨 체계에 들어간다"
+        "analyze_frames.py 상수 불일치 — 칸 라벨 매핑이 열을 공유한다: "
+        + "; ".join(f"{cols}이 {a}와 {b} 양쪽에" for a, b, cols in _cell_overlaps)
+        + ". 세 매핑은 **시계 × 파일**이 다른 열의 칸 라벨이며, 겹치면 한 시계의 열이 다른 "
+        "시계의 합산·조회 경로 라벨 체계로 들어간다"
     )
 _detect_cell_missing = [
     c for c in tuple(DETECT_TIME_COLUMNS) + (DETECT_WALL_SERIES, DETECT_CADENCE_SERIES)
@@ -147,6 +188,23 @@ if _detect_cell_missing:
         f"analyze_frames.py 상수 불일치 — detect 시계열 {_detect_cell_missing}이 "
         f"DETECT_BUDGET_CELL_OF에 없다. 칸이 없는 열도 **명시적으로 None**을 적어야 "
         f"'칸이 없다'와 '등록을 잊었다'가 구분된다"
+    )
+# 🔴 `t_overlay_source_ns`는 여기 **들어가지 않는다** — 시계열이 아니라 파생의 재료(시각)다.
+#    나머지 v7 열·파생은 전부 등록돼 있어야 한다(위와 같은 이유로 None도 명시).
+_frame_cpu_cell_missing = [
+    c for c in FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS + (OVERLAY_FRESHNESS_SERIES,)
+    if c not in FRAME_CPU_BUDGET_CELL_OF
+]
+_frame_cpu_cell_stray = [
+    c for c in FRAME_CPU_BUDGET_CELL_OF if c in FRAME_OVERLAY_SOURCE_COLUMNS
+]
+if _frame_cpu_cell_missing or _frame_cpu_cell_stray:
+    raise RuntimeError(
+        f"analyze_frames.py 상수 불일치 — FRAME_CPU_BUDGET_CELL_OF가 v7 오버레이 시계열과 "
+        f"어긋난다: 미등록={_frame_cpu_cell_missing}, 시계열이 아닌 항목="
+        f"{_frame_cpu_cell_stray}. 칸이 없는 열도 **명시적으로 None**을 적어야 '칸이 없다'와 "
+        f"'등록을 잊었다'가 구분되고, 시각 열(t_overlay_source_ns)은 분포를 내지 않으므로 "
+        f"칸 라벨을 갖지 않는다"
     )
 
 # 처리 단계가 하나도 없는 로그를 해석할 때 반드시 따라붙어야 하는 단서.
@@ -659,6 +717,190 @@ def _detect_block(
     return block
 
 
+def overlay_flicker(
+    boxes: list[int], analysis_window_sec: float | None, discarded: int = 0
+) -> dict:
+    """`overlay_boxes` 시계열에서 **깜빡임의 기계 근거**를 만든다 (v7).
+
+    🔴 **이것이 "깜빡임을 만들지 않았다"의 유일한 기계 근거다.** 눈으로 본 것은 계측이 아니고
+    재현 절차도 없다. H칸 평활의 목적은 박스가 튀는 것을 줄이는 것인데, **박스가 사라졌다
+    나타났다 하는 구간을 만들면 그게 곧 깜빡임이고** 광과민 사용자에게는 안전 문제다
+    (상류가 ④를 '항상 정적 윤곽'으로 못 박은 이유 — `session.json`의 `overlay.no_blink_reason`).
+
+    세는 것 셋:
+      (a) `blank_transitions` — `>0 → 0 → >0` 전이 횟수. 양쪽이 모두 양수인 0 구간의 개수다.
+          **시계열 끝에 걸린 0 구간은 세지 않는다** — 앞자락/뒷자락은 "사라졌다 나타난" 것이
+          아니라 아직/이미 박스가 없는 상태이며, 그것까지 세면 모든 런에 최소 1이 붙는다.
+      (b) 0 구간의 **길이 분포**(프레임 수). 1~2프레임짜리 구멍은 탐지 갱신이 끊긴 모양이고,
+          수십 프레임이면 장면에서 실제로 사라진 모양이다 — 길이가 그 둘을 가르는 단서다.
+      (c) `box_count_changes_per_min` — 개수가 바뀐 횟수/분. 0을 거치지 않는 튐(2→3→2)까지
+          포함하므로 (a)보다 넓다.
+
+    🔴 **판정선을 만들지 않는다.** "몇 회 이상이면 안 된다"는 값은 이 저장소에 없다
+    (판정선은 `lib/targets.py`에만 있고 깜빡임 한계는 팀 합의 전이다). 그래서 이 블록은
+    `verdict`·종료 코드를 흔들지 않는다 — **관측이며 판정이 아니다.**
+    🔴 **전이가 있다는 것이 곧 결함이라는 뜻도 아니다.** 장면에서 위험물이 실제로 사라졌다
+    다시 나타났을 수 있고, 그 판별에는 정답 라벨이 필요하다(`safety_regression` 참고 —
+    그 사유 문장은 그 블록이 소유한다).
+
+    `discarded`: `overlay_boxes` 값이 폐기된 개수. 폐기된 행은 이 수열에서 **빠져 있으므로**
+    전이가 감춰지거나 없던 전이가 붙어 보일 수 있다 — 0이 아니면 그 사실을 함께 낸다.
+    """
+    n = len(boxes)
+    common = {
+        "samples": n,
+        "samples_discarded": discarded,
+        "threshold": None,
+        "threshold_note": (
+            "판정선이 아니다. '몇 회 이상이면 안 된다'는 값은 이 저장소에 없다 — 판정선은 "
+            "lib/targets.py에만 있고 깜빡임 한계는 아직 팀 합의 전이다. 이 블록은 verdict와 "
+            "종료 코드를 흔들지 않는다"
+        ),
+    }
+    if n == 0:
+        return {
+            **common,
+            "available": False,
+            "reason": (
+                "overlay_boxes 유효 표본이 0개다 — 열이 없거나 값이 전부 폐기됐다. "
+                "**'깜빡임이 없었다'가 아니라 '보지 못했다'다**"
+            ),
+        }
+
+    # 0 구간을 훑는다. 양쪽이 모두 양수인 것만 '사라졌다 나타난' 구간이다.
+    zero_runs: list[dict] = []
+    i = 0
+    while i < n:
+        if boxes[i] != 0:
+            i += 1
+            continue
+        start = i
+        while i < n and boxes[i] == 0:
+            i += 1
+        zero_runs.append({
+            "start_index": start,
+            "length_frames": i - start,
+            # 앞자락/뒷자락인가 (시계열 끝에 걸린 구간)
+            "enclosed": start > 0 and i < n,
+        })
+    enclosed = [r for r in zero_runs if r["enclosed"]]
+    edge = [r for r in zero_runs if not r["enclosed"]]
+    enclosed_lengths = [r["length_frames"] for r in enclosed]
+
+    changes = sum(1 for k in range(1, n) if boxes[k] != boxes[k - 1])
+    window_min = (analysis_window_sec or 0.0) / 60.0
+    return {
+        **common,
+        "available": True,
+        # (a) 🔴 이 세션의 머리 숫자다.
+        "blank_transitions": len(enclosed),
+        "blank_gaps_present": bool(enclosed),
+        "blank_transition_note": (
+            ">0 → 0 → >0 전이 횟수 = 박스가 사라졌다 다시 나타난 구간의 개수. 시계열 "
+            f"앞자락/뒷자락에 걸린 0 구간 {len(edge)}개는 세지 않았다(그건 '사라진' 것이 "
+            "아니라 아직/이미 없는 상태다)"
+        ),
+        # (b) 0 구간의 길이 분포. **프레임 수이며 ms가 아니다.**
+        "zero_run_frames": summarize(enclosed_lengths),
+        "zero_run_frames_unit": "frames (ms가 아니다)",
+        "zero_runs_total": len(zero_runs),
+        "zero_runs_at_edge": len(edge),
+        "zero_frames": sum(1 for b in boxes if b == 0),
+        "zero_frame_fraction": round(sum(1 for b in boxes if b == 0) / n, 4),
+        # (c) 0을 거치지 않는 튐까지 포함한 넓은 지표.
+        "box_count_changes": changes,
+        "box_count_changes_per_min": (
+            round(changes / window_min, 2) if window_min > 0 else None
+        ),
+        "changes_per_min_note": (
+            "분모는 frames.csv t_recv_ns의 실제 span이다"
+            if window_min > 0 else
+            "분석 창을 재지 못해 분당 값을 내지 않았다(횟수만 낸다)"
+        ),
+        "distinct_box_counts": sorted({int(b) for b in boxes}),
+        "sampling_note": (
+            f"이 수열은 **폐기되지 않은 행만** 이은 것이다(폐기 {discarded}개). 폐기된 행은 "
+            "수열에서 빠지므로 그 자리의 전이가 감춰지거나 없던 전이가 붙어 보일 수 있다"
+            if discarded else
+            "폐기된 행이 없으므로 이 수열은 분석 창의 프레임 순서 그대로다"
+        ),
+    }
+
+
+def flicker_warning(flicker: dict) -> str:
+    """전이가 1건이라도 있으면 내는 문장. **결함으로 단정하지 않는다.**"""
+    zr = flicker.get("zero_run_frames") or {}
+    return (
+        f"④ 오버레이에 박스가 **사라졌다 다시 나타난 구간이 {flicker['blank_transitions']}개** "
+        f"있다 (0 구간 길이 프레임 수: p50={zr.get('p50')} p95={zr.get('p95')} "
+        f"max={zr.get('max')}, 0인 프레임 비율 {flicker.get('zero_frame_fraction')}). "
+        f"광과민 사용자에게 깜빡임으로 보이는 모양이고, 상류는 ④를 '항상 정적 윤곽'으로 못 "
+        f"박았다 — H칸 평활의 목적이 튐 억제인데 이 전이는 그 반대 방향이다. "
+        f"⚠ **그러나 이것이 곧 결함이라는 뜻은 아니다**: 장면에서 위험물이 실제로 사라졌다 "
+        f"다시 나타났을 수도 있다. 구간이 짧으면(1~2프레임) 탐지 갱신이 끊긴 쪽에 가깝고 "
+        f"길면 장면 쪽에 가깝지만, **어느 쪽인지 가르려면 정답 라벨이 필요하다**"
+        f"(safety_regression 블록이 그 사유를 갖는다). "
+        f"⚠ 판정선이 아니다 — verdict·종료 코드를 흔들지 않는다"
+    )
+
+
+def _overlay_block(
+    series,
+    stats: dict,
+    flicker: dict,
+    render_arm: object,
+    render_arm_known: bool,
+) -> dict:
+    """④ 오버레이 블록 (v7). **`stages`·`detect`와 또 다른 블록이다.**
+
+    🔴 **`_stages_block`에 섞지 않는다.** 그 블록의 `clock` 문자열은 "GPU 시계"라고 선언하는데
+    `stage_h_ms`는 CPU 벽시계다 — 한 블록에 담으면 그 선언이 절반에 대해 거짓이 되고, 블록만
+    떼어 읽는 소비자는 두 물리량을 같은 표에서 더한다(`_detect_block`과 같은 논거).
+    🔴 **`detect` 블록에도 섞지 않는다.** 시계는 같지만 **모집단이 다르다** — 그쪽 `n`은 추론
+    횟수이고 여기 `n`은 프레임 수다. 섞으면 `n`이 무엇의 개수인지 되물을 수 없다.
+    """
+    block = {
+        "clock": (
+            "CPU 벽시계(SystemClock.elapsedRealtimeNanos) — stage_h_ms는 GL 스레드의 CPU 구간 "
+            "길이다. **GPU 열(stage_b/d/i_ms·gpu_present_ms·gpu_frame_ms)과 더하지 않는다** — "
+            "gpu_sum_ms에도 stage_d_total_ms에도 들어가지 않는다(lib/frame_log.py의 상수 "
+            "자기검사가 import 시점에 강제한다)"
+        ),
+        "population": (
+            "행 하나 = **프레임 1장**. detect 블록의 n(추론 횟수)과 모집단이 다르므로 두 표의 "
+            "n을 같은 것으로 읽지 말 것"
+        ),
+        "columns_present": list(series.overlay_columns_present),
+        "columns_defined": list(FRAME_OVERLAY_COLUMNS),
+        "budget_cell": dict(FRAME_CPU_BUDGET_CELL_OF),
+        # **arm 없이 아래 숫자를 인용하지 않는다** (stages 블록과 같은 이유).
+        "render_arm": render_arm,
+        "render_arm_known": render_arm_known,
+        "condition_note": (
+            "🔴 H칸·I칸은 **박스 개수의 함수다.** overlay_boxes 분포를 함께 옮기지 않은 "
+            "stage_h_ms·stage_i_ms는 조건이 없는 숫자다(session.json의 overlay.box_count는 "
+            "arm이 선언한 조건이고, overlay_boxes는 **그 프레임에 실제로 그린 개수**다 — "
+            "③ 탐지 결과를 받기 시작하면 두 값이 다르다)"
+        ),
+        "freshness_note": (
+            f"{OVERLAY_FRESHNESS_SERIES} = t_render_start_ns − t_overlay_source_ns = 그 "
+            f"프레임이 그린 박스가 **몇 ms 전 탐지 결과인가.** CSV 열이 아니라 하네스가 "
+            f"계산한 파생 시계열이다(유도값은 저장하지 않는다). **버짓 칸이 없다** — 단계 "
+            f"비용이 아니라 결과의 나이다. ⚠ 탐지 주기(detect_cadence_ms)와 다른 값이며 "
+            f"모집단도 다르다(프레임 vs 추론) — 두 분포를 더하거나 비교해 빼지 않는다"
+        ),
+        "stage_h_note": (
+            "stage_h_ms는 ④ 좌표 평활·hold의 CPU 구간이다. **어떤 합에도 들어가지 않는다** — "
+            "H는 열 하나이고, 이 열을 다른 열과 더하는 파생 시계열은 없다"
+        ),
+        # 🔴 깜빡임 검출기. **이 라운드에서 가장 중요한 블록이다** (overlay_flicker 참고).
+        "flicker": flicker,
+        "has_overlay_metrics": series.has_overlay_metrics,
+    }
+    block.update(stats)
+    return block
+
+
 def main() -> int:
     parser = common_argparser()
     parser.add_argument("--frames", required=True, help="프레임 로그 CSV 경로")
@@ -792,6 +1034,22 @@ def main() -> int:
         else None
     )
 
+    # ── ④ 오버레이 (v7). **stages와도 detect와도 다른 블록**이다 — 시계는 CPU 벽시계인데
+    #    모집단은 프레임이다(_overlay_block 주석). 판정선이 없으므로 verdict를 흔들지 않는다.
+    overlay_stats = {
+        name: summarize(getattr(series, name))
+        for name in FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS
+    }
+    overlay_stats[OVERLAY_FRESHNESS_SERIES] = summarize(series.overlay_freshness_ms)
+    flicker = overlay_flicker(
+        series.overlay_boxes,
+        series.analysis_window_sec,
+        discarded=sum(series.discarded.get("overlay_boxes", {}).values()),
+    )
+    overlay_block = _overlay_block(
+        series, overlay_stats, flicker, render_arm, render_arm_known
+    )
+
     # ── ③ 탐지 비용 (CPU 벽시계). 판정선이 없으므로 verdict를 흔들지 않는다.
     #    stages와 **다른 블록**이다 — 시계가 다르다(_detect_block 주석).
     detect_block = None
@@ -879,6 +1137,12 @@ def main() -> int:
             "render_latency_ms": summarize(series.render_latency_ms),
             "recv_to_render_ms": summarize(series.recv_to_render_ms),
             "capture_to_render_ms": summarize(series.capture_to_render_ms),
+            # 취득~렌더의 **앞자락**(ISP + 큐). v7에서 추가 — 이 한 칸이 있으면
+            # capture_to_render를 capture→recv / recv→render_start / render_start→render_end
+            # 셋으로 가를 수 있다(기존 런의 원본 frames.csv로 소급 분석이 된다).
+            # ⚠ 세 조각의 분포를 더해 capture_to_render를 검산하지 않는다 — 폐기가 조각마다
+            #   따로 일어나고 render_start가 없는 프레임도 있다.
+            "capture_to_recv_ms": summarize(series.capture_to_recv_ms),
         },
         # 단계 비용은 frametime과 **다른 물리량이자 다른 시계**라 블록을 나눈다.
         # 판정선이 없다 — verdict.meets_*는 여기 값을 보지 않는다.
@@ -888,6 +1152,10 @@ def main() -> int:
         # ③ 탐지. **stages와 다른 시계다**(CPU 벽시계) — 키를 나눈 이유가 그것이다.
         # --detect를 주지 않았으면 null. "탐지가 0이었다"가 아니라 **재지 않았다**는 뜻이다.
         "detect": detect_block,
+        # ④ 오버레이 (v7). stages와 시계가 다르고 detect와 모집단이 다르다.
+        # ⚠ 열이 없는 로그에서도 **블록은 남긴다** — count=0과 columns_present=[]가 함께
+        #   있어야 "0이었다"와 "그 빌드가 재지 않았다"가 구분된다.
+        "overlay": overlay_block,
         "targets": {
             "target_fps": targets.TARGET_FPS,
             "frame_budget_ms": round(targets.FRAME_BUDGET_MS, 1),
@@ -976,6 +1244,11 @@ def main() -> int:
         summary["warnings"].append(render_arm_warning)
     if ring_full:
         summary["warnings"].append(ring_full_bias_warning(ring_full, gpu_timer_decl))
+    # ④ 깜빡임. **전이가 있을 때만** 낸다 — 0건인 런에도 매번 뜨면 곧 아무도 안 보고,
+    # 정작 전이가 생긴 런에서 묻힌다(ring_full 경고와 같은 기준). 0건이라는 사실은
+    # overlay.flicker 블록과 리포트 줄에 그대로 드러난다.
+    if flicker.get("blank_transitions"):
+        summary["warnings"].append(flicker_warning(flicker))
     if lighting_warning:
         # 판정은 바꾸지 않는다. 조명은 판정선이 아니라 **비교 조건**이다.
         summary["warnings"].append(lighting_warning)
@@ -1158,6 +1431,75 @@ def _print_stages(summary: dict) -> None:
             )
 
 
+def _print_overlay(summary: dict) -> None:
+    """④ 오버레이 출력. **판정선이 없으므로 PASS/FAIL을 찍지 않는다.**
+
+    🔴 단계 비용(GPU) 표·③ 탐지 표와 **줄을 섞지 않는다.** 절 제목에 시계와 모집단을 적고,
+    숫자 줄마다 arm을 붙인다 — 한 줄만 복사해 옮겨도 그 숫자의 조건이 남아야 한다.
+    """
+    ov = summary.get("overlay") or {}
+    cols = ov.get("columns_present") or []
+    if not cols:
+        return  # v7 이전 로그. "재지 않았다"는 사실은 summary의 overlay 블록에 남는다
+    arm = ov.get("render_arm")
+    arm_short = f"arm={arm}" if ov.get("render_arm_known") else f"arm={arm!r}(어휘 밖/미상)"
+    LOG.info(
+        "④ 오버레이 — CPU 벽시계 [%s] (GPU 열과 다른 시계, detect와 다른 모집단=프레임, "
+        "판정선 없음)", arm_short,
+    )
+    LOG.warning("  ⚠ %s", ov.get("condition_note"))
+    for name in list(FRAME_CPU_TIME_COLUMNS) + list(FRAME_COUNT_COLUMNS) + [
+        OVERLAY_FRESHNESS_SERIES
+    ]:
+        s = ov.get(name) or {}
+        if not s:
+            continue
+        cell = FRAME_CPU_BUDGET_CELL_OF.get(name)
+        label = f"{name}[{cell}칸]" if cell else name
+        if s.get("count"):
+            LOG.info(
+                "  %-26s p50=%-8s p95=%-8s p99=%-8s min=%-8s max=%-8s (n=%s, %s)",
+                label, s["p50"], s["p95"], s["p99"], s["min"], s["max"],
+                s["count"], arm_short,
+            )
+        elif name in cols or (
+            # 신선도는 CSV 열이 아니므로 cols에 없다. 재료 열이 있을 때만 "못 냈다"고 말한다.
+            name == OVERLAY_FRESHNESS_SERIES
+            and any(c in cols for c in FRAME_OVERLAY_SOURCE_COLUMNS)
+        ):
+            LOG.warning(
+                "  %-26s 유효 표본 0개 — '0이었다'가 아니라 재지 못한 것이다 (%s)",
+                label, arm_short,
+            )
+    fl = ov.get("flicker") or {}
+    if not fl.get("available"):
+        LOG.warning("  깜빡임 검출: 낼 수 없다 — %s", fl.get("reason"))
+        return
+    # 🔴 0건일 때도 한 줄 남긴다 — 근거가 보이지 않으면 "0건이었다"와 "이 검사가 아예 돌지
+    #    않았다"를 사람이 구별할 수 없다(입력 완전성 줄과 같은 이유).
+    if fl.get("blank_transitions"):
+        LOG.error(
+            "  🔴 깜빡임 검출: >0→0→>0 전이 %s회 (0 구간 프레임 수 p50=%s p95=%s max=%s) "
+            "— 아래 경고를 볼 것",
+            fl["blank_transitions"], (fl.get("zero_run_frames") or {}).get("p50"),
+            (fl.get("zero_run_frames") or {}).get("p95"),
+            (fl.get("zero_run_frames") or {}).get("max"),
+        )
+    else:
+        LOG.info(
+            "  깜빡임 검출: >0→0→>0 전이 0회 (표본 %s프레임, 0인 프레임 비율 %s, "
+            "끝에 걸린 0 구간 %s개는 세지 않았다)",
+            fl.get("samples"), fl.get("zero_frame_fraction"), fl.get("zero_runs_at_edge"),
+        )
+    LOG.info(
+        "  박스 개수 변화 %s회 (%s회/분) — 0을 거치지 않는 튐까지 포함한다. 관측된 개수: %s",
+        fl.get("box_count_changes"), fl.get("box_count_changes_per_min"),
+        fl.get("distinct_box_counts"),
+    )
+    if fl.get("samples_discarded"):
+        LOG.warning("  ⚠ %s", fl.get("sampling_note"))
+
+
 def _detect_series_order() -> list[str]:
     """리포트에 찍을 순서. 파생 시계열을 재료 뒤에, 조건 열(카운트·점수)을 맨 뒤에 둔다."""
     return (
@@ -1262,6 +1604,8 @@ def _print_report(summary: dict) -> None:
         "recv_interval_ms",
         "output_interval_ms",
         "render_latency_ms",
+        # capture 계열은 **앞자락 → 전체** 순으로 둔다. 분해가 배치로 드러나야 한다.
+        "capture_to_recv_ms",
         "recv_to_render_ms",
         "capture_to_render_ms",
     ):
@@ -1270,6 +1614,7 @@ def _print_report(summary: dict) -> None:
             LOG.info("  %-22s p50=%-8s p95=%-8s (n=%s)", name, s["p50"], s["p95"], s["count"])
     _print_stages(summary)
     _print_detect(summary)
+    _print_overlay(summary)
     LOG.info("-" * 62)
     LOG.info(
         "평균 %.2f FPS | %s: %s | %s: %s",

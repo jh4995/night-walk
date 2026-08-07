@@ -1,4 +1,4 @@
-# 프레임 로그 스키마 v6
+# 프레임 로그 스키마 v7
 
 > **작성:** 팀원2 · **상태:** 확정 (Android 트랙 ↔ 하네스 트랙 내부 규격)
 > **소유 주제:** 폰이 뱉고 PC가 읽는 측정 로그의 형식.
@@ -53,6 +53,8 @@ detect.csv      ③ 탐지 **추론 1회당 1행** (v6 추가. 탐지를 켠 런
 | `t_render_start_ns` | int ns | 렌더 시작 |
 | `t_render_end_ns` | int ns | 렌더 제출 완료 |
 | `dropped_since_last` | int | 직전 행 이후 백프레셔로 버려진 프레임 수 |
+
+④ 오버레이 열 3개(v7)는 성질이 달라 아래 별 절에 있다 → **"④ 오버레이 열 (v7)"**.
 
 ### GPU 패스 시간 (v2 추가, v3·v4에서 D 계열 확장, v5에서 프레임 단일 query) — **다른 시계에서 온다**
 
@@ -225,10 +227,88 @@ DVFS/발열 차**인지 아직 갈라내지 못했다 → **열별 차분을 근
 
 **위 세 표에 없는 열은 집계에 쓰이지 않고, 하네스가 이름을 지목해 경고한다 → §4 "열 단위 방어선".**
 
+### ④ 오버레이 열 (v7 추가) — **GPU 열이 아니다**
+
+③ 탐지 결과를 ④ 오버레이에 이어 붙이면서 들어온 열 3개다. 프레임당 1행(`frames.csv`)이지만
+**위 GPU 열들과 물리량·시계·폐기 가드가 전부 다르다.**
+
+| 열 | 타입 | 의미 | 시계 | 버짓 칸 | 폐기 하한 | 추가 |
+|---|---|---|---|---|---|---|
+| `stage_h_ms` | float ms | ④ **좌표 평활·hold**의 구간 길이 (GL 스레드) | **CPU 벽시계** | **H** | `> 0` | v7 |
+| `overlay_boxes` | int | **그 프레임에 실제로 그린 박스 수** | — (개수) | **없음** | `>= 0` | v7 |
+| `t_overlay_source_ns` | int ns | 그 프레임이 사용한 탐지 결과의 **게시 시각** | `CLOCK_BOOTTIME` | **없음** | — | v7 |
+
+🔴 **`stage_h_ms`는 CPU 벽시계다** (`SystemClock.elapsedRealtimeNanos`, GL 스레드).
+`detect.csv`의 E·F·G와 **같은 부류**이고 GPU 시계가 아니다. 그래서 세 곳 전부에서 빠진다:
+
+| 어디 | 왜 |
+|---|---|
+| `GPU_TIME_COLUMNS` | 물리량이 다르다. GPU 열로 읽히면 아래 두 줄이 자동으로 따라온다 |
+| `gpu_sum_ms` | 더하면 **CPU 벽시계와 GPU query를 더한 숫자**가 버짓표로 나간다 |
+| `stage_d_total_ms` | D 계열이 아니다. 넣으면 ④ 비용이 ②(D칸)로 계상된다 |
+
+`lib/frame_log.py`의 상수 자기검사가 이 셋을 **import 시점에** 강제한다(`gpu_frame_ms`의
+v5 자기검사와 같은 모양이다 — 들어가 있으면 모듈이 죽는다). 검사 없이 주석만 두면 다음
+사람이 넣어도 아무 일도 일어나지 않고, 결과 숫자만 보면 그럴듯해서 사람 눈으로는 안 걸러진다.
+- ⚠️ **합계 열을 만들지 않는다.** H는 열 하나이며 이 열을 다른 열과 더하는 파생 시계열은 없다.
+- 🔴 **앱에 요구하는 정밀도: ms 소수 3자리 이상.** 평활이 싸면 H가 진짜로 `0.0x ms`인데 소수
+  1자리로 쓰면 `0.0`이 되고, 하한 가드(`> 0`)가 **가장 싼 샘플만 골라 폐기**해 분포가 위로
+  치우친다(E·F·G에 같은 요구가 있는 이유와 글자 그대로 같다).
+
+🔴 **`overlay_boxes`의 폐기 하한은 `>= 0`이다.** **0은 정상값이다** — 그 프레임에 그린 박스가
+없었다는 뜻이고, 야간 보행에서는 그런 프레임이 다수다. 시간 열의 `> 0`을 복사하면 **박스 0개
+프레임이 전부 폐기**되어 (a) 분포가 위로 치우치고 (b) 폐기 카운트가 프레임 수만큼 튀어 진짜
+결손을 덮는다(`detect.csv`의 카운트 열과 같은 규약이며 같은 함수 `_collect_nonneg`로 받는다).
+- 🔴 **이 열이 없으면 I칸·H칸이 "조건 없는 숫자"가 된다.** 오버레이 비용은 박스 개수에 딸린
+  양이다(§5 `overlay.box_count`가 필수 조건인 것과 같은 논거). 하네스는 `stage_h_ms`가 있는데
+  이 열이 없으면 **경고한다.**
+- ⚠️ **`session.json`의 `overlay.box_count`와 다른 값이다.** 그쪽은 arm이 **선언한** 조건
+  (정적 더미 박스 개수)이고 이쪽은 **그 프레임에 실제로 그린 개수**다 — ③ 결과를 받기
+  시작하면 프레임마다 달라지므로 둘이 갈린다.
+
+🔴 **`t_overlay_source_ns`는 박스가 0개여도 적는다.** "탐지가 아무것도 못 찾았다"도 게시된
+결과다 — 거기에 `-1`을 적으면 "결과가 없다"와 "빈 결과가 있다"가 구분되지 않고 신선도 분포가
+**박스가 있는 프레임 쪽으로만** 치우친다. `-1`은 **아직 어떤 결과도 게시되지 않았다**(첫 추론
+완료 전)일 때만이다. 그 행은 `overlay_freshness_ms`의 폐기로 계수되며 사유 문장이 그렇게 말한다.
+
+#### 오버레이 파생 시계열 (CSV 열이 아니다)
+
+| 이름 | 계산 | 버짓 칸 | 하한/상한 |
+|---|---|---|---|
+| `overlay_freshness_ms` | `t_render_start_ns − t_overlay_source_ns` | **없음** | `> 0` / 없음 |
+| `capture_to_recv_ms` | `t_recv_ns − t_capture_ns` | **없음** | `> 0` / `< 5000ms` |
+
+🔴 **신선도를 CSV에 저장하지 않는다.** 유도값이므로 하네스가 계산한다(아래 "유도값은 저장하지
+않는다"). 이 값은 **그 프레임이 그린 박스가 몇 ms 전 탐지 결과인가**이고, 탐지 갱신 지연을
+숫자로 만드는 수단이다.
+- ⚠️ **탐지 주기(`detect_cadence_ms`)와 다른 값이며 모집단도 다르다**(프레임 vs 추론).
+  탐지가 3.4Hz인데 표시가 30FPS면 같은 결과가 여러 프레임에 걸쳐 쓰이므로 이 분포는 0부터
+  주기까지 **톱니로 퍼진다.** 두 분포를 더하거나 비교해 빼지 않는다.
+- `t_render_start_ns`가 없는 행은 계산할 수 없으므로 `no_render_start` 사유로 폐기 계수된다
+  (조용히 사라지지 않는다).
+
+**`capture_to_recv_ms`는 지연 원인의 1차 분해용이다** (v7). 이 한 칸이 있으면
+`capture_to_render_ms`(프로젝트 최대 위험)를 셋으로 가를 수 있다:
+
+```
+capture → recv           ISP + 큐            (capture_to_recv_ms)
+recv    → render_start   디스패치 대기        (recv_to_render_ms − render_latency_ms)
+render_start → render_end 제출               (render_latency_ms)
+```
+
+- 🔴 **기존 런의 원본 `frames.csv`로 소급 분석이 된다** — 앱 변경이 필요 없다(`t_capture_ns`와
+  `t_recv_ns`는 v1부터 있다).
+- ⚠️ **`t_capture_ns`가 섞여 있으므로 `capture_to_render_ms`와 같은 상한 가드를 쓴다**
+  (기준 시계가 의심 대상인 열은 그것뿐이다 → §4). 두 시계열의 폐기는 원인이 같으므로
+  **한 문장으로 합쳐** 경고한다.
+- ⚠️ **세 조각의 분포를 더해 `capture_to_render_ms`를 검산하지 않는다.** 폐기가 조각마다 따로
+  일어나고 `t_render_start_ns`가 없는 프레임도 있다.
+
 ### 유도값은 저장하지 않는다
 
 **프레임타임·FPS를 폰이 계산해 넣지 않는다.** 타임스탬프만 넣고 계산은 PC가 한다.
 폰이 계산한 값과 PC가 계산한 값이 어긋나면 어느 쪽이 맞는지 판정할 방법이 없다.
+**오버레이 신선도(v7)도 같다** — `t_overlay_source_ns`만 넣고 차는 PC가 낸다.
 
 ## 2-D. `detect.csv` — ③ 탐지 계측 (v6)
 
@@ -346,7 +426,7 @@ DVFS/발열 차**인지 아직 갈라내지 못했다 → **열별 차분을 근
 | `model_sha256` · `ep_requested` · `ep_resolved` · `ep_matches` · `period_n` · `padding_pixel_fraction` | `session.json`에서 그대로 옮긴 **그 런의 조건** (아래 §5) |
 | `skipped_while_busy_total` / `_rows` | 누적값의 마지막 관측치 + 관측 행 수 |
 
-## 3. 하네스가 뽑아내는 5가지 (한 숫자로 뭉치지 않는 이유)
+## 3. 하네스가 뽑아내는 6가지 (한 숫자로 뭉치지 않는 이유)
 
 | 지표 | 계산 | 채워지는 조건 | 무엇을 말하나 |
 |---|---|---|---|
@@ -355,6 +435,7 @@ DVFS/발열 차**인지 아직 갈라내지 못했다 → **열별 차분을 근
 | `render_latency_ms` | `t_render_end - t_render_start` | **`t_render_start_ns`가 있을 때만** | 프레임 1장의 **순수 렌더 비용** |
 | `recv_to_render_ms` | `t_render_end - t_recv` | `t_render_end_ns` 있을 때 | 도착~렌더 완료 **체류시간** (큐 대기 포함) |
 | `capture_to_render_ms` | `t_render_end - t_capture` | §4 조건부 | 취득~표시 |
+| `capture_to_recv_ms` | `t_recv - t_capture` | §4 조건부 (v7) | 위 지연의 **앞자락**(ISP + 큐) — 지연 원인 1차 분해 |
 
 > ⚠️ **`render_latency_ms`와 `recv_to_render_ms`는 다른 물리량이므로 같은 키에 섞지 않는다.**
 > 예전 구현은 `t_render_start_ns`가 없으면 `t_recv_ns`를 폴백 기준으로 써서 `recv_to_render`
@@ -450,6 +531,51 @@ DVFS/발열 차**인지 아직 갈라내지 못했다 → **열별 차분을 근
 > `t_render_end_ns`는 드로우콜 **제출** 시각이다(`glDrawArrays`는 즉시 반환한다).
 > ②를 얹은 뒤 "지연이 그대로다"라고 읽으면 틀린다. 늘어난 GPU 비용은 `stages`에 나타난다.
 
+### ④ 오버레이 — `summary.json`의 `overlay` 블록 (v7). **`stages`·`detect`와 다른 블록이다**
+
+`analyze_frames.py`가 항상 채운다(열이 없으면 `columns_present: []`이고 `count == 0`이다 —
+그 둘이 함께 있어야 "0이었다"와 "그 빌드가 재지 않았다"가 구분된다).
+
+- 🔴 **`stages`에 섞지 않는다.** 그 블록의 `clock`이 "GPU 시계"라고 선언하는데 `stage_h_ms`는
+  CPU 벽시계다. 한 블록에 담으면 그 선언이 절반에 대해 거짓이 된다.
+- 🔴 **`detect`에도 섞지 않는다.** 시계는 같지만 **모집단이 다르다** — `detect.n`은 추론
+  횟수이고 `overlay.n`(=각 분포의 `count`)은 프레임 수다.
+- 그래서 칸 라벨 매핑도 dict가 셋이다: `BUDGET_CELL_OF`(GPU·frames) /
+  `DETECT_BUDGET_CELL_OF`(CPU·detect) / `FRAME_CPU_BUDGET_CELL_OF`(CPU·frames).
+  `analyze_frames.py`가 **세 dict가 한 열도 공유하지 않는지** import 시점에 검사한다.
+
+| 키 | 담는 것 |
+|---|---|
+| `clock` / `population` | "CPU 벽시계 / 행 하나 = 프레임 1장" — 블록만 떼어 읽는 소비자가 처음 보는 줄 |
+| `stage_h_ms` · `overlay_boxes` · `overlay_freshness_ms` | 분포(p50/p95/p99/min/max/count) |
+| `budget_cell` | `stage_h_ms → H`, 나머지는 **명시적 `null`** |
+| `condition_note` | 🔴 H칸·I칸은 **박스 개수의 함수**이므로 개수 분포를 함께 옮겨야 한다 |
+| `flicker` | 아래 깜빡임 검출기 |
+
+#### 깜빡임 검출기 (`overlay.flicker`) — **"깜빡임을 만들지 않았다"의 유일한 기계 근거**
+
+눈으로 본 것은 계측이 아니고 재현 절차도 없다. H칸 평활의 목적은 박스가 튀는 것을 줄이는
+것인데, **박스가 사라졌다 나타났다 하는 구간을 만들면 그게 곧 깜빡임**이고 광과민 사용자에게는
+안전 문제다(상류가 ④를 '항상 정적 윤곽'으로 못 박은 이유 → §5 `overlay.no_blink_reason`).
+
+| 키 | 무엇 |
+|---|---|
+| `blank_transitions` | 🔴 **`>0 → 0 → >0` 전이 횟수.** 양쪽이 모두 양수인 0 구간의 개수 |
+| `zero_run_frames` | 0 구간 **길이 분포(프레임 수 — ms가 아니다)**. 1~2프레임이면 탐지 갱신이 끊긴 모양, 수십이면 장면에서 사라진 모양 |
+| `box_count_changes` / `_per_min` | 개수가 바뀐 횟수(0을 거치지 않는 튐 포함) / 분당 |
+| `zero_runs_at_edge` | 시계열 **앞자락·뒷자락**에 걸린 0 구간 수. **전이로 세지 않는다** — 그건 "사라진" 것이 아니라 아직/이미 없는 상태이며, 세면 모든 런에 최소 1이 붙어 지표가 죽는다 |
+| `sampling_note` | 이 수열은 **폐기되지 않은 행만** 이은 것이다. 폐기가 있으면 전이가 감춰지거나 없던 전이가 붙어 보일 수 있다 |
+
+- 🔴 **판정선을 만들지 않는다.** "몇 회 이상이면 안 된다"는 값은 이 저장소에 없다(판정선은
+  `lib/targets.py`에만 있고 깜빡임 한계는 팀 합의 전이다). `threshold: null`이며
+  **`verdict`·종료 코드를 흔들지 않는다.**
+- 🔴 **전이가 있다는 것이 곧 결함이라는 뜻도 아니다.** 장면에서 위험물이 실제로 사라졌다 다시
+  나타났을 수 있고, **어느 쪽인지 가르려면 정답 라벨이 필요하다**(→ `safety_regression`).
+  전이가 1건 이상일 때만 경고가 붙는다(0건 런에 매번 뜨면 곧 아무도 안 본다).
+- 🔴 **안전 회귀는 그래도 `evaluated: false`다.** 박스가 화면에 그려지기 시작해도 정답 라벨과
+  골든 샘플이 없어 "옳게 그렸는가"는 못 잰다. **"그려진다"와 "옳게 그린다"는 다른 사실이고**,
+  그 사유 문장의 주인은 `analyze_frames.safety_regression_block` 하나다(사본을 만들지 않는다).
+
 ## 4. 시계 규약 — 가장 틀리기 쉬운 곳
 
 **`t_recv_ns` · `t_render_*_ns`는 전부 같은 단조 시계여야 한다.**
@@ -468,11 +594,15 @@ Android에서는 `SystemClock.elapsedRealtimeNanos()`.
 | `render_latency_ms` | `> 0` | **없음** |
 | `recv_to_render_ms` | `> 0` | **없음** |
 | `capture_to_render_ms` | `> 0` | `< 5000ms` |
+| `capture_to_recv_ms` (v7) | `> 0` | `< 5000ms` — `t_capture_ns`가 섞였으므로 위와 **같은 가드** |
 | `stage_b_ms` · `stage_i_ms` · `gpu_present_ms` | `> 0` | **없음** |
 | D 계열: `stage_d_ms` · `stage_d_analyze_ms` · `stage_d_build_ms` · `stage_d_apply_ms` · `stage_d_denoise_ms` · `stage_d_analyze2_ms` · `stage_d_build2_ms` · `stage_d_apply2_ms` | `> 0` | **없음** |
 | `gpu_frame_ms` (프레임 단일 query, v5) | `> 0` | **없음** |
 | `stage_d_total_ms` (파생) | `> 0` | **없음** |
 | `gpu_sum_ms` (파생) | `> 0` | **없음** |
+| `stage_h_ms` (v7, **CPU 벽시계**) | `> 0` | **없음** — 같은 CPU 시계 안에서 구간이 닫힌다(E·F·G와 같은 논거) |
+| `overlay_boxes` (v7, **개수**) | 🔴 `>= 0` | **없음** — **0은 정상값이다**(박스 없는 프레임) |
+| `overlay_freshness_ms` (v7 파생) | `> 0` | **없음** — 큰 값은 탐지 갱신이 밀린 것이고 그게 잡아야 할 것이다 |
 
 GPU 패스 시간에 상한을 두지 않는 이유도 같다. 한 패스의 시작/끝을 **같은 GPU 시계 안에서**
 닫으므로 큰 값은 시계 오류가 아니라 진짜 느린 프레임이다 — 발열로 GPU 클럭이 떨어지는
@@ -850,6 +980,32 @@ id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통
 | `detect_nnapi_prof` | 위 + **ORT 프로파일러 켬** |
 | `detect_xnnpack_prof` | 위 + **ORT 프로파일러 켬** |
 
+##### ③→④ 연결 arm (v7) — 셋이 **한 세트**다
+
+| 값 | 렌더 | 계측 | 무엇을 재는가 |
+|---|---|---|---|
+| `detect_cpu_highlight` | 4패스(오버레이) | 패스별 GPU query + `stage_h_ms` + `overlay_boxes` | **본진.** I 상한 · H |
+| `detect_cpu_highlight_1q` | **위와 글자 그대로 같은 렌더** | 프레임 단일 query → `gpu_frame_ms` | **I 하한** |
+| `detect_cpu_1q` | 3패스(오버레이 없음) | 프레임 단일 query → `gpu_frame_ms` | 🔴 **하한의 분모** |
+
+🔴 **왜 `detect_cpu_1q`가 새로 필요한가.** 하한은 "같은 계측 방식의 두 arm 차"로만 낼 수 있는데
+(위 `_1q` 절: 계측 방식이 다른 분모에 빼면 그 값이 arm 비용도 중복 계상량도 아니게 된다),
+지금 있는 단일 query 분모는 `blit_2pass_1q`뿐이고 **거기에는 탐지 부하가 없다.** ③이 돌면 SoC
+전체가 다른 상태이므로 그 분모에 빼면 차이에 탐지 비용이 섞인다.
+**알려진 이슈 36이 정확히 이 부류다** — `highlight_boxes_1q`의 `gpu_frame_ms`가 분모와 소수점
+셋째 자리까지 같아 I 하한이 `0`으로 나왔고, 그 `0`은 "오버레이가 공짜"가 아니라 **분모가 상한을
+통째로 중복 계상했다**는 뜻이었다. 그러므로:
+
+- **하한 = `detect_cpu_highlight_1q − detect_cpu_1q`** (둘 다 프레임 단일 query)
+- **상한의 분모는 기존 `detect_cpu`** (둘 다 패스별 query), 같은 세션 안에서 잰다
+- `blit_2pass_1q`나 `detect_cpu`를 하한의 분모로 쓰지 않는다
+
+🔴 **앱 쪽에 딸린 요구 (하네스가 강제할 수 없다).** `_1q` arm은 `RenderArm.kt`의
+`singleFrameQueryPeer`·`renderPassCount` 대응 항목에 **반드시** 등록돼야 한다. 빠뜨리면
+`GpuTimerRing`이 프레임 전체가 아니라 **첫 패스만** 감싸고, 그러면 `gpu_frame_ms`가 "프레임
+하나의 GPU 시간"이 아닌 채로 하한 계산에 들어간다 — **로그만 보면 그럴듯하다.**
+기존 `_1q` arm 6개가 어떻게 등록돼 있는지 확인하고 같은 모양으로 넣는다.
+
 ##### `detect_parity_*` = **이식 정확성 대조 전용 arm** (v6)
 
 | 값 | 무엇을 하는가 |
@@ -914,6 +1070,7 @@ F(그리고 그것을 포함하는 모든 값)에 **자기 비용을 얹는다.*
 | `stage2_bilateral` | ② 노이즈 억제(bilateral). `+bf` arm이 ② 자리에서 한 번 더 도는 패스 → `stage_d_denoise_ms` | 앱 (`+bf` arm) / 생성기 `--stage_d_denoise_ms` |
 | `detect` | ③ 탐지. 계측은 **별 파일 `detect.csv`**로 받는다(→ §2-D). GPU 열이 아니라 CPU 벽시계 E·F·G다 | 앱 (③ arm) / 생성기 `--detect_every_n` |
 | `stage4_highlight` | ④ 강조 오버레이 패스(② 출력 위에 스트로크 박스를 덧그린다) → `stage_i_ms` | 앱 `RenderArm.HIGHLIGHT_BOXES` · `HIGHLIGHT_BOXES_STRESS`(둘 다 `["blit_2pass","stage4_highlight"]`) / 생성기 `--stage_i_ms` |
+| `stage4_smoothing` | ④ **좌표 평활·hold**(H칸) → `stage_h_ms`. 🔴 **렌더 패스가 아니라 GL 스레드의 CPU 구간이다** — 그래서 비용이 GPU query가 아니라 CPU 벽시계 열로 온다. 토큰을 두는 이유는 "박스를 그리되 평활하지 않는 arm"과 구조적 조건이 다르기 때문이다. ⚠️ **앱이 아직 내지 않는 예약 토큰이며 팀원2 쪽 명명이다**(`stage2_bilateral`과 같은 취급 — 앱이 다른 문자열을 쓰면 앱이 정답이고 여기를 고친다) | 생성기 `--stage_h_ms` / 앱 생산 예정 |
 
 > **조합 arm에는 새 토큰을 만들지 않는다** (v4). ② 자리에서 스테이지를 두 번 도는 arm은
 > 실제로 위 토큰을 **두 개 나열**한다(예: `["blit_2pass","stage2_drago","stage2_clahe"]`) —
@@ -1020,6 +1177,32 @@ gpu_present_ms                                        ← 버짓 칸이 없는 �
 미지 열로 보고 경고만 한 뒤 **집계에서 통째로 버린다** — 10분 측정이 숫자 없이 끝난다.
 그래서 **하네스 쪽이 앱보다 먼저 들어간다.**
 
+### `frames.csv`에 **GPU가 아닌** 열을 추가할 때 (v7~)
+
+`stage_h_ms`처럼 프레임당 1행이지만 GPU 시계가 아닌 열은 **GPU 목록에 넣지 않는다.** 시계나
+물리량이 다르면 목록을 가르고, 목록마다 가드·합산 경로·칸 라벨이 따라온다:
+
+| 성질 | 목록 | 폐기 하한 | 칸 라벨 dict |
+|---|---|---|---|
+| GPU 패스 시간 | `GPU_TIME_COLUMNS` | `> 0` | `BUDGET_CELL_OF` |
+| CPU 벽시계 구간 (frames) | `FRAME_CPU_TIME_COLUMNS` | `> 0` | `FRAME_CPU_BUDGET_CELL_OF` |
+| 개수 (frames) | `FRAME_COUNT_COLUMNS` | 🔴 `>= 0` | 〃 (칸 없음 = `null`) |
+| 시각 (파생의 재료) | `FRAME_OVERLAY_SOURCE_COLUMNS` | — | 없음(분포를 내지 않는다) |
+
+그리고 `detect.csv`와 같은 이유로 **자리와 버전도 함께 선언해야 한다**:
+
+1. `OPTIONAL_COLUMNS`(위 성질별 목록을 거쳐 자동으로 들어간다)
+2. `COLUMN_ADDED_IN`에 도입 버전 — 목록은 `VERSIONED_FRAME_COLUMNS`가 파생시키고,
+   어긋나면 **import에서 죽는다**(그러지 않으면 "앱이 뒤처졌다" 경고가 그 열을 말없이 빼먹는다)
+3. `FrameSeries`에 담을 필드 — 없으면 **import에서 죽는다**(선언만 있고 수집이 없으면 그 열은
+   영원히 `count=0`이고, 그 상태는 "앱이 그 열을 안 냈다"와 로그상 구분되지 않는다)
+4. `analyze_frames.py`의 칸 라벨 dict — 칸이 없어도 **명시적 `null`**
+5. 이 문서 §2의 표
+
+> **왜 dict를 셋으로 두는가:** 한 dict에 넣는 순간 그 열이 다른 시계의 합산·조회 경로 라벨
+> 체계로 들어간다. `gpu_sum_ms`에 CPU 벽시계가 더해진 숫자는 **결과만 보면 그럴듯해서 사람
+> 눈으로는 걸러지지 않는다** — 그래서 주석이 아니라 import 시점 검사로 막는다.
+
 ### `detect.csv`에 열을 추가할 때 (v6~)
 
 같은 규칙에 **하나가 더 붙는다: 그 열을 어떻게 수집할지 선언해야 한다.**
@@ -1086,8 +1269,38 @@ python scripts/run_session.py --plan my.json --session_id night_2   # 계획을 
   **노이즈 바닥(같은 arm 반복의 열별 차이)** 과 **arm 간 차분**을 나란히 낸다 —
   차분이 바닥보다 작으면 그건 신호가 아니다. `gpu_present_ms`는 arm이 달라도 같은
   코드인데 움직이므로 **arm 비교에 항상 함께** 나온다(귀속 번짐 지표).
+- **비교 열은 세 목록에서 온다** (v7): `COMPARE_COLUMNS`(GPU 시계 → `summary["stages"]`) ·
+  `DETECT_COMPARE_COLUMNS`(CPU 벽시계, 모집단=추론 → `summary["detect"]`) ·
+  `OVERLAY_COMPARE_COLUMNS`(CPU 벽시계, 모집단=프레임 → `summary["overlay"]`). 목록과 조회
+  경로가 `METRIC_SOURCES`에 함께 묶여 있고, **셋이 한 이름도 공유하지 않는지** import 시점에
+  검사한다. CPU 벽시계 열은 표에서 `[CPU벽시계]` 태그를 받는다 — 줄만 복사해 가도 시계가
+  따라가야 한다.
+  - 🔴 **`stage_h_ms`(H칸)가 이 표에 선다.** 오버레이 arm을 두 번 돌린 세션에서 **H의 노이즈
+    바닥**이 나오고, 그것이 H를 판정하는 유일한 방법이다("두 런의 H p50 차가 그 바닥 안인가").
+  - 🔴 **한쪽 런에만 ④ 열이 있으면 H Δ는 나오지 않는다** — 없는 값을 0으로 만들지 않는다
+    (오버레이 arm vs `detect_cpu` 조합이 그렇다). 그 사실은
+    `arm_deltas[].overlay_condition.comparable=false`로 명시된다.
+  - 🔴 **박스 개수 조건이 Δ보다 위에 찍힌다**(`overlay_condition`) — 개수 없는 H는 조건이
+    없는 숫자이고, 개수가 다르면 그 Δ는 평활 비용의 차가 아니라 개수 차일 수 있다.
+  - 🔴 **개수(`overlay_boxes`)와 신선도(`overlay_freshness_ms`)는 이 표에 넣지 않는다.**
+    개수는 `diff_metrics`가 값을 `delta_ms`로 이름 붙이므로 **개수가 ms로 라벨된다**.
+    신선도는 `detect_cadence_ms`를 뺀 것과 같은 이유(비용이 아니라 결과의 나이)다.
+  - 🔴 **H를 프레임당·추론당으로 환산하지 않는다**(탐지 주기 N이 `☐` 미정이다). 표는
+    `stage_h_n`과 분석 창의 프레임 수를 나란히 놓아 "H가 매 프레임 돌았는가"만 되묻게 한다.
+  - 🔴 **표에 행으로 서는 것이 합산 대상이 된다는 뜻은 아니다** — H는 `gpu_sum_ms`·
+    `stage_d_total_ms` 어느 합에도 들어가지 않으며 `lib/frame_log.py`의 자기검사가 강제한다.
 - 프롬프트: `Enter`=측정 끝났음 · `s [사유]`=건너뛰기 · `q`=중단(재개 가능) ·
   `u <기기 런 이름>`=이미 찍힌 런을 쓴다(신규 감지를 건너뛰지만 **계획 대조는 그대로 돈다**).
+- **런 전/후 기기 온도를 자동으로 읽는다** (v7). `adb shell dumpsys battery`의 `temperature`
+  ÷ 10 = ℃. `attempt.device_temperature` → 세션 리포트의 런 표·caveats까지 따라간다.
+  🔴 **못 읽으면 `null`이며 그것은 "온도가 안 올랐다"가 아니라 "읽지 못했다"다**(지어내지
+  않는다). 🔴 **배터리 온도이지 SoC/GPU 다이 온도가 아니다** — 늦게 따라오고 폭도 작아서
+  Δ는 발열 **방향**의 증거이며 스로틀링 판정이 아니다. **어긋남으로 만들지 않는다**(온도
+  임계는 판정선이 아니고 `lib/targets.py`에 없다). `u <런>`으로 지목한 옛 런에는
+  `applies_to_run=false`가 붙는다 — 그 온도는 그 런의 것이 아니다.
+  *왜 자동인가:* 알려진 이슈 23이 "런 안 GPU +13% 드리프트가 발열/DVFS인지 **온도를 기록하지
+  않아 판별 못 했다**"이고, 계획 파일이 사람에게 손으로 치라고 지시하던 상태에서 **두 라운드
+  연속 누락**했다. 손 작업은 잊힌다.
 
 | 종료 코드 | 뜻 |
 |---|---|
@@ -1188,12 +1401,31 @@ python scripts/gen_synthetic_frames.py --detect_every_n 4 --stage_f_ms 25 \
 python scripts/gen_synthetic_frames.py --detect_every_n 6 --stage_f_ms 20 --no_detect_end
 # E·F·G 열이 하나도 없는 detect.csv (하위호환·"단계 비용을 말할 수 없다" 경고 경로)
 python scripts/gen_synthetic_frames.py --detect_every_n 6
+
+# ④ 오버레이(v7). stage_h_ms는 **CPU 벽시계**라 GPU 합에 안 들어간다(같은 통에 담지 않는다).
+# --overlay_boxes는 **-1이 '열 없음'이다** (0은 유효한 값이므로 열 없음의 표식으로 못 쓴다).
+python scripts/gen_synthetic_frames.py --detect_every_n 9 \
+  --stage_b_ms 1.2 --stage_d_ms 2 --stage_i_ms 0.5 --gpu_present_ms 0.8 \
+  --stage_h_ms 0.35 --overlay_boxes 3 --overlay_empty_frac 0.15 --overlay_source_lag_ms 40 \
+  --stage_e_ms 3 --stage_f_ms 60 --stage_g_ms 0.4 \
+  --pipeline_stages "blit_2pass,stage2_gamma,detect,stage4_highlight,stage4_smoothing"
+# 깜빡임 검출기만 태우려면 개수만 줘도 된다 (0 구간이 >0→0→>0 전이를 만든다)
+python scripts/gen_synthetic_frames.py --overlay_boxes 2 --overlay_empty_frac 0.2 \
+  --pipeline_stages "blit_2pass,stage4_highlight"
+# 개수 없이 H만 주면 "조건 없는 숫자" 경고 경로 / 게시 시각 없이 개수만 주면 신선도 없음 경고
+python scripts/gen_synthetic_frames.py --stage_h_ms 0.3 --pipeline_stages "blit_2pass,stage4_smoothing"
+python scripts/gen_synthetic_frames.py --overlay_boxes 2 --pipeline_stages "blit_2pass,stage4_highlight"
 ```
 
 > ⚠️ **합성 detect.csv의 E·F·G는 인자로 만든 값이지 측정치가 아니다.** 목적은 소비자 경로
 > (`analyze_frames --detect` / `pull_frames` / `run_session`)를 실기기 전에 끝까지 태우는
 > 것뿐이다. `render_arm=synthetic` · `lighting_condition=synthetic` · `build_type=synthetic`
 > 세 가지가 그 사실을 로그에 박아 둔다 — 이 숫자를 버짓 E·F·G 칸에 옮기지 않는다.
+>
+> ⚠️ **④ 오버레이(v7)도 같다.** `stage_h_ms`는 인자가 정한 값이고 `overlay_boxes`는 **탐지
+> 결과가 아니라 난수**다. 그러므로 합성 로그에서 나온 **깜빡임 전이 수는 검출기가 도는지를
+> 확인하는 값**이지 앱의 깜빡임 실측이 아니다 — 그 숫자를 안전 근거로 쓰지 않는다.
+> 생성기가 그 사실을 실행 시점에 경고로도 낸다.
 
 > ⚠️ **`--pipeline_stages`를 생략하면 `--stage_*_ms`/`--detect_every_n`에서 유추한다(옛 동작).**
 > ② 하위 패스 열에는 대응 토큰이 없으므로, 하위 열만 주면 `pipeline_stages=[]`인

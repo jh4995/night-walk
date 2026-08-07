@@ -119,6 +119,81 @@ def collect(adb_path_hint: str = "", serial: str = "") -> dict:
     return meta
 
 
+# ── 기기 온도 (`adb shell dumpsys battery`) ─────────────────────────────────
+# **왜 필요한가:** 알려진 이슈 23이 "런 안에서 GPU 시간이 +13% 드리프트했는데 발열/DVFS인지
+# **온도를 기록하지 않아 판별하지 못했다**"이고, 그 뒤로 두 라운드 연속 누락했다. 계획 파일이
+# 사람에게 손으로 적으라고 지시하는 상태였고(s11의 35.1→40.5℃가 그렇게 나왔다) 손 작업은
+# 잊힌다 — 그래서 코드로 옮긴다.
+#
+# 🔴 **배터리 온도이지 SoC/GPU 다이 온도가 아니다.** 열원과 떨어져 있어 늦게 따라오고 폭도
+#   작다. 그러므로 이 값으로 "스로틀링이 있었다/없었다"를 단정하지 않는다 — 두 시점의 차가
+#   **발열 방향의 증거**일 뿐이다. 다이 온도는 기기·커널마다 경로가 달라
+#   (`/sys/class/thermal/thermal_zone*`) 어느 zone이 무엇인지 신고해 주는 표준이 없다.
+#   그래서 "어느 기기에서나 같은 뜻으로 읽히는 값"을 택했고, 그 한계를 이름과 문장에 남긴다.
+# 🔴 **못 읽으면 None이다. 지어내지 않는다.**
+BATTERY_TEMP_COMMAND = ("shell", "dumpsys", "battery")
+BATTERY_TEMP_KEY = "temperature"
+BATTERY_TEMP_DIVISOR = 10.0  # dumpsys battery는 0.1℃ 단위 정수로 낸다
+BATTERY_TEMP_SOURCE = "adb shell dumpsys battery: temperature ÷ 10 = ℃ (**배터리** 온도)"
+
+
+def battery_temperature_c(adb_path_hint: str = "", serial: str = "") -> dict:
+    """기기 배터리 온도(℃). 실패해도 예외를 던지지 않고 `celsius=None`으로 돌려준다.
+
+    반환 dict:
+      celsius : float | **None**(못 읽었다 — 지어내지 않는다)
+      raw     : `dumpsys`가 준 원문 값 (없으면 None)
+      source  : 어떻게 얻은 값인지 (사람이 되물을 수 있게)
+      reason  : celsius가 None인 사유 (있으면)
+      serial  : 실제로 물어본 기기
+    """
+    out = {
+        "celsius": None,
+        "raw": None,
+        "source": BATTERY_TEMP_SOURCE,
+        "reason": None,
+        "serial": serial or None,
+        "limits": (
+            "배터리 온도이지 SoC/GPU 다이 온도가 아니다 — 열원과 떨어져 있어 늦게 따라오고 "
+            "폭도 작다. 두 시점의 차는 **발열 방향의 증거**이며 스로틀링 여부의 판정이 아니다"
+        ),
+    }
+    adb_path = find_adb(adb_path_hint)
+    if not adb_path:
+        out["reason"] = "adb를 찾지 못함 (ANDROID_HOME 미설정 또는 platform-tools 미설치)"
+        return out
+    target = serial
+    if not target:
+        serials = list_devices(adb_path)
+        if not serials:
+            out["reason"] = "device 상태인 기기 없음 (미연결 / USB 디버깅 미허용)"
+            return out
+        target = serials[0]
+        if len(serials) > 1:
+            out["multiple_devices"] = serials
+    out["serial"] = target
+    text = _adb(adb_path, list(BATTERY_TEMP_COMMAND), serial=target)
+    if not text:
+        out["reason"] = "dumpsys battery가 출력을 주지 않았다 (권한/기기 상태 확인)"
+        return out
+    for line in text.splitlines():
+        key, _, val = line.partition(":")
+        if key.strip() != BATTERY_TEMP_KEY:
+            continue
+        out["raw"] = val.strip()
+        try:
+            out["celsius"] = round(int(val.strip()) / BATTERY_TEMP_DIVISOR, 1)
+        except ValueError:
+            # 숫자가 아니면 **그대로 두고 판단하지 않는다.** raw는 남겼으므로 되물을 수 있다.
+            out["reason"] = f"temperature 값을 숫자로 읽을 수 없다: {val.strip()!r}"
+        return out
+    out["reason"] = (
+        f"dumpsys battery 출력에 '{BATTERY_TEMP_KEY}' 줄이 없다 — 이 기기/OS는 그 필드를 "
+        f"내지 않는다"
+    )
+    return out
+
+
 def describe(meta: dict) -> str:
     """로그 한 줄용 요약."""
     if not meta.get("available"):

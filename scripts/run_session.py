@@ -48,7 +48,7 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from lib import targets  # noqa: E402
+from lib import device_meta, targets  # noqa: E402
 from lib.frame_log import (  # noqa: E402
     DETECT_CADENCE_SERIES,
     DETECT_ENABLED_PATH,
@@ -58,7 +58,10 @@ from lib.frame_log import (  # noqa: E402
     DETECT_EPS,
     DETECT_TIME_COLUMNS,
     DETECT_WALL_SERIES,
+    FRAME_COUNT_COLUMNS,
+    FRAME_CPU_TIME_COLUMNS,
     GPU_TIME_COLUMNS,
+    OVERLAY_FRESHNESS_SERIES,
     LIGHTING_CONDITIONS,
     LIGHTING_SYNTHETIC,
     LIGHTING_UNKNOWN,
@@ -177,22 +180,103 @@ COMPARE_COLUMNS = tuple(GPU_TIME_COLUMNS) + (STAGE_D_TOTAL_COLUMN, "gpu_sum_ms")
 #   주기가 달라진 것을 "비용이 늘었다"로 읽으면 안 된다 — 그 값은 detect 블록에서만 본다.
 DETECT_COMPARE_COLUMNS = tuple(DETECT_TIME_COLUMNS) + (DETECT_WALL_SERIES,)
 
-# 🔴 두 목록이 한 이름도 공유하지 않아야 한다. 겹치면 `summary_metrics`의 dict에서 한쪽이
+# ── ④ 오버레이 비교 열 (v7). **위 두 tuple과 또 다른 별 tuple이다** ─────────
+# 🔴 **왜 세 번째가 필요한가.** `stage_h_ms`는 CPU 벽시계인데 값은 `summary["overlay"]`에
+#   있다 — GPU 목록(`summary["stages"]`)에 넣으면 조회 경로가 어긋나 **조용히 count=0**이 되고,
+#   detect 목록(`summary["detect"]`)에 넣으면 같은 사고가 그쪽에서 난다. 위 두 블록 주석이
+#   말한 "라벨의 오염"이 여기서는 **조회 경로의 오염**으로 먼저 터진다.
+#
+# ⚠ **왜 이 표에 H를 넣는가.** s13a는 `detect_cpu_highlight`를 두 번 돌린다 — 그것이 그 arm의
+#   노이즈 바닥을 만드는 유일한 방법이고, H를 판정할 때 필요한 질문은 "두 런의 H p50 차이가
+#   그 바닥 안인가"다. 이 표에 H가 없으면 그 비교를 `summary.json` 두 건에서 **사람이 손으로**
+#   해야 한다.
+#
+# 🔴 **`overlay_boxes`는 넣지 않는다.** `diff_metrics`가 값을 `a_ms`/`b_ms`/`delta_ms`로
+#   이름 붙이므로 **개수가 ms로 라벨된다** — 이 저장소가 계속 막아 온 조용한 오독이다.
+#   박스 개수는 비용이 아니라 **비용의 조건**이므로 diff가 아니라 `overlay_condition`으로
+#   숫자 옆에 함께 나간다(아래).
+# 🔴 **`overlay_freshness_ms`도 넣지 않는다.** `detect_cadence_ms`를 뺀 것과 **같은 이유**다 —
+#   단계 비용이 아니라 결과의 나이이고, arm이 달라 갱신 지연이 달라진 것을 "비용이 늘었다"로
+#   읽으면 안 된다. 그 값은 overlay 블록에서만 본다.
+OVERLAY_COMPARE_COLUMNS = tuple(FRAME_CPU_TIME_COLUMNS)
+
+# CPU 벽시계 열 전부 (detect + overlay). `col_label`과 시계 혼재 경고가 이것을 쓴다 —
+# 목록을 두 곳에 손으로 적으면 새 열의 태그가 조용히 빠진다.
+CPU_WALL_COMPARE_COLUMNS = DETECT_COMPARE_COLUMNS + OVERLAY_COMPARE_COLUMNS
+
+# 🔴 세 목록이 한 이름도 공유하지 않아야 한다. 겹치면 `summary_metrics`의 dict에서 한쪽이
 #    다른 쪽을 덮어써 **한 시계의 숫자가 다른 시계의 이름으로** 표에 실린다.
-_compare_overlap = sorted(set(COMPARE_COLUMNS) & set(DETECT_COMPARE_COLUMNS))
-if _compare_overlap:
+_compare_sets = {
+    "COMPARE_COLUMNS(GPU 시계·stages)": COMPARE_COLUMNS,
+    "DETECT_COMPARE_COLUMNS(CPU 벽시계·detect)": DETECT_COMPARE_COLUMNS,
+    "OVERLAY_COMPARE_COLUMNS(CPU 벽시계·overlay)": OVERLAY_COMPARE_COLUMNS,
+}
+_compare_overlaps = [
+    (a, b, sorted(set(_compare_sets[a]) & set(_compare_sets[b])))
+    for i, a in enumerate(_compare_sets)
+    for b in list(_compare_sets)[i + 1:]
+    if set(_compare_sets[a]) & set(_compare_sets[b])
+]
+if _compare_overlaps:
     raise RuntimeError(
-        f"run_session.py 상수 불일치 — {_compare_overlap}이 GPU 시계 비교 열과 CPU 벽시계 "
-        f"비교 열 양쪽에 있다. 한 metrics dict에 담기므로 한쪽이 다른 쪽을 덮어쓴다"
+        "run_session.py 상수 불일치 — 비교 열 목록이 이름을 공유한다: "
+        + "; ".join(f"{cols}이 {a}와 {b} 양쪽에" for a, b, cols in _compare_overlaps)
+        + ". 한 metrics dict에 담기므로 한쪽이 다른 쪽을 덮어쓰고, 그러면 한 시계의 숫자가 "
+        "다른 시계의 이름으로 표에 실린다"
     )
 if DETECT_CADENCE_SERIES in DETECT_COMPARE_COLUMNS:
     raise RuntimeError(
         f"run_session.py 상수 불일치 — {DETECT_CADENCE_SERIES}는 실행 간격이지 단계 비용이 "
         f"아니다. arm 차분 표에 들어가면 주기 변화가 비용 변화로 읽힌다"
     )
+# 위 두 검사와 **같은 부류**다: 비용이 아닌 값이 비용 차분 표에 들어가는 것을 막는다.
+_overlay_compare_errors = []
+for _c in FRAME_COUNT_COLUMNS:
+    if _c in OVERLAY_COMPARE_COLUMNS:
+        _overlay_compare_errors.append(
+            f"{_c}는 **개수**이지 비용이 아니다 — diff_metrics가 값을 a_ms/b_ms/delta_ms로 "
+            f"이름 붙이므로 개수가 ms로 라벨된다. 조건은 overlay_condition으로 낸다"
+        )
+if OVERLAY_FRESHNESS_SERIES in OVERLAY_COMPARE_COLUMNS:
+    _overlay_compare_errors.append(
+        f"{OVERLAY_FRESHNESS_SERIES}는 단계 비용이 아니라 **결과의 나이**다 "
+        f"({DETECT_CADENCE_SERIES}를 뺀 것과 같은 이유) — arm이 달라 갱신 지연이 달라진 것이 "
+        f"비용 변화로 읽힌다"
+    )
+_overlay_stray = [c for c in OVERLAY_COMPARE_COLUMNS if c not in FRAME_CPU_TIME_COLUMNS]
+if _overlay_stray:
+    _overlay_compare_errors.append(
+        f"{_overlay_stray}은 frames.csv의 CPU 벽시계 열이 아니다 — 그 값은 "
+        f"summary['overlay']에 없으므로 조회가 조용히 count=0이 된다"
+    )
+if len(OVERLAY_COMPARE_COLUMNS) != 1:
+    # `overlay_condition`의 `stage_h_n`과 그 phrase가 **열 하나**를 전제한다
+    # (lib/frame_log.py의 DETECT_WALL_SOURCE_COLUMNS 개수 검사와 같은 부류). 열이 늘면
+    # 두 번째부터는 조용히 표본 수에서 빠지므로, 그때 조건 블록을 함께 고치게 죽인다.
+    _overlay_compare_errors.append(
+        f"OVERLAY_COMPARE_COLUMNS의 원소가 1개가 아니다({list(OVERLAY_COMPARE_COLUMNS)}) — "
+        f"overlay_condition의 표본 수(stage_h_n)가 첫 열만 보므로 나머지가 조용히 빠진다. "
+        f"열을 늘릴 때 그 블록을 열별 dict로 함께 고칠 것"
+    )
+if _overlay_compare_errors:
+    raise RuntimeError(
+        "run_session.py 상수 불일치 — ④ 오버레이 비교 열의 성질이 어긋난다: "
+        + "; ".join(_overlay_compare_errors)
+    )
 
 FRAMETIME_KEY = "frametime_primary"
 COMPARE_PERCENTILES = ("p50", "p95", "p99")
+
+# ── metrics를 뽑는 조회 경로 (블록 키 → 그 블록에서 가져올 열) ──────────────
+# **목록과 조회 경로를 한 자리에 묶는다.** 예전에는 `summary_metrics` 안에 블록 이름이
+# 리터럴로 두 번 적혀 있었고, 그 상태로 목록을 늘리면 "열은 등록했는데 어느 블록에서 읽을지
+# 아무도 모르는" 상태가 만들어진다(그 열은 영원히 metrics에 없고, 그건 "그 런이 그 열을
+# 안 냈다"와 구분되지 않는다).
+METRIC_SOURCES = (
+    ("stages", COMPARE_COLUMNS),
+    ("detect", DETECT_COMPARE_COLUMNS),
+    ("overlay", OVERLAY_COMPARE_COLUMNS),
+)
 
 # 종료 코드. 원인이 다르면 코드도 다르다.
 EXIT_OK = 0                 # 계획의 모든 런이 done, 어긋남 없음
@@ -919,6 +1003,70 @@ def fallback_integrity(
     }
 
 
+# ══ 기기 온도 2점 ═══════════════════════════════════════════════════════════
+# 🔴 **왜 이것을 자동화하는가.** 알려진 이슈 23은 "런 안에서 GPU 시간이 +13% 드리프트했는데
+#   발열/DVFS인지 **온도를 기록하지 않아 판별하지 못했다**"이고, 그 뒤 **두 라운드 연속
+#   누락**했다. 계획 파일이 사람에게 `adb shell dumpsys battery | grep temperature`를 손으로
+#   치라고 지시하는 상태였는데(s11의 35.1→40.5℃가 그렇게 나왔다), 손 작업은 잊힌다 —
+#   폴백 카운터·EP를 사람 눈에서 코드로 옮긴 것과 같은 부류다.
+#
+# 🔴 **배터리 온도이며 SoC/GPU 다이 온도가 아니다**(`lib/device_meta.py` 주석). 그러므로 이
+#   값으로 "스로틀링이 있었다/없었다"를 단정하지 않는다 — 두 시점의 차는 **발열 방향의
+#   증거**일 뿐이다. 어긋남으로도 만들지 않는다: 온도 임계는 판정선이 아니고
+#   (`lib/targets.py`에 없다) 어차피 사람이 통제할 수 없는 조건이다.
+# 🔴 **못 읽으면 null로 둔다. 지어내지 않는다.**
+def temperature_pair(before: dict | None, after: dict | None, forced: bool) -> dict:
+    """런 전/후 온도 한 쌍. `forced`=사람이 `u <런>`으로 **이미 찍힌 런**을 지목했는가.
+
+    🔴 `forced`가 참이면 이 온도는 **그 런의 것이 아니다.** 그 런은 과거에 찍혔고 우리가 잰
+    것은 지금 시각의 기기 온도다 — 그 사실을 `applies_to_run=False`로 명시한다. 조용히
+    같은 자리에 넣으면 나중에 그 숫자가 그 런의 발열 근거로 인용된다(이 스크립트가 계속
+    닫아 온 실패 양식이다).
+    """
+    b_c = (before or {}).get("celsius")
+    a_c = (after or {}).get("celsius")
+    return {
+        "before": before,
+        "after": after,
+        "delta_c": (
+            round(a_c - b_c, 1) if isinstance(b_c, (int, float)) and isinstance(a_c, (int, float))
+            else None
+        ),
+        "source": device_meta.BATTERY_TEMP_SOURCE,
+        # 사람이 두 숫자를 보고 판단하게 두지 않는다. None = 말할 수 없다.
+        "measured": b_c is not None and a_c is not None,
+        "applies_to_run": not forced,
+        "note": (
+            "런 전/후의 **배터리** 온도다. SoC/GPU 다이 온도가 아니므로 늦게 따라오고 폭도 "
+            "작다 — 두 시점의 차는 발열 **방향**의 증거이며 스로틀링 판정이 아니다. "
+            "값이 null이면 '온도가 안 올랐다'가 아니라 **읽지 못했다**는 뜻이다. "
+            "⚠ before는 사람이 앱에서 시작 버튼을 누르기 **직전 시각**의 값이고, after는 "
+            "측정이 끝났다고 알린 **직후 시각**의 값이다 — 버튼을 누른 정확한 시각과 같지 않다."
+            + (
+                " 🔴 이 런은 `u <런 이름>`으로 지목된 **이미 찍힌 런**이므로 이 온도는 그 런의 "
+                "것이 아니다(applies_to_run=false) — 발열 근거로 쓰지 말 것."
+                if forced else ""
+            )
+        ),
+    }
+
+
+def read_temperature(args, when: str) -> dict:
+    """지금 시각의 기기 온도를 읽고 한 줄 남긴다. **실패해도 세션을 막지 않는다.**"""
+    t = device_meta.battery_temperature_c(adb_path_hint=args.adb, serial=args.serial)
+    t["when"] = when
+    t["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    if t.get("celsius") is None:
+        LOG.warning(
+            "⚠ 기기 온도(%s)를 읽지 못했다 — %s. **null로 남긴다(지어내지 않는다).** "
+            "이 런에서는 GPU 드리프트가 발열 때문인지 판별할 수 없다(알려진 이슈 23)",
+            when, t.get("reason"),
+        )
+    else:
+        LOG.info("기기 온도(%s): %.1f℃ (배터리 온도 — 다이 온도가 아니다)", when, t["celsius"])
+    return t
+
+
 def planned_window_sec(row: dict, warmup_sec: float) -> float:
     return max(0.0, row["minutes"] * 60.0 - warmup_sec)
 
@@ -1158,31 +1306,127 @@ def matching_plan_rows(state: dict, session: dict) -> list[int]:
 def summary_metrics(summary: dict) -> dict:
     """비교에 쓸 분포만 뽑는다. p50/p95/p99 + min/max + count를 그대로 옮긴다.
 
-    🔴 **두 블록에서 뽑는다** — `stages`(GPU 시계)와 `detect`(CPU 벽시계). 목록도 조회 경로도
-    가른 이유는 DETECT_COMPARE_COLUMNS 주석에 있다. 이름이 겹치면 한쪽이 다른 쪽을 덮어써
-    시계가 뒤바뀌므로, 위 상수 검사에 더해 여기서도 실제 값으로 한 번 더 닫는다.
+    🔴 **세 블록에서 뽑는다**(`METRIC_SOURCES`) — `stages`(GPU 시계) · `detect`(CPU 벽시계,
+    모집단=추론) · `overlay`(CPU 벽시계, 모집단=프레임). 목록도 조회 경로도 가른 이유는
+    DETECT_COMPARE_COLUMNS·OVERLAY_COMPARE_COLUMNS 주석에 있다. 이름이 겹치면 한쪽이 다른
+    쪽을 덮어써 시계가 뒤바뀌므로, 위 상수 검사에 더해 여기서도 실제 값으로 한 번 더 닫는다.
+
+    🔴 **없는 열은 만들지 않는다.** `count`가 0이거나 블록이 없으면 그 키는 아예 없고,
+    `diff_metrics`가 교집합만 비교하므로 **없는 값이 0으로 취급되어 Δ가 만들어지는 일은
+    없다.** (오버레이가 없는 arm — 예: `detect_cpu` — 과 오버레이 arm을 비교하면
+    `stage_h_ms` 줄이 그냥 안 나온다. 그게 정직한 결과다.)
     """
     out: dict[str, dict] = {}
     ft = ((summary.get("frametime") or {}).get("primary")) or {}
     if ft.get("count"):
         out[FRAMETIME_KEY] = dict(ft)
-    stages = summary.get("stages") or {}
-    for col in COMPARE_COLUMNS:
-        s = stages.get(col) or {}
-        if s.get("count"):
+    seen_block: dict[str, str] = {}
+    for block_key, cols in METRIC_SOURCES:
+        block = summary.get(block_key) or {}
+        for col in cols:
+            s = block.get(col) or {}
+            if not s.get("count"):
+                continue
+            if col in out:  # 도달 불가(위 상수 검사). 그래도 조용히 덮어쓰지 않는다.
+                raise PlanError(
+                    f"metrics 키 충돌: {col!r}이 {seen_block[col]!r} 블록과 {block_key!r} "
+                    "블록 양쪽에 있다 — 한쪽이 다른 쪽을 덮어써 시계가 뒤바뀐 숫자가 "
+                    "표에 실린다"
+                )
             out[col] = dict(s)
-    detect = summary.get("detect") or {}
-    for col in DETECT_COMPARE_COLUMNS:
-        s = detect.get(col) or {}
-        if not s.get("count"):
-            continue
-        if col in out:  # 도달 불가(위 상수 검사). 그래도 조용히 덮어쓰지 않는다.
-            raise PlanError(
-                f"metrics 키 충돌: {col!r}이 GPU 시계 블록과 detect 블록 양쪽에 있다 — "
-                "한쪽이 다른 쪽을 덮어써 시계가 뒤바뀐 숫자가 표에 실린다"
-            )
-        out[col] = dict(s)
+            seen_block[col] = block_key
     return out
+
+
+def overlay_condition(summary: dict) -> dict | None:
+    """④ 오버레이 숫자의 **조건**. 비용이 아니므로 metrics(diff 대상)에 넣지 않는다.
+
+    🔴 **H칸은 박스 개수의 함수다.** 개수 없는 `stage_h_ms`는 조건이 없는 숫자이고, 이 하네스는
+    같은 부류의 실패(열 이름·arm·박스 개수를 숫자와 떼어 옮긴 것)를 이미 여러 번 닫았다.
+    그래서 Δ가 인용되는 자리마다 이 조건이 **함께** 실린다.
+
+    🔴 **환산하지 않는다.** `stage_h_n` / `frames_rows_used`를 나란히 두는 것은 "H가 매 프레임
+    돌았는지"를 사람이 되물을 수 있게 하는 것뿐이다 — 탐지 주기 N이 `INTERFACES.md`에서 아직
+    ☐ 미정이므로 **프레임당 평균으로 펴서 말하지 않는다.**
+
+    오버레이 열이 없는 런(오버레이 arm이 아니거나 v7 이전 로그)은 `None`이다 —
+    **그것은 "박스 0개"가 아니라 "그 런에 그 열이 없다"는 뜻이다.**
+    """
+    ov = summary.get("overlay") or {}
+    cols = ov.get("columns_present") or []
+    if not cols:
+        return None
+    boxes = ov.get("overlay_boxes") or {}
+    # 열 하나를 전제한다 — 위 상수 검사(len != 1이면 죽는다)가 그 전제를 강제한다.
+    h = ov.get(OVERLAY_COMPARE_COLUMNS[0]) or {}
+    fl = ov.get("flicker") or {}
+    return {
+        "columns_present": list(cols),
+        "overlay_boxes_p50": boxes.get("p50"),
+        "overlay_boxes_p95": boxes.get("p95"),
+        "overlay_boxes_max": boxes.get("max"),
+        "overlay_boxes_n": boxes.get("count"),
+        "stage_h_n": h.get("count"),
+        # H 표본 수와 분석 창의 프레임 수. 둘이 다르면 H가 매 프레임 돈 것이 아니다.
+        "frames_rows_used": (summary.get("source") or {}).get("rows_used"),
+        # 깜빡임은 판정이 아니라 관측이다(analyze_frames의 overlay.flicker가 소유한다).
+        "blank_transitions": fl.get("blank_transitions"),
+        "flicker_available": fl.get("available"),
+        "note": (
+            "🔴 stage_h_ms(H칸)를 인용할 때 **박스 개수 분포를 함께** 옮긴다 — 오버레이 비용은 "
+            "개수에 딸린 양이므로 개수 없는 H는 조건이 없는 숫자다. "
+            "⚠ stage_h_n이 frames_rows_used보다 작으면 H가 **매 프레임 돌지 않았다**는 사실이며, "
+            "그렇다고 프레임당 평균으로 환산하지 않는다(탐지 주기 N이 ☐ 미정이다). "
+            "⚠ stage_h_ms는 **CPU 벽시계**라 gpu_sum_ms·stage_d_total_ms 어느 합에도 들어가지 "
+            "않는다 — 같은 표에 행으로 서는 것이 합산 대상이 된다는 뜻이 아니다"
+        ),
+    }
+
+
+def overlay_condition_phrase(cond: dict | None) -> str:
+    """`박스 p50=3.0 p95=4.0 max=5.0 (n=810), H 표본 810/810프레임, 깜빡임 전이 107회`"""
+    if not cond:
+        return "④ 열 없음(그 런은 오버레이를 재지 않았다 — '박스 0개'가 아니다)"
+    fl = (
+        f"깜빡임 전이 {cond['blank_transitions']}회"
+        if cond.get("flicker_available") else "깜빡임 검출 불가"
+    )
+    return (
+        f"박스 p50={cond.get('overlay_boxes_p50')} p95={cond.get('overlay_boxes_p95')} "
+        f"max={cond.get('overlay_boxes_max')} (n={cond.get('overlay_boxes_n')}), "
+        f"H 표본 {cond.get('stage_h_n')}/{cond.get('frames_rows_used')}프레임, {fl}"
+    )
+
+
+def overlay_condition_block(cond_by_run: dict, run_ns: list[int], what: str) -> dict:
+    """블록 안에 실을 ④ 조건. `fallback_integrity`와 **같은 취지**다 —
+    🔴 **숫자가 인용되는 자리에 조건이 있어야 한다.** 런 표에만 두면 사람은 Δ 줄만 복사해 간다.
+
+    `comparable`: True=두 런 모두 ④ 열이 있다 / False=한쪽 이상에 없다(그 경우 `stage_h_ms`
+    Δ는 **애초에 나오지 않는다** — 없는 값을 0으로 만들지 않으므로).
+    """
+    missing = [n for n in run_ns if not cond_by_run.get(n)]
+    if missing:
+        note = (
+            f"{what}: 런 {missing}에 ④ 오버레이 열이 없다 — 그래서 stage_h_ms Δ는 **나오지 "
+            f"않았다**(없는 값을 0으로 만들지 않는다). H는 이 차분으로 판정하지 않는다: "
+            f"**H의 분모는 같은 arm 반복(노이즈 바닥)에서만 나온다.** "
+            + " / ".join(f"#{n} {overlay_condition_phrase(cond_by_run.get(n))}" for n in run_ns)
+        )
+    else:
+        note = (
+            f"{what}의 ④ 조건: "
+            + " / ".join(f"#{n} {overlay_condition_phrase(cond_by_run[n])}" for n in run_ns)
+            + " — 🔴 H칸 Δ를 인용할 때 **두 런의 박스 개수를 함께** 옮긴다(개수가 다르면 그 Δ는 "
+            "평활 비용의 차이가 아니라 개수 차이일 수 있다). ⚠ 프레임당으로 환산하지 않는다"
+        )
+    return {
+        "runs": list(run_ns),
+        "comparable": not missing,
+        "runs_without_overlay_columns": missing,
+        "per_run": {str(n): cond_by_run.get(n) for n in run_ns},
+        "note": note,
+    }
 
 
 def diff_metrics(a: dict, b: dict) -> dict:
@@ -1488,9 +1732,47 @@ def execute_run(
     attempt["verdict"] = summary.get("verdict")
     attempt["safety_regression"] = summary.get("safety_regression")
     attempt["metrics"] = summary_metrics(summary)
+    # ④ 오버레이 조건. **metrics(diff 대상)와 가른다** — 박스 개수는 비용이 아니라 비용의
+    # 조건이고, diff_metrics에 넣으면 개수가 `delta_ms`로 라벨된다(overlay_condition 주석).
+    attempt["overlay"] = overlay_condition(summary)
     attempt["analyze_warnings"] = summary.get("warnings") or []
     attempt["conforms"] = not attempt["mismatches"]
     return attempt
+
+
+def temperature_phrase(temp: dict | None) -> str:
+    """`35.1→40.5℃ (Δ+5.4)` — 표·블록에 넣을 짧은 사실. **없으면 없다고 쓴다.**"""
+    if not temp:
+        return "온도 기록 없음"
+    b = (temp.get("before") or {}).get("celsius")
+    a = (temp.get("after") or {}).get("celsius")
+    if b is None and a is None:
+        return "온도 읽지 못함"
+    head = f"{b if b is not None else '?'}→{a if a is not None else '?'}℃"
+    if temp.get("delta_c") is not None:
+        head += f" (Δ{temp['delta_c']:+.1f})"
+    if not temp.get("applies_to_run"):
+        head += " ⚠이 런의 것이 아니다"
+    return head
+
+
+def print_temperature(temp: dict | None) -> None:
+    """런 전/후 온도 한 줄. **판정이 아니다** — 어긋남으로 만들지 않는다."""
+    if not temp:
+        return
+    if temp.get("measured"):
+        level = LOG.warning if not temp.get("applies_to_run") else LOG.info
+        level(
+            "기기 온도(배터리): %s — 다이 온도가 아니므로 스로틀링 판정이 아니다%s",
+            temperature_phrase(temp),
+            "" if temp.get("applies_to_run") else " / 지목된 옛 런이라 그 런의 온도가 아니다",
+        )
+    else:
+        LOG.warning(
+            "⚠ 기기 온도를 두 시점 다 읽지 못했다 (%s) — **null이 '안 올랐다'는 뜻이 "
+            "아니다.** 이 런의 GPU 드리프트가 발열 때문인지 판별할 수 없다(알려진 이슈 23)",
+            temperature_phrase(temp),
+        )
 
 
 def print_attempt_result(row: dict, attempt: dict) -> None:
@@ -1521,6 +1803,9 @@ def print_attempt_result(row: dict, attempt: dict) -> None:
             "(이 실행을 끝내도 진행 파일에 남아 다음 실행에서 다시 제시된다)"
         )
         LOG.error("!" * 66)
+    # 🔴 온도는 **어긋남이 아니다**(판정선이 없다). 그래도 통과/실패 양쪽에서 한 줄 남긴다 —
+    #    근거가 보이지 않으면 "안 올랐다"와 "읽지 못했다"를 사람이 구별할 수 없다.
+    print_temperature(attempt.get("device_temperature"))
     for n in attempt.get("notes", []):
         LOG.warning("⚠ %s", n)
     m = attempt.get("metrics") or {}
@@ -1536,6 +1821,35 @@ def print_attempt_result(row: dict, attempt: dict) -> None:
                 "  %-24s p50=%-8s p95=%-8s p99=%-8s min=%-8s max=%-8s (n=%s, arm=%s)",
                 col, s.get("p50"), s.get("p95"), s.get("p99"), s.get("min"), s.get("max"),
                 s.get("count"), arm,
+            )
+        # 🔴 ④ 오버레이도 **표를 나눠 찍는다.** 시계는 detect와 같지만 **모집단이 다르다**
+        #    (프레임 vs 추론). 그리고 H는 박스 개수의 함수이므로 조건을 숫자 **앞에** 낸다.
+        overlay_cols = [c for c in OVERLAY_COMPARE_COLUMNS if c in m]
+        cond = attempt.get("overlay")
+        if overlay_cols:
+            LOG.info(
+                "  ④ 오버레이 분포 — CPU 벽시계 [arm=%s] (위 GPU 표와 다른 시계, "
+                "n은 **프레임 수**다. detect 표의 n(추론 횟수)과 모집단이 다르다):", arm,
+            )
+            # 🔴 조건이 숫자보다 위에 있어야 한다 — 아래 줄만 복사해 가는 것을 막는 표시다.
+            LOG.info("    ↳ 조건: %s", overlay_condition_phrase(cond))
+            for col in overlay_cols:
+                s = m[col]
+                LOG.info(
+                    "    %-22s p50=%-8s p95=%-8s p99=%-8s min=%-8s max=%-8s (n=%s, arm=%s)",
+                    col_label(col), s.get("p50"), s.get("p95"), s.get("p99"), s.get("min"),
+                    s.get("max"), s.get("count"), arm,
+                )
+            LOG.warning(
+                "    ⚠ H는 **어떤 합에도 들어가지 않는다**(gpu_sum_ms·stage_d_total_ms 아니다). "
+                "탐지 주기 N이 ☐ 미정이므로 프레임당으로 환산하지 않는다"
+            )
+        elif cond:
+            # ④ 열은 있는데 H 표본이 없다 = "0ms였다"가 아니라 재지 못한 것이다.
+            LOG.warning(
+                "  ④ 오버레이: 열은 있는데 %s 표본이 없다 (조건: %s) — '0ms'가 아니라 재지 "
+                "못한 것이다", ", ".join(OVERLAY_COMPARE_COLUMNS),
+                overlay_condition_phrase(cond),
             )
         # 🔴 ③ 탐지는 **표를 나눠 찍는다.** 위 표는 GPU 시계(+frametime)이고 이쪽은 CPU
         #    벽시계다. 한 표에 섞으면 줄 하나만 복사해 갈 때 시계가 떨어져 나간다.
@@ -1598,12 +1912,17 @@ def build_report(state: dict, args, run_ts: str) -> dict:
     # 런별 폴백 사실을 **한 번 모아서** 아래 블록들(노이즈 바닥·arm 차분)이 같이 쓴다.
     # 블록마다 따로 읽으면 같은 세션 안에서 표시가 달라질 수 있다.
     fb_by_run: dict[int, dict | None] = {}
+    # ④ 오버레이 조건도 **한 번 모아서** 아래 블록들이 같이 쓴다(폴백 사실과 같은 취지).
+    # 옛 attempt에는 이 키가 없으므로 None이며, 그것은 "박스 0개"가 아니라 **그 런에 ④ 열이
+    # 없다**는 뜻이다.
+    cond_by_run: dict[int, dict | None] = {}
     for n in sorted(rows):
         r = rows[n]
         a = done.get(n)
         obs = (a or {}).get("observed") or {}
         fb = fallback_for_report(a) if a else None
         fb_by_run[n] = fb
+        cond_by_run[n] = (a or {}).get("overlay")
         if fb:
             if fb.get("mismatch"):
                 fallback_flagged.append(n)
@@ -1628,6 +1947,12 @@ def build_report(state: dict, args, run_ts: str) -> dict:
             # 앱이 그 arm을 실제로 그렸는가. **분포보다 먼저 봐야 하는 값이다** —
             # 폴백한 런의 프레임타임은 정상으로 보인다.
             "passthrough_fallback": fb,
+            # 런 전/후 기기 온도. **없으면 null이며 그것은 '안 올랐다'가 아니다.**
+            # 옛 attempt(이 검사가 생기기 전)에는 없으므로 null이 정상이다.
+            "device_temperature": (a or {}).get("device_temperature"),
+            # ④ 오버레이 조건(박스 개수·H 표본·깜빡임 전이). **H 숫자의 동반 조건이다** —
+            # null은 "박스 0개"가 아니라 **그 런에 ④ 열이 없다**는 뜻이다.
+            "overlay": cond_by_run.get(n),
             # ③ 탐지 조건. **E·F·G 숫자와 같은 줄에 있어야 한다** — EP가 떨어져 나가면
             # `detect_nnapi` arm의 표에 CPU 숫자가 남는다(폴백 표시와 같은 논거).
             "detect": {
@@ -1691,6 +2016,11 @@ def build_report(state: dict, args, run_ts: str) -> dict:
                 fb_by_run, [n, pair], f"이 노이즈 바닥(arm={arm})",
                 "그 런은 그 arm을 그리지 않았으므로 이 폭은 같은 코드 경로를 두 번 잰 것이 "
                 "아니고, 이 바닥을 쓰는 '바닥 초과/이내' 판단 전체가 근거를 잃는다",
+            ),
+            # 🔴 **H칸 바닥이 나오는 자리가 여기다** (s13a는 오버레이 arm을 두 번 돈다).
+            #    개수 조건이 두 런에서 다르면 그 폭은 평활의 실행 간 변동이 아니라 개수 차다.
+            "overlay_condition": overlay_condition_block(
+                cond_by_run, [n, pair], f"이 노이즈 바닥(arm={arm})",
             ),
             "note": (
                 f"같은 arm({arm})·같은 조명({rows[n]['lighting']})을 두 번 찍은 "
@@ -1855,6 +2185,12 @@ def build_report(state: dict, args, run_ts: str) -> dict:
                 fb_by_run, [n, ref_n], f"arm 차분 #{n} vs #{ref_n}",
                 "그 런의 분포는 그 arm의 분포가 아니므로 이 Δ는 arm 차이가 아니다",
             ),
+            # 🔴 H칸 Δ의 동반 조건. **한쪽에만 ④ 열이 있으면 comparable=false**이며 그때
+            #    stage_h_ms 줄은 애초에 나오지 않는다(없는 값을 0으로 만들지 않는다) —
+            #    s13a의 `detect_cpu_highlight` vs `detect_cpu`가 정확히 그 모양이다.
+            "overlay_condition": overlay_condition_block(
+                cond_by_run, [n, ref_n], f"arm 차분 #{n} vs #{ref_n}",
+            ),
             # 이 Δ에 붙은 바닥을 잡은 쌍의 폴백 사실. **그 arm의 쌍**이며, 바닥이 없으면
             # None이다(없는 바닥의 폴백 사실을 만들어 내지 않는다).
             "noise_floor_fallback": (
@@ -1962,6 +2298,41 @@ def build_report(state: dict, args, run_ts: str) -> dict:
             + " — 다른 arm의 바닥으로 갈음하지 않았다(exceeds_noise_floor=null). 이 Δ를 "
             "'신호'로도 '신호 아님'으로도 쓰지 말 것. 이 arm의 반복 쌍을 찍어야 판정된다"
         )
+    # ── 기기 온도. **판정이 아니지만 없으면 없다고 적는다** (알려진 이슈 23).
+    temp_missing = [
+        r["n"] for r in report["runs"]
+        if r.get("device_run") and not (r.get("device_temperature") or {}).get("measured")
+    ]
+    temp_measured = [
+        (r["n"], r["device_temperature"]) for r in report["runs"]
+        if (r.get("device_temperature") or {}).get("measured")
+    ]
+    if temp_measured:
+        report["caveats"].append(
+            "런 전/후 **배터리** 온도: "
+            + ", ".join(f"#{n} {temperature_phrase(t)}" for n, t in temp_measured)
+            + " — SoC/GPU 다이 온도가 아니라 늦게 따라오고 폭도 작다. Δ는 발열 **방향**의 "
+            "증거이며 스로틀링 판정이 아니다(온도 임계는 판정선이 아니고 lib/targets.py에 "
+            "없다). GPU 드리프트를 발열로 설명할 때 이 값을 **함께** 인용할 것"
+        )
+    if temp_missing:
+        report["caveats"].append(
+            f"기기 온도를 두 시점 다 읽지 못한 런: {temp_missing} — **null은 '온도가 안 "
+            "올랐다'가 아니라 '읽지 못했다'다.** 그 런에서 GPU 시간 드리프트가 발열/DVFS "
+            "때문인지 판별할 수 없다(알려진 이슈 23이 정확히 그 상태였고, 그 뒤 두 라운드 "
+            "연속 누락했다). 이 검사가 생기기 전에 기록된 attempt에는 온도가 아예 없다"
+        )
+    # ── ④ 오버레이 조건. **H·I 숫자를 인용하는 사람이 caveats만 훑어도 보이게 한다.**
+    overlay_runs = [(r["n"], r["overlay"]) for r in report["runs"] if r.get("overlay")]
+    if overlay_runs:
+        report["caveats"].append(
+            "④ 오버레이 조건: "
+            + ", ".join(f"#{n} {overlay_condition_phrase(c)}" for n, c in overlay_runs)
+            + " — 🔴 **stage_h_ms(H칸)·stage_i_ms(I칸)를 인용할 때 박스 개수를 함께 옮긴다**"
+            "(개수 없는 값은 조건이 없는 숫자다). ⚠ 깜빡임 전이 수는 **관측이지 판정이 "
+            "아니다**(판정선이 없다) — 전이가 장면 변화인지 갱신 끊김인지는 정답 라벨이 "
+            "없어 가를 수 없다(safety_regression). ⚠ H를 프레임당으로 환산하지 않는다"
+        )
     if state.get("allow_dirty_build"):
         report["caveats"].append(
             "--allow_dirty_build로 돌렸다 — git_dirty=true인 런이 섞였을 수 있고, "
@@ -1995,8 +2366,12 @@ def col_label(col: str) -> str:
     되도록 만들어져 있고, 그래서 detect 열도 그대로 재사용된다). 그 표에서 `stage_f_ms`
     줄만 복사해 가면 시계가 떨어져 나가고, GPU 시계 줄과 같은 자리에 놓인다 —
     **어느 코드도 두 시계를 더하지 않지만, 사람은 표를 보고 더한다.** 그래서 이름에 붙인다.
+
+    ⚠ v7의 `stage_h_ms`도 **같은 태그를 받는다**(`CPU_WALL_COMPARE_COLUMNS`) — 시계가
+    load-bearing한 사실이고 줄을 복사할 때 따라가야 하는 것은 그것이다. 모집단이 다른 것
+    (detect=추론당 / overlay=프레임당)은 아래 절 제목이 말한다.
     """
-    return f"{col}[CPU벽시계]" if col in DETECT_COMPARE_COLUMNS else col
+    return f"{col}[CPU벽시계]" if col in CPU_WALL_COMPARE_COLUMNS else col
 
 
 def print_fallback_integrity(integrity: dict | None, indent: str = "  ") -> None:
@@ -2020,6 +2395,24 @@ def print_fallback_integrity(integrity: dict | None, indent: str = "  ") -> None
         LOG.info("%s%s", indent, integrity.get("note"))
 
 
+def print_overlay_condition(cond_block: dict | None, indent: str = "  ") -> None:
+    """블록 안에 ④ 조건을 찍는다. `print_fallback_integrity`와 **같은 규약**이다 —
+    🔴 **숫자보다 먼저 찍는다.** 아래 Δ 줄만 복사해 가는 것을 막는 것이 이 표시의 목적이므로,
+    표시가 숫자 뒤에 있으면 없는 것과 비슷하다.
+
+    두 런 모두 ④ 열이 없으면 **찍지 않는다** — ③④를 아예 안 돌린 런(승격본 45건 포함)에
+    매번 뜨면 곧 아무도 안 보고, 정작 오버레이 런에서 묻힌다(EP 경고와 같은 기준).
+    """
+    if not cond_block:
+        return
+    if not any(cond_block.get("per_run", {}).values()):
+        return
+    if cond_block.get("comparable"):
+        LOG.info("%s%s", indent, cond_block.get("note"))
+    else:
+        LOG.warning("%s⚠ %s", indent, cond_block.get("note"))
+
+
 def print_report(report: dict) -> None:
     LOG.info("")
     LOG.info("=" * 66)
@@ -2040,10 +2433,13 @@ def print_report(report: dict) -> None:
         else:
             fb_text = ""
         LOG.info(
-            "  #%-2d %-12s %-18s %-8s 분석 창 %-7s %-12s %s",
+            "  #%-2d %-12s %-18s %-8s 분석 창 %-7s %-12s %-22s %s",
             r["n"], r["arm"], r["lighting"], r["status"],
             f"{r['analysis_window_sec']}s" if r["analysis_window_sec"] else "-",
-            fb_text, "봉투 점" if r.get("envelope_only") else "",
+            fb_text,
+            # 온도는 판정이 아니지만 **표에 있어야 한다** — caveats에만 두면 표만 보고 인용된다.
+            temperature_phrase(r.get("device_temperature")) if r.get("device_run") else "",
+            "봉투 점" if r.get("envelope_only") else "",
         )
 
     nf = report["noise_floor"]
@@ -2065,6 +2461,8 @@ def print_report(report: dict) -> None:
                 blk["arm"], blk["pair"], blk["lighting"],
             )
             print_fallback_integrity(blk.get("passthrough_fallback"), indent="    ")
+            # 🔴 H칸 바닥이 이 표에 서므로 개수 조건도 여기서 함께 낸다.
+            print_overlay_condition(blk.get("overlay_condition"), indent="    ")
             for col, per_p in blk["columns"].items():
                 for p in COMPARE_PERCENTILES:
                     v = per_p.get(p)
@@ -2101,6 +2499,8 @@ def print_report(report: dict) -> None:
         )
         # 🔴 이 두 줄이 Δ보다 위에 있어야 한다 — 표·caveats의 표시는 여기까지 따라오지 않는다.
         print_fallback_integrity(ad.get("passthrough_fallback"))
+        # 🔴 ④ 조건도 Δ보다 위에. 한쪽에만 ④ 열이 있으면 H 줄이 아예 없다는 사실을 말한다.
+        print_overlay_condition(ad.get("overlay_condition"))
         # 🔴 **바닥의 출처를 Δ보다 위에 찍는다.** 어느 arm의 폭인지 없으면 '바닥 초과'는
         #    근거가 없는 문장이고, 옛 구현이 정확히 그 상태였다(첫 쌍의 바닥이 무표시로 붙었다).
         nfs = ad.get("noise_floor_source") or {}
@@ -2140,15 +2540,21 @@ def print_report(report: dict) -> None:
                     v["current_ms"], ad["arm"], v["delta_ms"], tag,
                 )
         LOG.warning("  ⚠ %s", ad["gpu_present_note"])
-        if any(c in DETECT_COMPARE_COLUMNS for c in ad["columns"]):
+        if any(c in CPU_WALL_COMPARE_COLUMNS for c in ad["columns"]):
             # 🔴 두 시계가 한 표에 있다는 사실을 표 **끝에서** 한 번 더 말한다. 열 이름의
             #    [CPU벽시계] 태그는 줄을 복사할 때 따라가고, 이 줄은 표 전체를 볼 때 보인다.
+            #    ⚠ 모집단도 갈라 말한다 — detect는 추론당, overlay(H)는 프레임당이다.
+            det_cols = [c for c in ad["columns"] if c in DETECT_COMPARE_COLUMNS]
+            ov_cols = [c for c in ad["columns"] if c in OVERLAY_COMPARE_COLUMNS]
             LOG.warning(
                 "  ⚠ 위 표에는 **두 시계가 섞여 있다** — [CPU벽시계] 태그가 붙은 열"
                 "(%s)은 SystemClock 구간 길이이고 나머지는 GPU 시계다. 어느 계산도 둘을 "
-                "더하지 않지만, **표를 읽는 사람이 더하면 안 된다.** 또 detect 열의 n은 "
-                "추론 횟수라 GPU 열의 n(프레임 수)과 모집단이 다르다",
-                ", ".join(c for c in ad["columns"] if c in DETECT_COMPARE_COLUMNS),
+                "더하지 않지만, **표를 읽는 사람이 더하면 안 된다.** 모집단도 셋으로 갈린다: "
+                "detect 열(%s)의 n은 **추론 횟수**, 오버레이 열(%s)과 GPU 열의 n은 "
+                "**프레임 수**다. ⚠ H는 어떤 합에도 들어가지 않고 프레임당으로 환산하지도 "
+                "않는다(탐지 주기 N이 ☐ 미정이다)",
+                ", ".join(det_cols + ov_cols),
+                ", ".join(det_cols) or "없음", ", ".join(ov_cols) or "없음",
             )
 
     bd = report.get("baseline_diff")
@@ -2394,6 +2800,10 @@ def drive_session(state: dict, spath: Path, args) -> bool:
             "이번 것으로 본다", len(before),
         )
 
+        # ── 런 **전** 온도. 사람이 시작 버튼을 누르기 직전 시각의 값이다(그 버튼 시각을
+        #    하네스가 알 방법은 없다 — 그 한계는 temperature_pair의 note에 적혀 있다).
+        temp_before = read_temperature(args, "before")
+
         forced_run = None
         waited_start = time.time()
         while True:
@@ -2442,6 +2852,10 @@ def drive_session(state: dict, spath: Path, args) -> bool:
         if forced_run == "__skip__":
             continue
 
+        # ── 런 **후** 온도. 회수·집계(자식 프로세스 여러 개)를 돌리기 **전에** 읽는다 —
+        #    그 작업이 몇십 초 걸리는 동안 기기가 식으면 그건 런 직후 온도가 아니다.
+        temp_after = read_temperature(args, "after")
+
         waited = time.time() - waited_start
         planned_sec = row["minutes"] * 60.0
         if waited < planned_sec * (1.0 - DURATION_SHORT_TOLERANCE) and forced_run is None:
@@ -2452,6 +2866,11 @@ def drive_session(state: dict, spath: Path, args) -> bool:
 
         attempt = execute_run(row, state, args, before=before, forced_run=forced_run)
         attempt["waited_sec"] = round(waited, 1)
+        # 온도는 **attempt에 붙인다** — 그 런의 조건이므로 그 런의 기록과 같은 자리에 있어야
+        # 한다(진행 파일 → 리포트로 그대로 따라간다).
+        attempt["device_temperature"] = temperature_pair(
+            temp_before, temp_after, forced=forced_run is not None
+        )
         row.setdefault("attempts", []).append(attempt)
         row["status"] = "done" if attempt["conforms"] else "failed"
         save_state(spath, state)

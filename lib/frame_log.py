@@ -14,7 +14,12 @@
    한다. 예외는 카메라가 주는 `t_capture_ns` 하나이며, 그 기준 시계는 기기마다 다르다.
    v2에서 들어온 GPU 패스 시간(`stage_*_ms` / `gpu_present_ms`)은 애초에 **시각이 아니라
    구간 길이**이고 GPU 시계에서 나온다 — `t_*_ns`와 섞지 않는다(GPU_TIME_COLUMNS 주석).
+   v7에서 들어온 `stage_h_ms`도 **시각이 아니라 구간 길이**이지만 시계가 또 다르다 —
+   **CPU 벽시계**(GL 스레드)다. GPU 열도 아니고 `t_*_ns`도 아니다
+   (FRAME_CPU_TIME_COLUMNS 주석 + 그 아래 상수 자기검사).
 3. **없는 값은 -1.** 빈칸이나 0이 아니라 -1로 명시한다. 0은 "0ms 걸렸다"와 구분되지 않는다.
+   ⚠ **카운트 열은 예외다** — `overlay_boxes`처럼 개수를 담는 열에서 0은 정상값이고
+   (박스가 없는 프레임), -1만이 "기록되지 않았다"다. 폐기 가드가 시간 열과 다르다.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ from typing import Optional
 
 from lib.stats import percentile
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # 폰이 반드시 뱉어야 하는 열
 REQUIRED_COLUMNS = ("frame_idx", "t_recv_ns")
@@ -147,6 +152,94 @@ STAGE_D_TOTAL_COLUMN = "stage_d_total_ms"
 # CSV 열이 아니라 하네스가 만드는 파생 시계열. 폐기 사유 문장을 고를 때 GPU 열과 같이 본다.
 GPU_DERIVED_SERIES = ("gpu_sum_ms", STAGE_D_TOTAL_COLUMN)
 
+# ══ ④ 오버레이 열 (v7) — frames.csv이지만 **GPU 열이 아니다** ═══════════════
+# ③ 탐지 결과를 ④ 오버레이에 이어 붙이는 라운드에서 들어온 열 3개다. 세 열 모두 프레임당
+# 1행(frames.csv)이지만 **물리량과 시계가 위 GPU 열들과 다르다.**
+#
+# 🔴 **`stage_h_ms`는 CPU 벽시계다**(`SystemClock.elapsedRealtimeNanos`, GL 스레드).
+#   `detect.csv`의 E·F·G와 **같은 부류**이고 GPU 시계가 아니다 — 그래서
+#   `GPU_TIME_COLUMNS`·`GPU_SUM_COLUMNS`·`STAGE_D_FAMILY_COLUMNS` **어디에도 넣지 않는다.**
+#   한 번 섞이면 `gpu_sum_ms`에 **CPU 벽시계와 GPU query를 더한 숫자**가 담겨 버짓표로
+#   나가는데, 결과만 보면 그럴듯해서 사람 눈으로는 걸러지지 않는다. E·F·G를 별 dict·별
+#   registry로 둔 선례(위 detect.csv 절)를 그대로 따르고, 아래 상수 자기검사가 import
+#   시점에 막는다.
+#   ⚠ **합계 열을 만들지 않는다.** H는 열 하나이며, 이 열을 다른 열과 더하는 파생 시계열은
+#     없다(`gpu_sum_ms`도 `stage_d_total_ms`도 아니다).
+#   ⚠ **앱에 요구하는 정밀도: ms 소수 3자리 이상.** 평활이 싸면 H가 진짜로 `0.0x ms`인데
+#     소수 1자리로 쓰면 `0.0`이 되고, 하한 가드(`> 0`)가 **가장 싼 샘플만 골라 폐기**해
+#     분포가 위로 치우친다(E·F·G에 같은 요구가 있는 이유와 글자 그대로 같다).
+FRAME_CPU_TIME_COLUMNS = (
+    "stage_h_ms",   # H칸: ④ 좌표 평활·hold의 CPU 벽시계 구간 (GL 스레드)
+)
+
+# ── 카운트 열 (단위 개, int) ──────────────────────────────────────────────
+# 🔴 **폐기 하한이 `>= 0`이다**(시간 열의 `> 0`이 아니다). 0은 정상값이다 — "그 프레임에
+#   그린 박스가 없었다". 시간 열의 가드를 복사하면 **박스 0개 프레임이 전부 폐기로 세어져**
+#   (a) 분포가 위로 치우치고 (b) 폐기 카운트가 프레임 수만큼 튀어 진짜 결손을 덮는다.
+#   `detect.csv`의 `DETECT_COUNT_COLUMNS`와 같은 취급이며 수집도 `_collect_nonneg`로 한다.
+#
+# 🔴 **이 열이 없으면 I칸·H칸이 "조건 없는 숫자"가 된다.** 오버레이 비용은 박스 개수에 딸린
+#   양이므로(`docs/FRAME_LOG_SCHEMA.md` §5의 `overlay.box_count` 규약과 같은 논거)
+#   `stage_i_ms`·`stage_h_ms`를 인용할 때 이 분포를 함께 옮긴다.
+#   ⚠ `session.json`의 `overlay.box_count`와 **다른 값이다.** 그쪽은 arm이 선언한 조건
+#     (정적 더미 박스 개수)이고 이쪽은 **그 프레임에 실제로 그린 개수**다 — ③ 탐지 결과를
+#     받기 시작하면 프레임마다 달라진다.
+FRAME_COUNT_COLUMNS = (
+    "overlay_boxes",   # 그 프레임에 실제로 그린 박스 수. **0은 정상값이다**
+)
+
+# ── 오버레이가 사용한 탐지 결과의 **게시 시각** ────────────────────────────
+# `t_*_ns` 규약을 그대로 따른다: int ns, `CLOCK_BOOTTIME`
+# (`SystemClock.elapsedRealtimeNanos`), 즉 `t_recv_ns`·`t_render_start_ns`와 **같은 시계**다.
+#
+# 🔴 **신선도(= `t_render_start_ns − t_overlay_source_ns`)를 CSV에 저장하지 않는다.**
+#   유도값은 저장하지 않는다는 파일 상단 §1 규약이고, 하네스가 계산한다
+#   (아래 OVERLAY_FRESHNESS_SERIES).
+# 🔴 **박스가 0개여도 게시 시각을 적는다.** "탐지가 아무것도 못 찾았다"는 것도 게시된 결과다 —
+#   그때 -1을 적으면 "결과가 없다"와 "빈 결과가 있다"가 구분되지 않고, 신선도 분포가
+#   **박스가 있는 프레임 쪽으로만** 치우친다. -1은 **아직 어떤 결과도 게시되지 않았다**
+#   (첫 추론 완료 전)일 때만이다.
+FRAME_OVERLAY_SOURCE_COLUMNS = (
+    "t_overlay_source_ns",
+)
+
+# 위 셋 = v7에서 frames.csv에 늘어난 열 전부. 헤더 탐색·버전 등록·요약 블록이 이 목록을 쓴다.
+FRAME_OVERLAY_COLUMNS = (
+    FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS + FRAME_OVERLAY_SOURCE_COLUMNS
+)
+
+# ── 오버레이 신선도 (파생 시계열. **CSV 열이 아니다**) ─────────────────────
+# **무엇인가:** `t_render_start_ns − t_overlay_source_ns`. 그 프레임이 그린 박스가 **얼마나
+# 오래된 탐지 결과**인지다. 같은 시계 두 시각의 차이므로 뺄 수 있다.
+#
+# 🔴 **버짓 칸이 없다.** 단계 비용이 아니라 결과의 나이다. 칸 라벨을 붙이면 그 숫자가
+#   H칸이나 I칸에 인용된다(`detect_wall_ms`·`gpu_frame_ms`와 같은 이유로 소비자 쪽 매핑에는
+#   **명시적 None**을 적는다 — 키를 빼면 "칸이 없다"와 "등록을 잊었다"가 구분되지 않는다).
+# ⚠ **탐지 주기(`detect_cadence_ms`)와 다른 값이다.** 주기는 추론이 얼마나 자주 도는가이고
+#   이쪽은 표시 프레임이 그중 어느 것을 쓰고 있었나다 — 모집단도 다르다(추론 vs 프레임).
+#   탐지가 3.4Hz인데 표시가 30FPS면 같은 결과가 여러 프레임에 걸쳐 쓰이므로, 이 분포는
+#   0부터 주기까지 톱니 모양으로 퍼진다. **두 분포를 더하거나 비교해 빼지 않는다.**
+OVERLAY_FRESHNESS_SERIES = "overlay_freshness_ms"
+
+# ── frames.csv 쪽 **파생 시계열 이름 전부** (CSV 열이 아니다) ───────────────
+# 🔴 **이 이름들은 CSV 열이 될 수 없다.** 하네스가 계산하는 값이고, 폰이 같은 이름으로 열을
+#   내면 폰이 계산한 값과 PC가 계산한 값이 어긋날 때 어느 쪽이 맞는지 알 수 없다
+#   (파일 상단 §1 "유도 가능한 값은 저장하지 않는다").
+#
+# 왜 목록으로 두는가: 앱이 실수로 이 이름을 헤더에 실으면 미지 열 경고가 나가는데, 그 경고의
+# 일반 문구는 "의도한 새 열이라면 OPTIONAL_COLUMNS에 등록하라"고 권한다 — **그 권고를 따르면
+# 아래 자기검사가 import를 죽인다.** 즉 따라갈 수 없는 조언을 자신 있게 하는 상태가 된다.
+# 그래서 이 이름들은 `_add_unknown_column_warnings`가 **다른 문장**으로 다룬다.
+FRAME_DERIVED_SERIES = GPU_DERIVED_SERIES + (
+    OVERLAY_FRESHNESS_SERIES,
+    "capture_to_recv_ms",
+    "capture_to_render_ms",
+    "recv_interval_ms",
+    "output_interval_ms",
+    "render_latency_ms",
+    "recv_to_render_ms",
+)
+
 # 각 열이 **어느 스키마 버전에서 들어왔는가.** 옛 세션(선언 버전 < 하네스 버전)에 경고를 낼 때
 # "그 로그에 없을 수 있는 열"을 정확히 짚기 위해 쓴다 — 버전마다 문장을 손으로 고치면
 # v4에서 v2 문구가 그대로 남는다.
@@ -163,20 +256,34 @@ COLUMN_ADDED_IN = {
     "stage_d_build2_ms": 4,
     "stage_d_apply2_ms": 4,
     GPU_FRAME_COLUMN: 5,
+    # v7 — ④ 오버레이 열 3개. **GPU 열이 아니지만 frames.csv 열이므로 여기 등록한다**
+    # (이 dict의 소비자는 `check_schema_version`이고, 그것이 나열해야 하는 것은 "그 옛 로그에
+    #  없을 수 있는 frames.csv 열"이다. GPU 여부는 그 질문과 무관하다 — 빼면 v6 세션에
+    #  "늘어난 것: 없음"이라는 거짓 안심을 보낸다).
+    "stage_h_ms": 7,
+    "overlay_boxes": 7,
+    "t_overlay_source_ns": 7,
 }
 
+# COLUMN_ADDED_IN이 **덮어야 하는 frames.csv 열 전부.** GPU 열만이 아니다(v7에서 CPU 벽시계
+# 열·카운트 열·시각 열이 늘었다) — 아래 자기검사의 기준이며, 목록을 여기서 한 번 파생시켜
+# 두면 다음 버전에서 검사 대상을 손으로 늘리는 것을 잊을 수 없다.
+# ⚠ v1 열(`t_capture_ns`·`t_render_*_ns`·`dropped_since_last`)은 들어가지 않는다. 그 열들은
+#   스키마 첫 버전부터 있었으므로 "선언 버전 이후에 늘어난 열"이 될 수 없다.
+VERSIONED_FRAME_COLUMNS = GPU_TIME_COLUMNS + FRAME_OVERLAY_COLUMNS
+
 # ── 상수 자기검사 ─────────────────────────────────────────────────────────
-# **등록을 빠뜨리면 조용히 틀린다.** 다음 버전에서 GPU 열만 추가하고 COLUMN_ADDED_IN에
+# **등록을 빠뜨리면 조용히 틀린다.** 다음 버전에서 열만 추가하고 COLUMN_ADDED_IN에
 # 안 넣으면, "앱이 뒤처졌다" 경고가 그 열을 **말없이 빼먹은 채** 성공을 보고한다
 # (그 경고를 보고 "내 로그에 다 있다"고 판단하게 된다). 상수끼리의 불변식이므로 데이터와
 # 무관하며, 깨지는 순간은 개발자가 상수를 고친 그 편집 시점이다 — 그래서 import에서 죽인다
 # (중복 헤더를 하드 에러로 만든 것과 같은 부류: 틀린 결과가 채택되는 것보다 낫다).
-_missing_version = [c for c in GPU_TIME_COLUMNS if c not in COLUMN_ADDED_IN]
-_stray_version = [c for c in COLUMN_ADDED_IN if c not in GPU_TIME_COLUMNS]
+_missing_version = [c for c in VERSIONED_FRAME_COLUMNS if c not in COLUMN_ADDED_IN]
+_stray_version = [c for c in COLUMN_ADDED_IN if c not in VERSIONED_FRAME_COLUMNS]
 if _missing_version or _stray_version:
     raise RuntimeError(
-        "lib/frame_log.py 상수 불일치 — COLUMN_ADDED_IN과 GPU_TIME_COLUMNS가 어긋난다: "
-        f"버전 미등록 열={_missing_version}, GPU 열이 아닌 항목={_stray_version}. "
+        "lib/frame_log.py 상수 불일치 — COLUMN_ADDED_IN과 VERSIONED_FRAME_COLUMNS가 "
+        f"어긋난다: 버전 미등록 열={_missing_version}, 버전 대상이 아닌 항목={_stray_version}. "
         "열을 추가할 때 두 목록에 **함께** 등록해야 '앱이 뒤처졌다' 경고가 빠진 열을 "
         "정확히 나열한다 (docs/FRAME_LOG_SCHEMA.md §6)"
     )
@@ -229,7 +336,7 @@ OPTIONAL_COLUMNS = (
     "t_render_start_ns",
     "t_render_end_ns",
     "dropped_since_last",  # 백프레셔로 버려진 프레임 수
-) + GPU_TIME_COLUMNS
+) + GPU_TIME_COLUMNS + FRAME_OVERLAY_COLUMNS
 
 # 위 두 목록에 없는 열 = 하네스가 읽지 않는 열. 하드 에러로 만들지 않는다(앱이 스키마보다
 # 앞서 나갈 수 있다) 대신 **반드시 경고한다.** 행 단위 회계(accounting_ok)에 해당하는
@@ -240,6 +347,62 @@ OPTIONAL_COLUMNS = (
 KNOWN_COLUMNS = tuple(REQUIRED_COLUMNS) + tuple(OPTIONAL_COLUMNS)
 
 MISSING = -1
+
+# ── 상수 자기검사 (v7) ────────────────────────────────────────────────────
+# 위 v5 블록(`gpu_frame_ms`)과 **같은 부류이며 같은 모양으로 짠다** — 상수끼리의 불변식이라
+# 데이터와 무관하고, 깨지는 순간은 개발자가 상수를 고친 그 편집 시점이다. 그래서 import에서
+# 죽인다. 여기서 막는 사고는 둘 다 조용하다:
+#   1) `stage_h_ms`가 GPU 목록에 섞이면 `gpu_sum_ms`에 **CPU 벽시계 + GPU query**를 더한
+#      숫자가 담기고(그리고 D 계열에 섞이면 ④ 비용이 ② 비용으로 계상되고), 결과 숫자만
+#      보면 그럴듯해서 사람 눈으로는 걸러지지 않는다.
+#   2) `overlay_boxes`가 시간 열 목록에 섞이면 하한 `> 0` 가드가 걸려 **박스 0개 프레임이
+#      전부 폐기**되고, 그 편향은 폐기 카운트에만 남아 "왜 오버레이 분포가 이런가"를 되물을
+#      때 보이지 않는다.
+_overlay_col_errors = []
+for _c in FRAME_OVERLAY_COLUMNS:
+    if _c in GPU_TIME_COLUMNS:
+        _overlay_col_errors.append(
+            f"{_c}이 GPU_TIME_COLUMNS에 있다 — v7 오버레이 열은 CPU 벽시계 구간 길이/개수/"
+            f"시각이고 GPU 시계가 아니다(물리량이 다르다)"
+        )
+    if _c in GPU_SUM_COLUMNS:
+        _overlay_col_errors.append(
+            f"{_c}이 GPU_SUM_COLUMNS에 있다 — CPU 시계(또는 개수)를 GPU 패스별 합에 더한 "
+            f"숫자가 gpu_sum_ms로 버짓표에 나간다"
+        )
+    if _c in STAGE_D_FAMILY_COLUMNS:
+        _overlay_col_errors.append(
+            f"{_c}이 STAGE_D_FAMILY_COLUMNS에 있다 — ④ 오버레이 비용이 D칸(②)에 계상되어 "
+            f"② 비용이 부풀려진다"
+        )
+    if _c in GPU_DERIVED_SERIES:
+        _overlay_col_errors.append(
+            f"{_c}이 GPU_DERIVED_SERIES에 있다 — 파생 시계열 이름과 CSV 열 이름이 겹치면 "
+            f"폐기 사유 문장이 GPU 쪽으로 뽑혀 폰 쪽이 엉뚱하게 시계 코드를 뒤진다"
+        )
+    if _c not in OPTIONAL_COLUMNS:
+        _overlay_col_errors.append(
+            f"{_c}이 OPTIONAL_COLUMNS에 없다 — 미지 열로 처리되어 집계에서 통째로 버려진다"
+        )
+for _c in FRAME_COUNT_COLUMNS:
+    if _c in FRAME_CPU_TIME_COLUMNS:
+        _overlay_col_errors.append(
+            f"{_c}이 FRAME_CPU_TIME_COLUMNS에 있다 — 카운트 열에 시간 열의 하한(`> 0`)이 "
+            f"걸리면 **박스 0개 프레임이 전부 폐기**된다(0은 정상값이다)"
+        )
+_derived_as_column = [c for c in FRAME_DERIVED_SERIES if c in KNOWN_COLUMNS]
+if _derived_as_column:
+    _overlay_col_errors.append(
+        f"{_derived_as_column}이 CSV 열 목록에 있다 — 이 이름들은 **하네스가 계산하는 파생 "
+        f"시계열**이라 저장하지 않는다(파일 상단 §1). 폰이 같은 이름으로 열을 내면 폰이 계산한 "
+        f"값과 PC가 계산한 값이 어긋날 때 어느 쪽이 맞는지 알 수 없다"
+    )
+if _overlay_col_errors:
+    raise RuntimeError(
+        "lib/frame_log.py 상수 불일치 — v7 오버레이 열의 성질이 어긋난다: "
+        + "; ".join(_overlay_col_errors)
+        + " (docs/FRAME_LOG_SCHEMA.md §2 '④ 오버레이 열')"
+    )
 
 # ══ detect.csv — ③ 탐지 계측 (v6) ═════════════════════════════════════════
 # **frames.csv와 별 파일이다.** 탐지는 매 프레임이 아니라 주기적으로만 돈다. E·F·G를
@@ -592,10 +755,22 @@ STAGE_DETECT = "detect"                # ③ 탐지. 앱 생산(v6 detect.csv)
 # (`["blit_2pass","stage4_highlight"]`) `SessionWriter`가 `overlay.gpu_column="stage_i_ms"`를
 # 낸다. 합성 생성기(`--stage_i_ms`)도 같은 토큰을 쓴다 — 생산자가 생성기뿐이던 시기는 끝났다.
 STAGE4_HIGHLIGHT = "stage4_highlight"  # ④ 강조. 앱 생산 + 생성기
+# ④ 좌표 평활·hold 스테이지 (v7) → `stage_h_ms` (버짓 H칸).
+# 🔴 **이것은 렌더 패스가 아니다.** GL 스레드에서 도는 **CPU 구간**이며, 그래서 비용이 GPU
+#   query가 아니라 CPU 벽시계 열로 온다(FRAME_CPU_TIME_COLUMNS). 토큰을 두는 이유는 "이 arm이
+#   평활을 도는가"가 그 런의 구조적 조건이기 때문이다 — 박스를 그리되 평활하지 않는 arm과
+#   평활하는 arm은 같은 `pipeline_stages`로 선언될 수 없다.
+# ⚠ **STAGE2_BILATERAL과 같은 취급이다** — 앱이 아직 내지 않는 토큰을 미리 등록하는 것이고
+#   (그러지 않으면 앱이 붙는 날 매 런 "어휘 밖" 경고가 뜬다), **팀원2 쪽 명명이지 계약값이
+#   아니다.** 앱이 다른 문자열을 쓰기로 하면 앱이 정답이며 여기와 문서를 함께 고친다.
+#   이 등록은 "이 문자열을 안다"는 뜻일 뿐이다.
+STAGE4_SMOOTHING = "stage4_smoothing"  # ④ 좌표 평활·hold(H칸). 앱 생산 예정
 
 # ⚠ 여기에 **아직 없는 arm의 토큰을 미리 만들지 않는다.** 생산자가 앱이므로, 앱이 그 arm을
 #   실제로 내기 전에 하네스가 이름을 지으면 앱이 다른 이름을 쓰는 날 같은 구조가 두 이름으로
 #   갈려 모든 비교가 "조건 다름"이 된다. arm이 붙을 때마다 앱이 쓴 문자열로 여기 등록한다.
+#   (예외는 위 STAGE2_BILATERAL·STAGE4_SMOOTHING처럼 **열이 먼저 들어가는 라운드**다 —
+#    스키마 확장은 하네스가 앱보다 먼저 가므로 그 토큰만 함께 예약한다. §6)
 PIPELINE_STAGES = (
     STAGE_BLIT_2PASS,
     STAGE2_GAMMA,
@@ -605,6 +780,7 @@ PIPELINE_STAGES = (
     STAGE2_BILATERAL,
     STAGE_DETECT,
     STAGE4_HIGHLIGHT,
+    STAGE4_SMOOTHING,
 )
 # 빈 배열 = 처리 없는 arm(passthrough). "단계 없음"은 토큰이 아니라 빈 배열로 적는다.
 
@@ -748,6 +924,42 @@ RENDER_ARM_DETECT_PARITY_CPU = "detect_parity_cpu"
 RENDER_ARM_DETECT_PARITY_NNAPI = "detect_parity_nnapi"
 RENDER_ARM_DETECT_PARITY_XNNPACK = "detect_parity_xnnpack"
 
+# ── ③→④ 연결 arm (v7) ────────────────────────────────────────────────────
+# ⚠ **생산자는 앱이다.** 위 예약어 블록들과 같은 취급 — 팀원2 쪽 명명이지 계약값이 아니고,
+#   앱이 다른 id를 쓰기로 하면 앱이 정답이며 여기를 고친다. 등록은 "이 문자열을 안다"는
+#   뜻일 뿐이고, 하네스는 arm의 의미를 해석하지 않는다.
+#
+# 세 arm이 **한 세트**다. 셋을 같은 세션에서 재야 I칸의 상한·하한이 둘 다 나온다:
+#
+#   detect_cpu_highlight     4패스(오버레이) + 패스별 GPU query + stage_h_ms + overlay_boxes
+#                            → I 상한 · H. **본진**이다.
+#   detect_cpu_highlight_1q  **위와 글자 그대로 같은 렌더**, 프레임 단일 query → gpu_frame_ms
+#                            → I 하한 (`_1q` 접미사 블록의 규약을 그대로 따른다)
+#   detect_cpu_1q            3패스(오버레이 없음), 프레임 단일 query → gpu_frame_ms
+#                            → 🔴 **하한의 분모**
+#
+# 🔴 **왜 하한의 분모가 `detect_cpu_1q`인가 (= 왜 이 arm이 새로 필요한가).**
+#   하한은 "같은 계측 방식의 두 arm 차"로만 낼 수 있다(`_1q` 블록: 계측 방식이 다른 분모에
+#   빼면 그 값이 arm 비용도 중복 계상량도 아니게 된다). 그런데 지금 있는 단일 query 분모는
+#   `blit_2pass_1q`뿐이고 **거기에는 탐지 부하가 없다** — ③이 돌면 SoC 전체가 다른 상태이므로
+#   그 분모에 빼면 차이에 탐지 비용이 섞인다. 알려진 이슈 36이 정확히 이 부류다:
+#   `highlight_boxes_1q`의 `gpu_frame_ms`가 분모와 소수점 셋째 자리까지 같아 I 하한이 0이
+#   나왔고, 그 0은 "오버레이가 공짜"가 아니라 **분모가 상한을 통째로 중복 계상했다**는 뜻이었다.
+#   ⚠ 그러므로 `detect_cpu_highlight_1q − detect_cpu_1q`만이 하한이다. `blit_2pass_1q`나
+#     `detect_cpu`(패스별 계측)를 분모로 쓰지 않는다.
+#
+# 🔴 **상한의 분모는 기존 `detect_cpu`다** — 같은 세션 안에서 재고, 계측 방식(패스별 query)이
+#   같아야 한다. 계측 방식이 다른 짝을 빼면 위와 같은 이유로 값의 뜻이 사라진다.
+#
+# ⚠ **앱 쪽에 딸린 요구가 있다**(하네스가 강제할 수 없다): `_1q` arm은 앱의 `RenderArm.kt`에서
+#   `singleFrameQueryPeer`·`renderPassCount` 대응 항목에 **반드시** 등록돼야 한다. 빠뜨리면
+#   `GpuTimerRing`이 프레임 전체가 아니라 **첫 패스만** 감싸고, 그러면 `gpu_frame_ms`가
+#   "프레임 하나의 GPU 시간"이 아닌 채로 하한 계산에 들어간다 — 로그만 보면 그럴듯하다.
+#   그 등록은 android 트랙의 몫이며 `docs/FRAME_LOG_SCHEMA.md` §5에 요구로 적혀 있다.
+RENDER_ARM_DETECT_CPU_HIGHLIGHT = "detect_cpu_highlight"
+RENDER_ARM_DETECT_CPU_HIGHLIGHT_1Q = "detect_cpu_highlight_1q"
+RENDER_ARM_DETECT_CPU_1Q = "detect_cpu_1q"
+
 RENDER_ARMS = (
     RENDER_ARM_PASSTHROUGH,
     RENDER_ARM_BLIT_2PASS,
@@ -787,6 +999,10 @@ RENDER_ARMS = (
     RENDER_ARM_DETECT_PARITY_CPU,
     RENDER_ARM_DETECT_PARITY_NNAPI,
     RENDER_ARM_DETECT_PARITY_XNNPACK,
+    # ③→④ 연결(v7). 셋이 한 세트다 — 본진 / I 하한 / **하한의 분모**. 위 블록 참고.
+    RENDER_ARM_DETECT_CPU_HIGHLIGHT,
+    RENDER_ARM_DETECT_CPU_HIGHLIGHT_1Q,
+    RENDER_ARM_DETECT_CPU_1Q,
     RENDER_ARM_SYNTHETIC,
 )
 
@@ -823,6 +1039,36 @@ GPU_DISCARD_REASON_TEXT = {
     "below_min": (
         "-1 또는 0 이하 — disjoint로 버려졌거나 query가 해소되지 않았다"
         " (시계 역행이 아니다)"
+    ),
+}
+
+# ── v7 오버레이 열의 폐기 사유 문장 ───────────────────────────────────────
+# **사유별 계수는 기존 경로를 그대로 쓰고**(새 폐기 경로를 만들지 않는다) 문장만 열 성격에
+# 맞게 바꾼다. detect 쪽에서 같은 이유로 문장을 가른 선례를 그대로 따른다 — 엉뚱하게
+# "시계 역행"이라고 쓰면 폰 쪽이 시계 코드를 뒤진다(H는 GL 스레드의 CPU 구간이다).
+FRAME_CPU_DISCARD_REASON_TEXT = {
+    "below_min": (
+        "-1 또는 0 이하 — 그 프레임에서 기록되지 않았거나 구간이 닫히지 않았다"
+        " (시계 역행이 아니다)"
+    ),
+}
+
+# 카운트 열용. 0은 정상값이므로 음수만 폐기된다 — 문장도 그렇게 말해야 한다.
+FRAME_COUNT_DISCARD_REASON_TEXT = {
+    "below_min": (
+        "-1 또는 음수 — 기록되지 않았다"
+        " (0은 폐기하지 않는다: 박스 0개 프레임은 정상값이다)"
+    ),
+}
+
+# 신선도(파생)용. 여기서 값이 없는 원인이 **둘**이라 한쪽으로 단정하지 않는다.
+OVERLAY_FRESHNESS_DISCARD_REASON_TEXT = {
+    "below_min": (
+        "t_overlay_source_ns가 -1이거나 t_render_start_ns보다 미래다 — 아직 게시된 탐지 "
+        "결과가 없는 프레임(첫 추론 완료 전)이거나 두 시각의 순서가 뒤집혔다"
+    ),
+    "no_render_start": (
+        "t_render_start_ns가 없어 계산할 수 없다 — 신선도의 기준 시각이 렌더 시작이다"
     ),
 }
 
@@ -879,6 +1125,14 @@ class FrameSeries:
     # 들어가서, 소비자가 어느 쪽을 받았는지 구분할 수 없었다).
     recv_to_render_ms: list[float] = field(default_factory=list)
     capture_to_render_ms: list[float] = field(default_factory=list)
+    # t_recv - t_capture. **지연의 앞자락**(ISP + 큐)이며 위 capture_to_render_ms의 부분이다
+    # (v7). 이 한 칸이 있으면 capture_to_render를 셋으로 가를 수 있다:
+    #   capture→recv(ISP/큐) · recv→render_start(디스패치 대기) · render_start→render_end(제출).
+    # 🔴 **t_capture_ns가 섞여 있으므로 capture_to_render_ms와 같은 상한 가드를 쓴다** —
+    #    그 열만 기준 시계가 의심 대상이고(§시계 함정), 기준이 어긋나면 수천 초가 나온다.
+    # ⚠ 세 조각을 더해도 capture_to_render_ms와 정확히 같아지지 않는다(render_start가 없는
+    #   프레임이 있고, 폐기가 조각마다 따로 일어난다). **분포끼리 더해 검산하지 않는다.**
+    capture_to_recv_ms: list[float] = field(default_factory=list)
     # ── GPU 패스 시간 (GPU 시계 — 위 시계열들과 **다른 시계**다. 섞지 않는다) ──
     stage_b_ms: list[float] = field(default_factory=list)
     stage_d_ms: list[float] = field(default_factory=list)
@@ -901,6 +1155,18 @@ class FrameSeries:
     gpu_sum_ms: list[float] = field(default_factory=list)
     # D 계열만의 **행 단위** 합 = 그 런의 D칸. gpu_sum_ms와 더하는 대상이 다르다.
     stage_d_total_ms: list[float] = field(default_factory=list)
+    # ── ④ 오버레이 (v7). **위 GPU 열들과 다른 시계·다른 물리량이다** ──────
+    # 🔴 stage_h_ms는 **CPU 벽시계**(GL 스레드)다 — gpu_sum_ms에도 stage_d_total_ms에도
+    #    들어가지 않는다(FRAME_CPU_TIME_COLUMNS 주석 + 상수 자기검사).
+    stage_h_ms: list[float] = field(default_factory=list)
+    # 그 프레임에 실제로 그린 박스 수. **0을 폐기하지 않는다**(가드가 `>= 0`이다).
+    overlay_boxes: list[int] = field(default_factory=list)
+    # t_render_start_ns - t_overlay_source_ns = 그 프레임이 쓴 탐지 결과의 나이 (파생 시계열).
+    # 🔴 CSV 열이 아니다 — 유도값은 저장하지 않는다.
+    overlay_freshness_ms: list[float] = field(default_factory=list)
+    # CSV 헤더에 실제로 있던 v7 오버레이 열. GPU 열과 같은 이유로 따로 둔다
+    # ("열이 아예 없다"와 "열은 있는데 값이 -1이다"는 다른 사실이다).
+    overlay_columns_present: list[str] = field(default_factory=list)
     # CSV 헤더에 실제로 있던 GPU 열. 헤더에 없는 열은 폐기로 세지 않는다
     # ("열이 아예 없다"와 "열은 있는데 값이 -1이다"는 다른 사실이다).
     gpu_columns_present: list[str] = field(default_factory=list)
@@ -965,6 +1231,23 @@ class FrameSeries:
         return any(self.gpu_series.values())
 
     @property
+    def overlay_series(self) -> dict[str, list]:
+        """v7 오버레이 열 이름 -> 시계열. **파생(신선도)은 넣지 않는다**(원본 열만).
+
+        🔴 `gpu_series`와 **합치지 않는다.** 그 property의 소비자는 GPU 시계 전용 경로
+        (`gpu_sum_ms` 합산·stages 블록)라, 여기 값이 그 dict에 들어가면 CPU 벽시계와 개수가
+        GPU 라벨 체계 안으로 들어간다.
+        """
+        return {
+            name: getattr(self, name)
+            for name in FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS
+        }
+
+    @property
+    def has_overlay_metrics(self) -> bool:
+        return any(self.overlay_series.values()) or bool(self.overlay_freshness_ms)
+
+    @property
     def stage_d_ambiguous(self) -> bool:
         """`stage_d_ms`와 ② 하위 패스 열이 **같은 로그에 동시에** 있는가.
 
@@ -1014,6 +1297,34 @@ class FrameSeries:
 
     def note_row_skip(self, reason: str) -> None:
         self.rows_skipped[reason] = self.rows_skipped.get(reason, 0) + 1
+
+
+# ── 상수 자기검사 (v7) — **선언한 열에 담을 자리가 실제로 있는가** ─────────
+# DetectSeries 쪽 필드 검사(아래)와 같은 부류다. 위 열 성질 검사를 전부 통과하고도 **열이
+# 조용히 사라지는** 경로가 남아 있다: 새 열을 FRAME_OVERLAY_COLUMNS·COLUMN_ADDED_IN에 넣고
+# OPTIONAL_COLUMNS에도 넣으면 그 검사들은 통과하지만, FrameSeries에 담을 필드가 없으면
+# read_frames가 AttributeError로 죽거나(그 런의 집계를 통째로 잃는다) 조용히 건너뛴다.
+# count=0은 "0이었다"로도 "없었다"로도 읽히므로 그 상태를 남기지 않는다.
+_frame_field_names = {f.name for f in dataclass_fields(FrameSeries)}
+_frame_field_errors = [
+    f"FrameSeries에 {_c} 필드가 없다 — v7 오버레이 열로 선언됐는데 담을 자리가 없다"
+    for _c in FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS
+    if _c not in _frame_field_names
+]
+if OVERLAY_FRESHNESS_SERIES not in _frame_field_names:
+    _frame_field_errors.append(
+        f"FrameSeries에 {OVERLAY_FRESHNESS_SERIES} 필드가 없다 — 파생 시계열을 담을 자리가 없다"
+    )
+if "capture_to_recv_ms" not in _frame_field_names:
+    _frame_field_errors.append(
+        "FrameSeries에 capture_to_recv_ms 필드가 없다 — 파생 시계열을 담을 자리가 없다"
+    )
+if _frame_field_errors:
+    raise RuntimeError(
+        "lib/frame_log.py 상수 불일치 — v7 오버레이 열과 FrameSeries 필드가 어긋난다: "
+        + "; ".join(_frame_field_errors)
+        + " (docs/FRAME_LOG_SCHEMA.md §2 '④ 오버레이 열')"
+    )
 
 
 @dataclass
@@ -1255,6 +1566,11 @@ def read_frames(
         gpu_sum_columns_present = [
             c for c in GPU_SUM_COLUMNS if c in gpu_columns_present
         ]
+        # v7 오버레이 열. **GPU 목록과 별로 뽑는다** — 시계도 물리량도 가드도 다르고,
+        # 합산 경로(gpu_sum_columns_present)에 절대 들어가지 않아야 한다.
+        overlay_columns_present = [
+            c for c in FRAME_OVERLAY_COLUMNS if c in reader.fieldnames
+        ]
         rows = list(reader)
 
     series = FrameSeries()
@@ -1262,6 +1578,7 @@ def read_frames(
     series.gpu_columns_present = gpu_columns_present
     series.stage_d_columns_present = stage_d_columns_present
     series.gpu_sum_columns_present = gpu_sum_columns_present
+    series.overlay_columns_present = overlay_columns_present
     _add_unknown_column_warnings(series)
     series.rows_read = len(rows)
     if not rows:
@@ -1355,6 +1672,14 @@ def read_frames(
                 (t_re - t_cap) / 1e6, SANE_CAPTURE_TO_RENDER_MS,
             )
 
+        # 취득~수신 (v7) — 위 지연의 **앞자락**(ISP + 큐). `t_capture_ns`가 섞여 있으므로
+        # **같은 상한 가드**를 쓴다(그 열만 기준 시계가 의심 대상이다).
+        if t_cap != MISSING:
+            _collect(
+                series, "capture_to_recv_ms", series.capture_to_recv_ms,
+                (t_recv - t_cap) / 1e6, SANE_CAPTURE_TO_RENDER_MS,
+            )
+
         # ── GPU 패스 시간. 위 시계열과 **다른 시계**라 교차검사에 넣지 않는다.
         #    헤더에 있는 열만 본다. 값이 -1이면 _collect의 하한(> 0)에 걸려
         #    below_min으로 세어진다 — 기존 폐기 계수를 그대로 쓴다(새 경로를 만들지 않는다).
@@ -1393,12 +1718,47 @@ def read_frames(
                 series, STAGE_D_TOTAL_COLUMN, series.stage_d_total_ms, row_d_sum
             )
 
+        # ── ④ 오버레이 (v7). **어떤 합에도 더하지 않는다.**
+        #    🔴 위 GPU 블록과 코드를 합치지 않는 이유가 여기 있다: 그 블록은 채택된 값을
+        #      row_gpu_sum에 더하는데, CPU 벽시계 열이 거기 들어가면 gpu_sum_ms가 두 시계를
+        #      더한 숫자가 된다. 상수 자기검사가 상수 수준에서 막는 사고를 코드 수준에서도
+        #      막는 자리다(경로 자체가 분리돼 있어야 한다).
+        #    🔴 가드가 열 종류마다 다르다 — 시간 열은 `> 0`, 카운트 열은 `>= 0`.
+        for col in overlay_columns_present:
+            if col in FRAME_CPU_TIME_COLUMNS:
+                # 하한 `> 0`, 상한 없음. E·F·G와 같은 논거다(같은 CPU 시계 안에서 구간이
+                # 닫히므로 큰 값은 시계 오류가 아니라 **진짜 느린 프레임**이다).
+                _collect(series, col, getattr(series, col), _to_float(row.get(col)))
+            elif col in FRAME_COUNT_COLUMNS:
+                # 🔴 하한 `>= 0`. **박스 0개 프레임은 정상값이다** — 시간 열의 `> 0`을
+                #    복사하면 그 프레임들이 전부 폐기로 세어진다.
+                _collect_nonneg(series, col, getattr(series, col), _to_int(row.get(col)))
+            # t_overlay_source_ns는 시계열이 아니라 **파생의 재료**다 (바로 아래).
+
+        # 오버레이 신선도 = 렌더 시작 − 그 프레임이 쓴 탐지 결과의 게시 시각 (파생 시계열).
+        # **CSV 열이 아니다** — 유도값은 저장하지 않는다(파일 상단 §1).
+        # 값을 못 만든 경우도 **사유별로 센다** — 조용히 사라지면 count=0이 "신선했다"로도
+        # "재지 못했다"로도 읽힌다.
+        src_col = FRAME_OVERLAY_SOURCE_COLUMNS[0]
+        if src_col in overlay_columns_present:
+            t_src = _to_int(row.get(src_col))
+            if t_rs == MISSING:
+                series.note_discard(OVERLAY_FRESHNESS_SERIES, "no_render_start")
+            elif t_src == MISSING:
+                series.note_discard(OVERLAY_FRESHNESS_SERIES, "below_min")
+            else:
+                _collect(
+                    series, OVERLAY_FRESHNESS_SERIES, series.overlay_freshness_ms,
+                    (t_rs - t_src) / 1e6,
+                )
+
     check_clock_consistency(series, render_start_checked, render_start_violations)
     _add_row_skip_warnings(series)
     _add_discard_warnings(series)
     _add_clock_warnings(series)
     _add_gpu_warnings(series)
     _add_stage_d_warnings(series)
+    _add_overlay_warnings(series)
 
     if series.rows_used == 0:
         raise FrameLogError(
@@ -1681,15 +2041,32 @@ def _add_unknown_column_warnings(series: FrameSeries) -> None:
     """
     if not series.unknown_columns:
         return
-    names = ", ".join(repr(c) for c in series.unknown_columns)
-    series.warnings.append(
-        f"스키마에 없는 열 {len(series.unknown_columns)}개를 발견했다: {names} — "
-        f"이 열은 집계에 전혀 쓰이지 않았다. 열 이름 오타라면(예: 't_render_end_ns'를 "
-        f"'t_render_ns'로) 해당 지표가 count=0이 되어 '그 열이 없는 로그'와 구분되지 않으므로, "
-        f"위 이름을 폰 쪽 헤더와 대조할 것. 의도한 새 열이라면 lib/frame_log.py의 "
-        f"OPTIONAL_COLUMNS와 docs/FRAME_LOG_SCHEMA.md에 등록해야 집계에 들어온다 "
-        f"(하네스가 아는 열: {', '.join(KNOWN_COLUMNS)})"
-    )
+    # 🔴 **파생 시계열 이름은 다른 문장으로 다룬다.** 일반 문구는 "OPTIONAL_COLUMNS에
+    #    등록하라"고 권하는데, 이 이름들은 등록하면 위 v7 자기검사가 **import를 죽인다**
+    #    (유도값은 CSV에 두지 않는 것이 규약이다). 따라갈 수 없는 조언을 자신 있게 하는 것은
+    #    조용히 틀린 라벨과 같은 부류의 실패다.
+    derived = [c for c in series.unknown_columns if c in FRAME_DERIVED_SERIES]
+    plain = [c for c in series.unknown_columns if c not in FRAME_DERIVED_SERIES]
+    if derived:
+        series.warnings.append(
+            f"헤더에 **하네스 파생 시계열과 같은 이름의 열**이 있다: "
+            f"{', '.join(repr(c) for c in derived)} — 이 값들은 하네스가 타임스탬프에서 "
+            f"계산하므로 CSV 열로 두지 않는다(유도값은 저장하지 않는다). 🔴 **OPTIONAL_COLUMNS에 "
+            f"등록하지 말 것 — 등록하면 lib/frame_log.py의 자기검사가 import에서 죽인다.** "
+            f"앱은 **재료 열만** 내면 된다(예: 신선도는 t_overlay_source_ns만 내고 차는 PC가 "
+            f"낸다). 이 열은 집계에 전혀 쓰이지 않았고, 폰이 계산한 값과 PC가 계산한 값이 "
+            f"어긋날 때 어느 쪽이 맞는지 알 수 없으므로 폰 쪽 헤더 생성부에서 뺄 것"
+        )
+    if plain:
+        names = ", ".join(repr(c) for c in plain)
+        series.warnings.append(
+            f"스키마에 없는 열 {len(plain)}개를 발견했다: {names} — "
+            f"이 열은 집계에 전혀 쓰이지 않았다. 열 이름 오타라면(예: 't_render_end_ns'를 "
+            f"'t_render_ns'로) 해당 지표가 count=0이 되어 '그 열이 없는 로그'와 구분되지 않으므로, "
+            f"위 이름을 폰 쪽 헤더와 대조할 것. 의도한 새 열이라면 lib/frame_log.py의 "
+            f"OPTIONAL_COLUMNS와 docs/FRAME_LOG_SCHEMA.md에 등록해야 집계에 들어온다 "
+            f"(하네스가 아는 열: {', '.join(KNOWN_COLUMNS)})"
+        )
 
 
 def check_lighting_condition(session: dict) -> tuple[Optional[str], bool, Optional[str]]:
@@ -1978,6 +2355,25 @@ def _add_clock_warnings(series: FrameSeries) -> None:
         )
 
 
+def _frame_discard_reason_text(name: str) -> dict:
+    """그 시계열의 폐기 사유를 **그 열의 언어로** 말하는 문장 표를 고른다.
+
+    사유 코드(`below_min` 등)는 한 경로에서 나오지만 뜻은 열마다 다르다. 엉뚱한 표를 쓰면
+    폰 쪽이 잘못된 곳을 고친다 — GPU 열에 "시계 역행"이라고 쓰면 시계 코드를 뒤지고,
+    카운트 열에 "0 이하"라고 쓰면 0이 폐기된다고 오해한다.
+    """
+    # 파생 시계열(gpu_sum_ms / stage_d_total_ms)도 GPU 쪽 문장을 쓴다 — 원본이 GPU 열이다.
+    if name in GPU_TIME_COLUMNS or name in GPU_DERIVED_SERIES:
+        return GPU_DISCARD_REASON_TEXT
+    if name in FRAME_CPU_TIME_COLUMNS:
+        return FRAME_CPU_DISCARD_REASON_TEXT
+    if name in FRAME_COUNT_COLUMNS:
+        return FRAME_COUNT_DISCARD_REASON_TEXT
+    if name == OVERLAY_FRESHNESS_SERIES:
+        return OVERLAY_FRESHNESS_DISCARD_REASON_TEXT
+    return DISCARD_REASON_TEXT
+
+
 def _add_discard_warnings(series: FrameSeries) -> None:
     """폐기가 1건이라도 있으면 경고로 남긴다.
 
@@ -1987,10 +2383,7 @@ def _add_discard_warnings(series: FrameSeries) -> None:
     for name in sorted(series.discarded):
         reasons = series.discarded[name]
         # 사유별 계수는 한 경로에서 나오지만, 열 성격에 따라 그 사유가 뜻하는 바가 다르다.
-        # 파생 시계열(gpu_sum_ms / stage_d_total_ms)도 GPU 쪽 문장을 쓴다 — 원본이 GPU 열이라
-        # 여기서 "시계 역행"이라고 쓰면 폰 쪽이 시계 코드를 뒤진다.
-        gpu_like = name in GPU_TIME_COLUMNS or name in GPU_DERIVED_SERIES
-        text = GPU_DISCARD_REASON_TEXT if gpu_like else DISCARD_REASON_TEXT
+        text = _frame_discard_reason_text(name)
         detail = ", ".join(
             f"{text.get(reason, DISCARD_REASON_TEXT.get(reason, reason))} {count}개"
             for reason, count in sorted(reasons.items())
@@ -2001,15 +2394,22 @@ def _add_discard_warnings(series: FrameSeries) -> None:
             f"폐기된 샘플이 그 측정의 최악 프레임일 수 있으므로 분포는 낙관적으로 치우친다"
         )
 
-    # capture_to_render는 **어느 쪽 위반이든** 기준 시계 불일치를 뜻한다.
+    # t_capture_ns가 섞인 시계열은 **어느 쪽 위반이든** 기준 시계 불일치를 뜻한다.
     # 음수(카메라 epoch이 우리보다 미래) / 수천 초(과거) 둘 다 같은 원인이다.
-    capture_bad = sum(series.discarded.get("capture_to_render_ms", {}).values())
+    # ⚠ v7의 capture_to_recv_ms도 같은 원인을 공유하므로 **한 문장으로 합쳐 낸다** —
+    #   같은 사실을 두 문장으로 내면 원인이 둘인 것처럼 읽힌다.
+    capture_series = ("capture_to_render_ms", "capture_to_recv_ms")
+    per_series = {
+        name: sum(series.discarded.get(name, {}).values()) for name in capture_series
+    }
+    capture_bad = sum(per_series.values())
     if capture_bad:
-        n = capture_bad
+        detail = ", ".join(f"{name} {n}개" for name, n in per_series.items() if n)
         series.warnings.append(
             f"t_capture_ns 기준 시계가 우리 시계와 다른 것으로 보인다 "
-            f"({n}개 행이 물리적으로 불가능한 값) — "
-            f"글래스-투-글래스 지연은 이 로그로 판정할 수 없다"
+            f"(물리적으로 불가능한 값: {detail}) — "
+            f"글래스-투-글래스 지연은 이 로그로 판정할 수 없고, 지연을 "
+            f"capture→recv / recv→render로 가르는 분해도 성립하지 않는다"
         )
 
 
@@ -2083,6 +2483,58 @@ def _add_stage_d_warnings(series: FrameSeries) -> None:
             f"D 계열 열 {len(series.stage_d_columns_present)}개를 다 채우지 못한 채 합산됐다 "
             f"(있는 열: {', '.join(series.stage_d_columns_present)}). "
             f"빠진 패스만큼 D가 작으므로 이 분포는 아래쪽으로 치우친다"
+        )
+
+
+def _add_overlay_warnings(series: FrameSeries) -> None:
+    """v7 오버레이 열에 대한 경고. `_add_gpu_warnings`·`_add_detect_warnings`와 같은 취지.
+
+    말하는 것 셋:
+      1. **열은 있는데 유효 표본이 0개다** — `count == 0`이 "그 프레임에 박스가 없었다"나
+         "평활이 0ms였다"로 읽히는 것을 막는다. 0과 "재지 못했다"는 다른 사실이다.
+      2. **박스 개수 없이 H를 잰 로그** — I칸·H칸은 박스 개수의 함수이므로, 개수 열이 없으면
+         그 비용은 조건이 없는 숫자다.
+      3. **게시 시각 없이 박스를 그린 로그** — 신선도를 낼 수 없으므로 "박스가 몇 프레임
+         묶여 있었나"를 되물을 수 없다.
+    """
+    for col in series.overlay_columns_present:
+        if col in FRAME_OVERLAY_SOURCE_COLUMNS:
+            continue  # 시계열이 아니다(파생의 재료). 아래에서 신선도로 말한다
+        if getattr(series, col):
+            continue
+        discarded = sum(series.discarded.get(col, {}).values())
+        if col in FRAME_COUNT_COLUMNS:
+            series.warnings.append(
+                f"{col}: 열은 있는데 유효 표본이 0개다(폐기 {discarded}개). 이건 '박스를 "
+                f"하나도 그리지 않았다'가 아니라 **개수를 기록하지 못했다**는 뜻이다 "
+                f"(0은 폐기하지 않으므로, 0개인 프레임이 많았다면 표본은 0이 아니라 그만큼 "
+                f"있어야 한다). 이 열 없이 stage_i_ms·stage_h_ms를 인용하지 말 것"
+            )
+        else:
+            series.warnings.append(
+                f"{col}: 열은 있는데 유효 표본이 0개다(폐기 {discarded}개). 이건 '그 구간이 "
+                f"0ms였다'가 아니라 **재지 못했다**는 뜻이다 — 앱이 그 구간에서 -1을 쓰고 "
+                f"있는지(계측 미구현), 소수 3자리 미만으로 써서 0.0이 됐는지 확인할 것"
+            )
+    if series.stage_h_ms and not any(
+        c in series.overlay_columns_present for c in FRAME_COUNT_COLUMNS
+    ):
+        series.warnings.append(
+            f"stage_h_ms는 있는데 {', '.join(FRAME_COUNT_COLUMNS)} 열이 없다 — H칸(그리고 "
+            f"I칸)은 **박스 개수의 함수**이므로 개수 없는 이 값은 조건이 없는 숫자다. "
+            f"버짓 칸에 옮길 때 개수를 함께 옮길 수 없으므로 그대로 인용하지 말 것"
+        )
+    if (
+        any(c in series.overlay_columns_present for c in FRAME_COUNT_COLUMNS)
+        and not any(
+            c in series.overlay_columns_present for c in FRAME_OVERLAY_SOURCE_COLUMNS
+        )
+    ):
+        series.warnings.append(
+            f"overlay 박스 개수는 있는데 {FRAME_OVERLAY_SOURCE_COLUMNS[0]}이 없다 — "
+            f"{OVERLAY_FRESHNESS_SERIES}(그 프레임이 쓴 탐지 결과의 나이)를 낼 수 없다. "
+            f"탐지 갱신 지연을 숫자로 말할 수 없고, 박스가 몇 프레임 동안 같은 값에 묶여 "
+            f"있었는지도 이 로그로는 되물을 수 없다"
         )
 
 
@@ -2227,14 +2679,15 @@ def _collect(
 
 
 def _collect_nonneg(
-    series: DetectSeries,
+    series: FrameSeries | DetectSeries,
     name: str,
     target: list,
     value: float,
 ) -> None:
     """카운트·점수용. **0을 받는다** — 시간 열과 가드가 다른 이유가 여기 있다.
 
-    박스 0개(`boxes_out == 0`)는 정상값이고 실제로 야간 보행 대부분의 프레임이 그렇다.
+    박스 0개(`boxes_out == 0` / v7의 `overlay_boxes == 0`)는 정상값이고 실제로 야간 보행
+    대부분의 프레임·추론이 그렇다.
     시간 열의 하한(`> 0`)을 그대로 쓰면 그 추론들이 통째로 폐기되어 (a) 분포가 위로 치우치고
     (b) 폐기 카운트가 행 수만큼 튀어 진짜 결손을 덮는다. 기록되지 않은 값(-1)만 버린다.
 

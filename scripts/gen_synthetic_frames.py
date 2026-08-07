@@ -41,6 +41,7 @@ from lib.frame_log import (  # noqa: E402
     SCHEMA_VERSION,
     STAGE2_GAMMA,
     STAGE4_HIGHLIGHT,
+    STAGE4_SMOOTHING,
     STAGE_BLIT_2PASS,
     STAGE_DETECT,
     session_field,
@@ -151,6 +152,48 @@ def main() -> int:
         help=(
             "프레임 하나를 query 하나로 감싼 GPU 시간 (버짓 칸 아님, gpu_sum_ms에 더하지 "
             "않는다). 0=열 없음. 패스별 열과 함께 주면 하네스의 계측 혼재 경고 경로가 된다"
+        ),
+    )
+    # ── ④ 오버레이 (스키마 v7). **위 GPU 열들과 다른 시계·다른 가드다.**
+    #    `--stage_i_ms`(GPU 시계, I칸) 선례를 따르되 **같은 통에 넣지 않는다** — stage_h_ms는
+    #    CPU 벽시계라 gpu_base dict에 들어가면 이 생성기가 그것을 GPU 열처럼 다루게 되고
+    #    (disjoint 처리·gpu_total_ms 합산), 그 로그는 하네스의 자기검사가 막으려는 상태를
+    #    **입력 쪽에서** 만들어 낸다.
+    #
+    # ⚠ **여기서 나오는 숫자는 측정치가 아니다.** 값의 크기는 인자가 정하는 것이지 기기에서
+    #   잰 것이 아니다 — 이 파일의 목적은 소비자 경로(집계·깜빡임 검출·리포트)를 실기기 전에
+    #   끝까지 태우는 것뿐이다(session.json의 synthetic=true·render_arm=synthetic·
+    #   lighting_condition=synthetic 세 가지가 그 사실을 로그에 박아 둔다).
+    parser.add_argument(
+        "--stage_h_ms", type=float, default=0.0,
+        help=(
+            "④ 좌표 평활·hold의 **CPU 벽시계** 구간 (버짓 H칸). 0=열 없음. "
+            "🔴 GPU 열이 아니다 — gpu_sum_ms·stage_d_total_ms에 들어가지 않는다"
+        ),
+    )
+    parser.add_argument(
+        "--overlay_boxes", type=int, default=MISSING,
+        help=(
+            "④ 그 프레임에 실제로 그린 박스 수의 기준값. **-1=열 없음** "
+            "(0은 '열 없음'이 아니라 유효한 값이다 — 카운트 열의 하한 가드 `>=0`를 태우는 "
+            "입력이므로 0도 그대로 쓴다)"
+        ),
+    )
+    parser.add_argument(
+        "--overlay_empty_frac", type=float, default=0.0,
+        help=(
+            "이 비율의 프레임에서 overlay_boxes=0을 낸다 (0~1). **깜빡임 검출기를 태우는 "
+            "입력이다** — >0→0→>0 전이가 여기서 만들어진다. ⚠ 탐지 동작의 모델이 아니라 "
+            "검출 경로를 태우기 위한 난수다"
+        ),
+    )
+    parser.add_argument(
+        "--overlay_source_lag_ms", type=float, default=0.0,
+        help=(
+            "탐지 결과가 수신 시각 이후 이만큼 뒤에 **게시된다**고 보고 t_overlay_source_ns를 "
+            "쓴다. 0=열 없음. 게시 전 프레임은 -1이며(아직 결과가 없다) 게시된 결과는 다음 "
+            "게시까지 **hold**되므로 신선도가 톱니로 퍼진다. ⚠ --detect_every_n>0이면 그 "
+            "주기로 게시하고, 0이면 매 프레임 게시한다(현실적이지 않지만 경로는 태운다)"
         ),
     )
     parser.add_argument(
@@ -307,6 +350,25 @@ def main() -> int:
     if not 0.0 <= args.gpu_disjoint_frac <= 1.0:
         LOG.error("--gpu_disjoint_frac는 0~1이어야 한다 (받은 값: %s)", args.gpu_disjoint_frac)
         return 2
+    if not 0.0 <= args.overlay_empty_frac <= 1.0:
+        LOG.error(
+            "--overlay_empty_frac는 0~1이어야 한다 (받은 값: %s)", args.overlay_empty_frac
+        )
+        return 2
+    if args.overlay_empty_frac > 0 and args.overlay_boxes < 0:
+        # 조용히 무시하면 "깜빡임 입력을 만들었다"고 착각한 채 전이 0건인 로그가 나온다.
+        LOG.error(
+            "--overlay_empty_frac=%s인데 --overlay_boxes가 -1(열 없음)이다 — 개수 열이 없으면 "
+            "깜빡임 검출기가 볼 수열 자체가 없다. --overlay_boxes에 0 이상을 줄 것",
+            args.overlay_empty_frac,
+        )
+        return 2
+    if args.overlay_boxes < MISSING:
+        LOG.error(
+            "--overlay_boxes는 -1(열 없음) 또는 0 이상이어야 한다 (받은 값: %s)",
+            args.overlay_boxes,
+        )
+        return 2
 
     rng = random.Random(args.seed)
     interval_ns = int(1e9 / args.camera_fps)
@@ -329,6 +391,16 @@ def main() -> int:
     }
     gpu_cols = [c for c in GPU_TIME_COLUMNS if gpu_base[c] > 0]
 
+    # ④ 오버레이 열 (v7). **gpu_cols와 별 목록이다** — 시계도 가드도 다르고, 이 열들은
+    # gpu_total_ms 합산이나 disjoint 처리에 절대 들어가지 않는다.
+    overlay_cols: list[str] = []
+    if args.stage_h_ms > 0:
+        overlay_cols.append("stage_h_ms")
+    if args.overlay_boxes >= 0:
+        overlay_cols.append("overlay_boxes")
+    if args.overlay_source_lag_ms > 0:
+        overlay_cols.append("t_overlay_source_ns")
+
     # 임의 기준점 — 단조 시계는 부팅 이후 경과라 0에서 시작하지 않는다
     t = 12_345_678_901_234
     capture_offset = -8 * MS  # 노출~콜백 도착 사이 지연
@@ -350,6 +422,10 @@ def main() -> int:
     # ③ 탐지가 실제로 돈 프레임의 **수신 시각**. detect.csv는 이 목록에서 나온다 —
     # 두 파일이 같은 시계(그리고 같은 t0)를 쓰는 것이 이 생성기의 계약이다.
     detect_recv_times: list[int] = []
+    # ④ 오버레이가 쓸 수 있는 **직전에 게시된** 탐지 결과의 시각. None = 아직 게시 없음(-1).
+    last_source_ns: int | None = None
+    overlay_boxes_written = 0
+    overlay_empty_frames = 0
 
     for i in range(n_frames):
         t_recv = t + i * interval_ns + int(rng.uniform(-1.0, 1.0) * args.jitter_ms * MS)
@@ -359,7 +435,8 @@ def main() -> int:
             continue
 
         cost_ms = args.base_render_ms + abs(rng.gauss(0, args.jitter_ms))
-        if args.detect_every_n > 0 and emitted % args.detect_every_n == 0:
+        detect_triggered = args.detect_every_n > 0 and emitted % args.detect_every_n == 0
+        if detect_triggered:
             cost_ms += args.detect_ms
             # 탐지 스레드가 이 프레임을 받았다. 아래에서 detect.csv 한 행이 된다.
             detect_recv_times.append(t_recv)
@@ -376,6 +453,14 @@ def main() -> int:
             sum(v for c, v in gpu_true.items() if c in GPU_SUM_COLUMNS),
             gpu_true.get(GPU_FRAME_COLUMN, 0.0),
         )
+        # ④ H칸은 **GL 스레드의 CPU 구간**이므로 프레임의 CPU 비용에 그대로 더해진다
+        # (GPU 총합과 max를 취하는 대상이 아니다 — 그건 GPU가 CPU 제출을 기다리는 관계다).
+        stage_h_true = (
+            args.stage_h_ms * (1.0 + rng.uniform(-0.15, 0.15))
+            if "stage_h_ms" in overlay_cols else 0.0
+        )
+        cost_ms += stage_h_true
+
         # swapBuffers는 GPU가 끝나기를 기다리므로, GPU 총합이 CPU 제출 비용보다 크면
         # 그쪽이 프레임 비용을 지배한다. 이 모델이 없으면 stage_d를 아무리 키워도
         # 프레임타임이 안 변해서 "카메라 공급에 묶임" 단서만 늘 참이 된다.
@@ -399,7 +484,52 @@ def main() -> int:
             row[c] = MISSING if disjoint else round(gpu_true[c], 3)
         if disjoint:
             gpu_disjoint_rows += 1
+
+        # ── ④ 오버레이 (v7). **disjoint를 적용하지 않는다** — 그건 GPU timer query가 해소되지
+        #    않은 상태이고, 이 열들은 CPU 벽시계·개수·시각이다(같은 통에 넣으면 이 생성기가
+        #    두 물리량을 같은 것으로 다루기 시작한다).
+        if "stage_h_ms" in overlay_cols:
+            # 🔴 소수 3자리로 쓴다. 앱에도 같은 정밀도를 요구한다 — 평활이 싸면 H가 진짜로
+            #    0.0x ms인데 1자리로 쓰면 0.0이 되고, 하네스의 하한 가드(>0)가 **가장 싼
+            #    샘플만 골라 폐기**한다(E·F·G와 같은 이유).
+            row["stage_h_ms"] = round(stage_h_true, 3)
+        if "overlay_boxes" in overlay_cols:
+            empty = (
+                args.overlay_empty_frac > 0 and rng.random() < args.overlay_empty_frac
+            )
+            # 🔴 **0은 정상값이다.** 이 행들이 카운트 열의 하한(`>= 0`)이 필요한 이유이고,
+            #    깜빡임 검출기가 볼 >0→0→>0 전이를 만드는 자리다.
+            row["overlay_boxes"] = 0 if empty else args.overlay_boxes
+            overlay_boxes_written += 1
+            if row["overlay_boxes"] == 0:
+                overlay_empty_frames += 1
+        if "t_overlay_source_ns" in overlay_cols:
+            # 🔴 **이 프레임이 쓸 수 있는 것은 `t_render_start` 이하인 가장 최근 게시본이다.**
+            #    게시 예정 시각을 큐에 넣고, 렌더 시작 시점까지 도착한 것만 꺼내 "최신 게시본"을
+            #    갱신한다. 큐는 t_recv가 단조이고 lag이 상수이므로 이미 오름차순이다.
+            #
+            #    이 모델이 없으면(예전 구현: 트리거 프레임에서 곧바로 last_source를 미래 시각으로
+            #    덮어썼다) **아직 오지 않은 결과를 쓰는 행**이 나온다. lag이 프레임 간격보다 크면
+            #    그 프레임들의 신선도가 음수가 되어 하네스가 전부 폐기했고, 그 결과 합성 분포에서
+            #    **가장 신선한 쪽이 통째로 잘렸다**(측정: lag 120ms·30fps에서 33.4% 폐기).
+            #    그 경고는 실기기라면 **앱의 시계 순서 결함**을 뜻하므로 오진까지 유발했다.
+            #    🔴 하네스의 가드는 옳게 동작했다 — 결함은 이 게시 시각 모델이었다.
+            while pending_sources and pending_sources[0] <= t_render_start:
+                last_source_ns = pending_sources.pop(0)
+            #    게시 전 프레임은 -1이다(하네스가 "아직 게시된 결과가 없다"로 폐기·계수한다).
+            row["t_overlay_source_ns"] = (
+                last_source_ns if last_source_ns is not None else MISSING
+            )
+            if last_source_ns is None:
+                overlay_source_pending_frames += 1
         rows.append(row)
+        # 게시 **예약**. 탐지가 도는 런은 그 주기로, 안 도는 런은 매 프레임(경로 태우기용).
+        # ⚠ 트리거한 프레임 자신은 이 결과를 쓸 수 없다 — 예약을 행을 쓴 뒤에 하고, 위에서
+        #   `<= t_render_start`로 걸러 내므로 두 겹으로 보장된다.
+        if "t_overlay_source_ns" in overlay_cols and (
+            detect_triggered or args.detect_every_n <= 0
+        ):
+            pending_sources.append(t_recv + int(args.overlay_source_lag_ms * MS))
         prev_end = t_render_end
         dropped_accum = 0
         emitted += 1
@@ -414,6 +544,7 @@ def main() -> int:
         "t_render_end_ns",
         "dropped_since_last",
         *gpu_cols,
+        *overlay_cols,
     ]
     write_frames(frames_path, rows, columns=columns)
 
@@ -506,17 +637,21 @@ def main() -> int:
             pipeline_stages.append(STAGE2_GAMMA)
         if args.detect_every_n > 0:
             pipeline_stages.append(STAGE_DETECT)
-        if args.stage_i_ms > 0:
+        # ④ 오버레이 열만 준 로그도 **④를 도는 런**이다. 이걸 빼면 "선언은 처리 없음인데
+        # 실측은 있다"는 자기모순 로그가 나온다(아래 경고가 경계하는 상태).
+        if args.stage_i_ms > 0 or overlay_cols:
             pipeline_stages.append(STAGE4_HIGHLIGHT)
+        if args.stage_h_ms > 0:
+            pipeline_stages.append(STAGE4_SMOOTHING)
         # 유추로는 담기지 않는 열이 있다. 그 상태로 두면 집계가 "단계 선언과 실측이
         # 어긋난다"고 경고하는 자기모순 로그가 나오므로, 생성 시점에 미리 알린다.
-        if not pipeline_stages and gpu_cols:
+        if not pipeline_stages and (gpu_cols or overlay_cols):
             LOG.warning(
                 "pipeline_stages를 유추했더니 빈 배열인데 GPU 단계 열은 있다(%s) — "
                 "집계가 '단계 선언과 실측이 어긋난다'고 경고하는 로그가 된다. "
                 "그 모순 경로를 일부러 만드는 게 아니라면 --pipeline_stages로 명시할 것 "
                 "(② 하위 패스 열에는 아직 대응 토큰이 없다 — 생산자는 앱이다)",
-                ", ".join(gpu_cols),
+                ", ".join(gpu_cols + overlay_cols),
             )
 
     session = {
@@ -594,6 +729,11 @@ def main() -> int:
             "gpu_present_ms": args.gpu_present_ms,
             "gpu_frame_ms": args.gpu_frame_ms,
             "gpu_disjoint_frac": args.gpu_disjoint_frac,
+            # ④ 오버레이 (v7)
+            "stage_h_ms": args.stage_h_ms,
+            "overlay_boxes": args.overlay_boxes,
+            "overlay_empty_frac": args.overlay_empty_frac,
+            "overlay_source_lag_ms": args.overlay_source_lag_ms,
             "stage_e_ms": args.stage_e_ms,
             "stage_f_ms": args.stage_f_ms,
             "stage_g_ms": args.stage_g_ms,
@@ -610,6 +750,11 @@ def main() -> int:
         },
         "gpu_columns_written": gpu_cols,
         "gpu_disjoint_rows": gpu_disjoint_rows,
+        # ④ 오버레이 (v7). **gpu_columns_written과 별 키다** — 시계가 다른 열을 한 목록에
+        # 담으면 이 세션만 읽는 사람이 stage_h_ms를 GPU 열로 읽는다.
+        "overlay_columns_written": overlay_cols,
+        "overlay_boxes_rows": overlay_boxes_written,
+        "overlay_empty_frames": overlay_empty_frames,
         "camera_frames_offered": n_frames,
         "frames_emitted": len(rows),
         "frames_dropped": n_frames - len(rows),
@@ -652,6 +797,17 @@ def main() -> int:
         LOG.info(
             "  GPU 열: %s (disjoint로 -1 처리된 행 %d개)",
             ", ".join(gpu_cols), gpu_disjoint_rows,
+        )
+    if overlay_cols:
+        LOG.info(
+            "  ④ 오버레이 열: %s — 박스 개수를 쓴 행 %d개(그중 0개인 프레임 %d개). "
+            "🔴 stage_h_ms는 **CPU 벽시계**라 GPU 합에 들어가지 않는다",
+            ", ".join(overlay_cols), overlay_boxes_written, overlay_empty_frames,
+        )
+        LOG.warning(
+            "  ⚠ 이 오버레이 값들은 **인자로 만든 것이지 측정치가 아니다.** 박스 개수도 "
+            "탐지 결과가 아니라 난수이므로, 여기서 나온 깜빡임 전이 수는 **검출기가 도는지를 "
+            "확인하는 값**이지 앱의 깜빡임 실측이 아니다"
         )
     LOG.info("  frames : %s", frames_path)
     LOG.info("  session: %s", session_path)
