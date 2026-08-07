@@ -479,6 +479,32 @@ enum class RenderArm(
         "detect_parity_xnnpack",
         listOf("blit_2pass", "detect"),
         listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
+    ),
+
+    // ── ③ 회전 대조군(`detect_cpu_norot`) ──────────────────────────────────
+    // 🔴 **회전 여부 하나만 다른 짝 arm이다.** 규약 §4-1의 `rotation_site = "none"`이고,
+    // §4-2 표의 🟢 행 — `rotation_applied=false`이지만 그 뜻은 **"아직 구현하지 않았다"
+    // (알려진 이슈 29)가 아니라 "회전 전 E를 같은 세션에서 재기 위한 의도된 대조군"**이다.
+    // 두 뜻을 가르지 않으면 이 arm의 매니페스트가 이슈 29 시절 덤프와 구분되지 않는다.
+    //
+    // 🔴 **[DETECT_CPU]와 글자 그대로 같아야 한다** — 같은 EP·같은 세션 옵션·같은
+    // [pipelineStages]·같은 [gpuColumns]이고, 전처리도 **같은 함수에 회전각 0을 넣어**
+    // 태운다(별도 코드 경로를 만들지 않았다. 만들면 차분이 "회전 여부"가 아니라 "루프
+    // 모양"까지 섞는다). 갈리는 것은 `RenderArm.appliesDetectRotation` 하나뿐이다.
+    //
+    // ⚠ 목록 **맨 뒤**에 붙인다. 스피너는 entries 순서라 중간에 끼우면 측정자가 손으로
+    //   고르던 기존 arm의 위치가 전부 밀린다(`_1q` 셋을 뒤에 붙인 것과 같은 이유다).
+
+    /**
+     * [DETECT_CPU]의 **회전 미적용** 짝. E의 회전 전 기준선을 같은 세션에서 잡는 자리다.
+     *
+     * 🔴 **이 arm의 boxes_out·max_conf를 탐지 품질로 읽으면 안 된다** — 모델이 옆으로
+     * 누운 장면을 본다. 이 arm이 답하는 것은 **"회전이 E에 얼마를 더하는가"** 하나다.
+     */
+    DETECT_CPU_NOROT(
+        "detect_cpu_norot",
+        listOf("blit_2pass", "detect"),
+        listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
     );
 
     /**
@@ -604,7 +630,22 @@ enum class RenderArm(
     val usesDetectSession: Boolean
         get() = this == DETECT_CPU || this == DETECT_NNAPI || this == DETECT_XNNPACK ||
             this == DETECT_CPU_PROF || this == DETECT_NNAPI_PROF || this == DETECT_XNNPACK_PROF ||
+            this == DETECT_CPU_NOROT ||
             usesDetectParityDump
+
+    /**
+     * 분석 프레임의 `rotationDegrees`를 **전처리에 적용하는가**(규약 §4).
+     *
+     * 🔴 **`detect_cpu_norot`만 false다** — 그 arm은 회전 전 E를 같은 세션에서 재기 위한
+     * **의도된 대조군**이고, 매니페스트에 `rotation_applied=false` + `rotation_site="none"`을
+     * 낸다(§4-2 표의 🟢 행). 세션 옵션도 렌더 경로도 짝([DETECT_CPU])과 글자 그대로 같고
+     * 갈리는 것은 이 값 하나다.
+     *
+     * ⚠ **`rotationDegrees == 0`과 다른 사실이다.** 기기가 0°를 주면 회전은 **적용됐는데
+     * 항등**인 것이고 그때도 이 값은 true다(§4-2).
+     */
+    val appliesDetectRotation: Boolean
+        get() = usesDetectSession && this != DETECT_CPU_NOROT
 
     /**
      * ③ **이식 정확성 대조 덤프**를 남기는 arm인가. `DetectParityDumper`의 시작 판별식이고,
@@ -625,7 +666,7 @@ enum class RenderArm(
      */
     val detectEpRequested: String?
         get() = when (this) {
-            DETECT_CPU, DETECT_CPU_PROF, DETECT_PARITY_CPU -> "cpu"
+            DETECT_CPU, DETECT_CPU_PROF, DETECT_PARITY_CPU, DETECT_CPU_NOROT -> "cpu"
             DETECT_NNAPI, DETECT_NNAPI_PROF, DETECT_PARITY_NNAPI -> "nnapi"
             DETECT_XNNPACK, DETECT_XNNPACK_PROF, DETECT_PARITY_XNNPACK -> "xnnpack"
             else -> null

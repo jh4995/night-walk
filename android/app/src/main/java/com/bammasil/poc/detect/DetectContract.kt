@@ -148,16 +148,24 @@ object DetectContract {
      * "letterbox pad 위치: **상하 균등 분배(center)**"는 여전히 `☐` 미확정 칸이다.
      * 그래서 center는 **제안값이며 확정 계약이 아니다.**
      *
-     * ⚠ 이게 틀리면 박스가 통째로 세로로 밀린다(§A-2가 직접 그렇게 경고한다).
+     * ⚠ 이게 틀리면 박스가 통째로 **패딩이 붙는 축 방향으로** 밀린다.
+     * 🔴 **그 축은 회전 뒤에 정해진다** — §A-2는 "상하"라고 적었지만 그건 소스가 가로로 긴
+     * (16:9) 프레임을 그대로 letterbox 할 때의 이야기다. 90/270°로 돌리면 720p가 **세로로
+     * 길어져 패딩이 좌우로 가므로 밀리는 방향도 가로**다. [Rotation]이 붙은 뒤로는
+     * "세로"라고 못 박을 수 없다.
      * 🔴 **이번 라운드부터 이 가정을 실제로 쓴다**([LETTERBOX_ALIGN]) — 그래서 가정이라는
-     * 사실이 `session.json`에 계속 남아야 한다.
+     * 사실이 `session.json`에 계속 남아야 한다. **§A-2는 여전히 ☐다.**
      */
     const val LETTERBOX_ALIGN_ASSUMPTION =
         "🔴 **가정이다(미확정).** metadata.json의 preprocess.resize는 한국어 산문이고 " +
             "align 키가 없다. INTERFACES.md §A-2의 'letterbox pad 위치 = 상하 균등 " +
-            "분배(center)'도 ☐ 제안값이다. 이 값이 틀리면 **박스가 통째로 세로로 밀린다.** " +
+            "분배(center)'도 ☐ 제안값이다. 이 값이 틀리면 **박스가 통째로 패딩이 붙는 축 " +
+            "방향으로 밀린다.** 🔴 **그 축은 회전 뒤에 정해진다** — §A-2의 '상하'는 소스를 " +
+            "회전 없이 letterbox 할 때의 축이고, 90/270°로 돌리면 720p가 세로로 길어져 " +
+            "패딩이 **좌우**로 가므로 밀리는 방향도 **가로**다. 실제 축은 이 런의 " +
+            "letterbox pad_left/pad_top 중 0이 아닌 쪽이 말한다. " +
             "⚠ **이번 라운드는 이 가정을 실제로 썼다**(center). 상류에 확정을 요청해 둔 " +
-            "상태이며, 답이 center가 아니면 이 런의 박스 좌표는 세로로 밀린 값이다 — " +
+            "상태이며, 답이 center가 아니면 이 런의 박스 좌표는 그 축으로 밀린 값이다 — " +
             "E·F 비용은 영향이 없고(패딩 면적이 같다) G의 좌표만 틀린다"
 
     /**
@@ -209,22 +217,75 @@ object DetectContract {
             "없다는 뜻이다. limited range(16..235)였다면 대비가 약간 낮은 입력이 되어 " +
             "점수가 소수점에서 달라진다. 골든 샘플(INTERFACES.md §A-6)이 오면 여기서 걸린다"
 
+    // ── 회전을 **어디서** 적용했는가 (규약 §4-1의 어휘) ───────────────────
+    // 🔴 값을 지어내지 않는다. 이 두 토큰은
+    //    `docs/plans/20260806_detect_parity_dump_format.md` §4-1이 정한 어휘이며,
+    //    PC 소비자(`scripts/detect_parity.py`)가 같은 문서를 보고 읽는다.
+    //    ⚠ `camerax_output_rotation`은 **이 어휘에 없다** — ImageAnalysis가 회전까지 해서
+    //      주면 변환이 E 구간 **밖**에서 일어나 E가 과소로 나온다(RGBA_8888을 안 고른 것과
+    //      글자 그대로 같은 함정이다). 그래서 그 길을 아예 만들지 않았다.
+
+    /** letterbox 목적지 좌표 → 회전 역함수 → 센서 좌표를 **한 번에** 매핑한다. */
+    const val ROTATION_SITE_SAMPLE_MAP = "preprocess_sample_map"
+
+    /** 회전을 **의도적으로** 적용하지 않았다 — 짝 대조 arm(`detect_cpu_norot`). */
+    const val ROTATION_SITE_NONE = "none"
+
     /**
-     * 회전을 적용하지 않는다는 사실의 기록.
+     * 회전을 **전처리 샘플 맵에 합성해** 적용했다는 사실의 기록.
      *
-     * 🔴 **비용에는 영향이 없지만 탐지 품질에는 있다.** 둘을 한 문장으로 뭉치면 "무해하다"로
-     * 읽히는데, 모델은 옆으로 누운 장면을 보게 되므로 그렇지 않다.
+     * 🔴 **E의 정의와 E의 값을 갈라 쓴다.** 한 문장으로 뭉치면 "E가 회귀했다"로 읽힌다.
+     * - E의 **정의**는 `DetectPipeline`이 `t`를 찍는 두 줄이고 **그대로다.**
+     * - E의 **값**은 바뀐다. 회귀가 아니라 **조건 변경**이다(그리고 아직 미측정이다).
      */
-    const val ROTATION_NOT_APPLIED =
-        "⚠ **분석 프레임의 rotationDegrees를 적용하지 않았다.** " +
-            "**비용(E·F·G)에는 영향이 없다** — 회전은 letterbox 앞뒤 어디에 넣어도 픽셀 수가 " +
-            "같고, 세로 프레임이면 letterbox 패딩 면적도 같다. " +
-            "🔴 **그러나 탐지 품질에는 영향이 있다.** 회전을 안 하면 모델이 **옆으로 누운 " +
-            "장면**을 보므로 사람·계단의 재현율이 실제보다 낮게 나온다. 그래서 이 런의 " +
-            "**boxes_out · max_conf 분포를 탐지 정확도로 읽으면 안 된다** — 그 열들의 " +
-            "용도는 'G가 실제로 일을 했는가'와 'G 비용의 설명 변수'까지다. " +
-            "🔴 ③→④를 연결하는 라운드는 이 값을 반드시 반영할 것 — 안 하면 박스가 90° " +
-            "어긋난 채로 그럭저럭 보인다. 실제 값은 detect.input.rotation_degrees에 있다"
+    const val ROTATION_APPLIED_SAMPLE_MAP =
+        "✅ **분석 프레임의 rotationDegrees를 적용했다.** 어디서: " +
+            "**$ROTATION_SITE_SAMPLE_MAP** — letterbox 목적지 좌표에서 회전 역함수를 거쳐 " +
+            "센서 좌표를 한 번에 잡는다. **추가 패스도 추가 버퍼도 없다**(평면을 회전 복사한 " +
+            "뒤 기존 경로를 태우는 preprocess_plane_copy와 다르다). " +
+            "🔴 **E의 *정의*는 바뀌지 않았다** — 그것은 DetectPipeline이 t를 찍는 두 줄이고 " +
+            "그 자리는 그대로다(detect_timestamp_sites 참고). " +
+            "🔴 **E의 *값*은 바뀐다.** 90/270°에서는 목적지 행 하나가 센서의 **열**을 " +
+            "훑으므로 Y 평면의 캐시 지역성이 나빠진다. ⚠ **그 비용은 미측정이다** — " +
+            "짝 arm(detect_cpu_norot)과의 차분으로만 말한다. " +
+            "🔴 **이것은 회귀가 아니라 조건 변경이다.** 08-06 라운드의 E와 나란히 놓고 " +
+            "'느려졌다'로 읽지 말 것. " +
+            "⚠ **남은 가정 둘**: (1) rotationDegrees를 **시계 방향**으로 읽었다(CameraX " +
+            "ImageInfo의 규약이며 기계로 확인한 값이 아니라 문서를 읽은 것이다. 앱과 PC가 " +
+            "**같은 가정**을 했을 뿐이며, 틀리면 실기기 E가 크게 어긋난다 — 조용히 틀리지는 " +
+            "않는다), " +
+            "(2) 모델이 **바로 선** 장면을 기대한다(상류 학습 데이터가 대시캠 정립 영상이라는 " +
+            "정황이지 계약이 아니다 — INTERFACES.md에 이 칸이 없다). " +
+            "🔴 **반사 규약은 이제 가정이 아니라 규약이다(규약 §5-1).** 그리고 **하나가 " +
+            "아니라 둘이며 자리마다 다르다** — 섞으면 정확히 1px 틀린다: " +
+            "**전처리 샘플 맵은 픽셀 인덱스/중심 공간이라 `(N−1) − v`**이고(이 문장이 " +
+            "말하는 자리다), **후처리 박스는 연속(모서리) 좌표라 `N − v`**다" +
+            "(letterbox 역변환이 낸 값이라 `[0, N]`을 가득 채운다). 둘은 같은 기하의 다른 " +
+            "매개화이며(`c = i + 0.5`로 서로 유도된다) 그래서 **한 함수를 두 자리에 쓰면 " +
+            "안 된다** — 앱은 Rotation.toSensorX/Y(인덱스)와 Rotation.inverseBox(모서리)를 " +
+            "따로 둔다. 박스 쪽 값과 축 대응은 detect.parity.boxes_coordinate_space와 " +
+            "규약 §5-1의 표가 말한다. " +
+            "⚠ **이 1px은 어떤 왕복 검사로도 안 잡힌다**(정·역이 같은 규약이면 왕복은 " +
+            "통과한다) — geometry_selfcheck의 **프레임 전체 박스 검산**과 폰↔PC 대조, " +
+            "둘뿐이다. " +
+            "🔴 그래도 이 런의 boxes_out·max_conf를 **탐지 정확도로 읽으면 안 된다** — " +
+            "정답 라벨도 골든 샘플(INTERFACES.md §A-6)도 여전히 없다"
+
+    /**
+     * 짝 대조 arm(`detect_cpu_norot`)이 쓰는 문장. **의도된 대조군**이며 "아직 구현하지
+     * 않았다"가 아니다 — 규약 §4-2가 그 두 뜻을 가르라고 못 박은 자리다.
+     */
+    const val ROTATION_NOT_APPLIED_CONTROL =
+        "🟢 **회전을 의도적으로 적용하지 않았다 — 대조군 arm이다**(rotation_site=" +
+            "$ROTATION_SITE_NONE). 규약 §4-2: `rotation_applied=false`의 뜻은 둘인데 " +
+            "이쪽은 **'아직 구현하지 않았다'(이슈 29)가 아니라 '회전 전 E를 같은 세션에서 " +
+            "재기 위한 짝 arm'**이다. 짝(detect_cpu)과 **회전 여부 하나만 다르고 나머지는 " +
+            "글자 그대로 같다** — 같은 EP·같은 세션 옵션·같은 렌더 경로이며, 전처리도 같은 " +
+            "함수에 회전각 0을 넣어 태운다(별도 코드 경로가 아니다). " +
+            "🔴 **이 arm의 박스는 '바로 선' 입력에서 나온 것이 아니다** — 모델이 옆으로 " +
+            "누운 장면을 보므로 boxes_out·max_conf를 탐지 품질로 읽으면 안 된다. " +
+            "⚠ `rotation_degrees`는 기기가 준 값 그대로이고 `rotation_applied=false`와 " +
+            "**다른 사실이다**(0°를 받아 항등으로 적용한 것과 구분된다)"
 
     /**
      * `INTERFACES.md` §A-4가 정한 클래스 인덱스. **모델은 이것과 반대다.**
@@ -273,6 +334,7 @@ object DetectContract {
      * `align=center`의 통상 구현(ultralytics `LetterBox`도 같다)이다.
      */
     class Letterbox(
+        /** 🔴 **소스는 ② 회전 후 프레임이다**(센서가 아니다 — 규약 §5의 사슬 두 번째 칸). */
         val srcW: Int,
         val srcH: Int,
         val dstW: Int,
@@ -282,8 +344,28 @@ object DetectContract {
         val contentH: Int,
         val padX: Int,
         val padY: Int,
-    )
+    ) {
+        /** [scale]의 역수. **한 곳에서만 만든다** — 두 곳에서 나누면 반올림이 갈린다. */
+        val invScale: Float = 1f / scale
 
+        /** letterbox 640 좌표 → ② 회전 후 좌표 (x 성분). */
+        fun toSrcX(x: Float): Float = (x - padX) * invScale
+
+        /** letterbox 640 좌표 → ② 회전 후 좌표 (y 성분). */
+        fun toSrcY(y: Float): Float = (y - padY) * invScale
+
+        /** ② 회전 후 좌표 → letterbox 640 좌표 (x 성분). */
+        fun toDstX(x: Float): Float = x * scale + padX
+
+        /** ② 회전 후 좌표 → letterbox 640 좌표 (y 성분). */
+        fun toDstY(y: Float): Float = y * scale + padY
+    }
+
+    /**
+     * @param srcW / [srcH] 🔴 **회전 후 치수**를 넣는다. 센서 치수를 넣으면 90/270°에서
+     *   종횡비가 뒤집혀 `pad_x`와 `pad_y`가 자리를 바꾼다(규약 §3-3이 `/1`→`/2` 버전을
+     *   올린 이유가 바로 이것이다).
+     */
     fun letterbox(srcW: Int, srcH: Int, dstW: Int, dstH: Int): Letterbox {
         val scale = minOf(dstW.toFloat() / srcW, dstH.toFloat() / srcH)
         val contentW = Math.round(srcW * scale).coerceIn(1, dstW)
@@ -301,6 +383,224 @@ object DetectContract {
             padY = (dstH - contentH) / 2,
         )
     }
+
+    /**
+     * 회전 기하. **[Letterbox]와 같은 이유로 한 곳에서만 낸다** — 전처리(목적지→센서)와
+     * 후처리(회전 후→센서)가 각자 공식을 적으면 부호 하나가 어긋나는 날 박스가 통째로
+     * 뒤집히고, 그때 어느 쪽이 틀렸는지 알 수 없다.
+     *
+     * ## 좌표 공간 둘 (규약 §5의 사슬 ①과 ②)
+     *
+     * | 이름 | 무엇 | 치수 |
+     * |---|---|---|
+     * | **센서** | `ImageProxy`가 준 그대로(회전 전) | [srcW] × [srcH] |
+     * | **회전 후** | 시계 방향으로 [degrees]만큼 돌린 것. 모델이 보는 방향 | [rotatedW] × [rotatedH] |
+     *
+     * ## 방향 규약
+     *
+     * [degrees]는 `ImageProxy.imageInfo.rotationDegrees`이며 **"바로 세우려면 시계 방향으로
+     * 몇 도 돌려야 하는가"**다. 값은 `{0, 90, 180, 270}`뿐이고 **그 밖은 [rotationOf]가
+     * 거부한다** — 그럴듯한 근사(가장 가까운 90° 배수 등)를 만들지 않는다. 근사를 만들면
+     * 그 런의 박스가 조용히 몇 도 틀어진 채로 나오고, 그건 아무도 못 잡는다.
+     *
+     * ## 🔴 반사 규약이 **둘**이다 — 섞으면 정확히 1px 틀린다
+     *
+     * | 쓰는 곳 | 좌표의 성질 | 범위 | 반사식 | 함수 |
+     * |---|---|---|---|---|
+     * | 전처리 샘플 맵 | **픽셀 인덱스**(정수 = 픽셀 **중심**) | `[0, N−1]` | `(N−1) − v` | [toSensorX]/[toSensorY] |
+     * | 후처리 박스 | **연속 좌표**(모서리) | `[0, N]` | `N − v` | [inverseBox]/[forwardBox] |
+     *
+     * 박스 좌표는 letterbox 역변환 `(x − pad)/scale`이 낸 **연속 좌표**이고 회전 후 프레임
+     * `[0, rotatedW]`를 **가득 채운다**(정수 인덱스 `[0, rotatedW−1]`이 아니다). 여기에
+     * 인덱스 쪽 식 `(N−1) − v`를 쓰면 **프레임 전체가 원점 쪽으로 정확히 1px 밀린다** —
+     * 회전 후 오른쪽 끝 `rotatedW`가 센서 `−1`로 간다. 샘플 맵은 반대로 정수 인덱스를
+     * 다루므로 거기서는 `−1`이 맞다.
+     *
+     * 🔴 **그래서 [inverseBox]는 [toSensorX]/[toSensorY]를 부르지 않는다.** 한 함수를 두
+     * 규약에 쓰면 한쪽이 조용히 1px 틀리고, 그 1px은 어떤 왕복 검사로도 안 잡힌다(양쪽이
+     * 같은 규약이면 왕복은 통과한다). [DetectGeometryCheck]가 **프레임 전체 박스**를 따로
+     * 대조해 그 자리를 감시한다.
+     *
+     * ⚠ 90° 배수라 축이 축으로 가므로 **보간을 새로 끌어들이지 않는다**(순수 좌표 치환이다).
+     */
+    class Rotation internal constructor(
+        val degrees: Int,
+        val srcW: Int,
+        val srcH: Int,
+    ) {
+        /** 90/270이면 폭과 높이가 자리를 바꾼다. */
+        val swapsAxes: Boolean = degrees == 90 || degrees == 270
+
+        /** ② 회전 후 프레임의 폭. `parity.json`의 `source.rotated_width`가 이 값이다. */
+        val rotatedW: Int = if (swapsAxes) srcH else srcW
+
+        /** ② 회전 후 프레임의 높이. */
+        val rotatedH: Int = if (swapsAxes) srcW else srcH
+
+        /**
+         * **정방향** — ① 센서 좌표 → ② 회전 후 좌표 (x 성분). 🔴 **픽셀 인덱스 규약**.
+         *
+         * ⚠ **프레임 경로는 정방향 점 함수를 부르지 않는다**(전처리는 역방향만 쓴다).
+         * 있는 이유는 [DetectGeometryCheck]가 **샘플 맵의 가역성**을 확인하기 위해서다 —
+         * 박스 왕복 검사는 모서리 규약이라 이 두 함수를 건드리지 않는다.
+         */
+        fun toRotatedX(x: Float, y: Float): Float = when (degrees) {
+            90 -> (srcH - 1) - y
+            180 -> (srcW - 1) - x
+            270 -> y
+            else -> x
+        }
+
+        /** **정방향** — ① 센서 좌표 → ② 회전 후 좌표 (y 성분). 🔴 **픽셀 인덱스 규약**. */
+        fun toRotatedY(x: Float, y: Float): Float = when (degrees) {
+            90 -> x
+            180 -> (srcH - 1) - y
+            270 -> (srcW - 1) - x
+            else -> y
+        }
+
+        /**
+         * **역방향** — ② 회전 후 좌표 → ① 센서 좌표 (x 성분).
+         * 🔴 전처리의 샘플 맵이 픽셀마다 부르는 함수다(목적지 → letterbox 역 → **여기**).
+         * 🔴 **픽셀 인덱스 규약**(`(N−1) − v`)이다 — **박스에 쓰지 말 것**([inverseBox] 참고).
+         */
+        fun toSensorX(rx: Float, ry: Float): Float = when (degrees) {
+            90 -> ry
+            180 -> (srcW - 1) - rx
+            270 -> (srcW - 1) - ry
+            else -> rx
+        }
+
+        /** **역방향** — ② 회전 후 좌표 → ① 센서 좌표 (y 성분). 🔴 **픽셀 인덱스 규약**. */
+        fun toSensorY(rx: Float, ry: Float): Float = when (degrees) {
+            90 -> (srcH - 1) - rx
+            180 -> (srcH - 1) - ry
+            270 -> rx
+            else -> ry
+        }
+
+        /**
+         * **역방향 박스** — ② 회전 후 좌표계의 축 정렬 박스 → ① 센서 좌표계의 축 정렬 박스.
+         * 결과는 [out]에 `x1, y1, x2, y2` 순으로 담는다(**할당 없음** — G 경로에서 불린다).
+         *
+         * 🔴 **연속(모서리) 좌표 규약이다** — 반사식이 `N − v`이고 `(N−1) − v`가 아니다.
+         * 위 클래스 KDoc의 표 참고. 그래서 [toSensorX]/[toSensorY]를 **부르지 않고** 여기서
+         * 축 대응을 직접 적는다. 한 함수를 두 규약에 쓰면 한쪽이 조용히 1px 틀린다.
+         * 검산: 회전 후 프레임 전체 박스 `(0, 0, rotatedW, rotatedH)`는 센서 프레임 전체
+         * `(0, 0, srcW, srcH)`로 가야 한다 — 인덱스 식을 쓰면 `y1`이 `−1`로 나온다.
+         *
+         * 🔴 **min/max가 아니다.** 회전이 뒤집는 축에서는 두 끝점의 **순서까지 함께** 옮긴다
+         * (`x1' = N − x2`). 그래서 잘 생긴 박스는 잘 생긴 채로 돌아오고(90°마다 전부
+         * 역전되는 일이 없다), **뒤집힌 박스는 뒤집힌 채로 돌아온다.** min/max로 뭉개면
+         * 모델이 낸 역전(`w < 0`)까지 조용히 고쳐져 [DetectPostprocessor]의 역전 카운터가
+         * 아무것도 못 잡는다 — 그 카운터가 지금 `x1 < x2` 불변식의 **유일한 감시자**다
+         * (알려진 이슈 34의 남은 위험).
+         *
+         * 🔴 **축 대응은 규약 §5-1의 표 그대로다**(`W = rotated_w`, `H = rotated_h`):
+         * `90°: (y1, W−x2, y2, W−x1)` · `180°: (W−x2, H−y2, W−x1, H−y1)` ·
+         * `270°: (H−y2, x1, H−y1, x2)`. PC 재구현(`scripts/detect_parity.py`의
+         * `RotationMap.invert_box`)도 같은 표를 쓴다 — **어긋나면 문서가 맞다.**
+         *
+         * ⚠ v1.2 초판에는 이 절이 **없었고** 양 트랙이 각자 구현하며 코드 주석으로 올렸다.
+         * 지금은 문서에 있다(2026-08-07). 앱이 먼저 정하는 자리가 아니다.
+         */
+        fun inverseBox(x1: Float, y1: Float, x2: Float, y2: Float, out: FloatArray) {
+            // 반사축의 길이는 **회전 후 프레임**의 것이다(rotatedW/H). 90/270이면 그것이
+            // 곧 센서의 높이/폭이고, 그 대응이 아래 축 배치의 근거다.
+            val w = rotatedW.toFloat()
+            val h = rotatedH.toFloat()
+            when (degrees) {
+                // sx ← ry (순서 보존) · sy ← rotatedW − rx (순서 반전)
+                90 -> {
+                    out[0] = y1
+                    out[1] = w - x2
+                    out[2] = y2
+                    out[3] = w - x1
+                }
+                180 -> {
+                    out[0] = w - x2
+                    out[1] = h - y2
+                    out[2] = w - x1
+                    out[3] = h - y1
+                }
+                // sx ← rotatedH − ry (반전) · sy ← rx (보존)
+                270 -> {
+                    out[0] = h - y2
+                    out[1] = x1
+                    out[2] = h - y1
+                    out[3] = x2
+                }
+                else -> {
+                    out[0] = x1
+                    out[1] = y1
+                    out[2] = x2
+                    out[3] = y2
+                }
+            }
+        }
+
+        /**
+         * **정방향 박스** — ① 센서 → ② 회전 후. [inverseBox]와 **같은 모서리 규약**이다.
+         *
+         * ⚠ **프레임 경로는 이 함수를 부르지 않는다** — 전처리·후처리 둘 다 역방향만 쓴다.
+         * 있는 이유는 [DetectGeometryCheck]의 왕복 검사이며, 그 검사가 잡는 것은
+         * "정방향과 역방향이 서로의 역함수인가"다.
+         */
+        fun forwardBox(x1: Float, y1: Float, x2: Float, y2: Float, out: FloatArray) {
+            // 이쪽 반사축의 길이는 **센서 프레임**의 것이다([inverseBox]와 뒤집혀 있다).
+            val w = srcW.toFloat()
+            val h = srcH.toFloat()
+            when (degrees) {
+                // rx ← srcH − y (반전) · ry ← x (보존)
+                90 -> {
+                    out[0] = h - y2
+                    out[1] = x1
+                    out[2] = h - y1
+                    out[3] = x2
+                }
+                180 -> {
+                    out[0] = w - x2
+                    out[1] = h - y2
+                    out[2] = w - x1
+                    out[3] = h - y1
+                }
+                // rx ← y (보존) · ry ← srcW − x (반전)
+                270 -> {
+                    out[0] = y1
+                    out[1] = w - x2
+                    out[2] = y2
+                    out[3] = w - x1
+                }
+                else -> {
+                    out[0] = x1
+                    out[1] = y1
+                    out[2] = x2
+                    out[3] = y2
+                }
+            }
+        }
+    }
+
+    /** [Rotation]이 받아들이는 각. 🔴 **이 밖은 거부한다**(근사를 만들지 않는다). */
+    val SUPPORTED_ROTATIONS: List<Int> = listOf(0, 90, 180, 270)
+
+    /**
+     * 회전 기하를 만든다. 각이 [SUPPORTED_ROTATIONS] 밖이거나 치수가 양수가 아니면 **null**.
+     * 🔴 null을 받은 쪽은 **그 프레임을 처리하지 않는다** — 그럴듯한 근사를 만들지 않는다.
+     */
+    fun rotationOf(degrees: Int, srcW: Int, srcH: Int): Rotation? {
+        if (degrees !in SUPPORTED_ROTATIONS) return null
+        if (srcW <= 0 || srcH <= 0) return null
+        return Rotation(degrees, srcW, srcH)
+    }
+
+    /** [rotationOf]가 null을 낸 사유(사람이 읽는 문장). `session.json`으로 그대로 나간다. */
+    fun rotationFailure(degrees: Int, srcW: Int, srcH: Int): String =
+        "🔴 회전 기하를 만들지 못했다 — rotationDegrees=$degrees, 소스 ${srcW}x$srcH. " +
+            "받아들이는 각은 ${SUPPORTED_ROTATIONS.joinToString(",")}뿐이고 **그 밖의 값에 " +
+            "가장 가까운 90° 배수를 골라 주지 않는다** — 근사를 만들면 그 런의 박스가 " +
+            "조용히 몇 도 틀어진 채로 나오고 아무도 못 잡는다. 이 프레임은 처리하지 않고 " +
+            "errors로 계상했다"
 
     fun paddingPixelFraction(srcW: Int, srcH: Int, dstW: Int, dstH: Int): Double? {
         if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return null

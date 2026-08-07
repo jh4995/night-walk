@@ -8,9 +8,12 @@ import com.bammasil.poc.gl.GlCapabilitiesProbe
 import com.bammasil.poc.gl.GpuTimerReport
 import com.bammasil.poc.gl.GpuTimerRing
 import com.bammasil.poc.detect.DetectContract
+import com.bammasil.poc.detect.DetectGeometryCheck
 import com.bammasil.poc.detect.DetectParityDumper
 import com.bammasil.poc.detect.DetectParityResult
+import com.bammasil.poc.detect.DetectPostprocessor
 import com.bammasil.poc.detect.DetectReport
+import com.bammasil.poc.detect.DetectRotationFacts
 import com.bammasil.poc.gl.HighlightOverlay
 import com.bammasil.poc.gl.LabGlsl
 import com.bammasil.poc.gl.RenderArm
@@ -96,6 +99,18 @@ class SessionFacts(
      * 그때는 `detect.parity` 블록 자체가 나가지 않는다(다른 블록들과 같은 규약).
      */
     val detectParity: DetectParityResult?,
+    /**
+     * ③ 회전의 사실(규약 §4). **③ arm이 아니면 null**이다.
+     * 🔴 `parity.json`의 `source` 블록과 **같은 객체**에서 나온다 — 두 곳이 각자 계산하면
+     * 갈리는 날이 오고, 그때 어느 쪽이 맞는지 알 수 없다.
+     */
+    val detectRotation: DetectRotationFacts?,
+    /**
+     * ③ 기하 왕복 자체검사의 결과. 세션을 여는 arm이 아니면 null이다.
+     * 🔴 **실패하면 앱이 런을 시작하지 않는다** — 그래서 이 블록이 있는 런은 통과한 런이다.
+     * 그래도 관측값(`max|d|`)을 싣는다. 통과/실패보다 관측값이 먼저다(규약 §7).
+     */
+    val detectGeometry: DetectGeometryCheck.Result?,
 )
 
 /**
@@ -130,6 +145,16 @@ class DetectRunFacts(
     val letterbox: DetectContract.Letterbox?,
     /** 런 디렉토리로 옮긴 ORT 프로파일 JSON 파일 이름들. */
     val profileFiles: List<String>,
+    /**
+     * 🔴 **역전 박스**(`x2<x1` 또는 `y2<y1`)의 런 전체 총계. **거른 개수가 아니라 센
+     * 개수다**(규약 §5-3) — 거르면 면적 0인 박스가 화면 가장자리에 남아 ④가 얇은 선을 그린다.
+     */
+    val invertedBoxes: Long,
+    /**
+     * 그중 처음 몇 개의 **실제 좌표**. 🔴 **개수만으로는 못 고친다** — 알려진 이슈 34가
+     * 잡힌 것은 `x1=0.0, x2=-148.75`라는 구체 좌표 덕이었다.
+     */
+    val invertedSamples: List<DetectPostprocessor.InvertedBox>,
 )
 
 object SessionWriter {
@@ -861,7 +886,9 @@ object SessionWriter {
             RenderArm.DETECT_XNNPACK_PROF,
             RenderArm.DETECT_PARITY_CPU,
             RenderArm.DETECT_PARITY_NNAPI,
-            RenderArm.DETECT_PARITY_XNNPACK -> {
+            RenderArm.DETECT_PARITY_XNNPACK,
+            // 🔴 회전 대조군도 ② 자리는 짝(detect_cpu)과 **글자 그대로 같다.**
+            RenderArm.DETECT_CPU_NOROT -> {
                 putBlit2Pass(json)
                 // 🔴 ② 서술만 보고 "탐지가 프레임타임에 안 들어간다"를 유도하지 못하게 한다.
                 json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
@@ -1258,6 +1285,9 @@ object SessionWriter {
         if (facts.arm.isDetectArm) {
             json.put("input", buildAnalysisInput(facts))
         }
+        // ③ 기하 왕복 자체검사. 🔴 실패하면 런이 시작되지 않으므로 이 블록이 있는 런은
+        //    통과한 런이다 — 그래도 관측값(max|d|)을 싣는다.
+        facts.detectGeometry?.let { json.put("geometry_selfcheck", buildDetectGeometry(it)) }
         if (run != null) {
             json.put("run", buildDetectRun(run))
         }
@@ -1291,7 +1321,7 @@ object SessionWriter {
         json.put("graph", buildDetectGraph(report))
         json.put("classes", buildDetectClasses(report))
         json.put("runtime", buildDetectRuntime(report))
-        json.put("preprocess_assumptions", buildDetectPreprocess())
+        json.put("preprocess_assumptions", buildDetectPreprocess(facts.detectRotation))
         json.put("padding_pixel_fraction", detectPaddingFraction(facts, report))
         json.put("padding_pixel_fraction_note", detectPaddingNote(facts, report))
         json.put("prepare_timing", buildDetectPrepareTiming(report))
@@ -1533,14 +1563,18 @@ object SessionWriter {
      * 🔴 **기계로 읽을 수 없어 가정으로 남은 것.** `RenderArm`의 `*_PROVENANCE`/`*_DEVIATION`
      * 관행 그대로다 — 조용히 굳으면 나중에 박스가 어긋날 때 원인을 못 찾는다.
      */
-    private fun buildDetectPreprocess(): JSONObject = JSONObject()
+    private fun buildDetectPreprocess(rotation: DetectRotationFacts?): JSONObject = JSONObject()
         .put("letterbox_align", DetectContract.LETTERBOX_ALIGN_ASSUMPTION)
         .put("letterbox_align_value", DetectContract.LETTERBOX_ALIGN)
         .put("pad_value", DetectContract.PAD_VALUE_ASSUMPTION)
         .put("pad_value_u8", DetectContract.PAD_VALUE_U8)
         .put("resize_interpolation", DetectContract.RESIZE_INTERPOLATION_ASSUMPTION)
         .put("yuv_to_rgb", DetectContract.YUV_TO_RGB_ASSUMPTION)
-        .put("rotation", DetectContract.ROTATION_NOT_APPLIED)
+        // 🔴 회전은 이제 **적용된다**(규약 §4). 문장은 arm이 고른다 — 대조군
+        //    (detect_cpu_norot)만 "의도적으로 적용하지 않았다"는 쪽이다.
+        //    ⚠ 이 문장이 말하는 것은 E의 **값**이 바뀐다는 것이지 E의 **정의**가 아니다.
+        .put("rotation", rotation?.note ?: JSONObject.NULL)
+        .put("rotation_site", rotation?.site ?: JSONObject.NULL)
         .put(
             "normalization",
             "0..255 → 0..1 (/255) 하나뿐이다. **평균/표준편차 정규화 없음** — " +
@@ -1571,9 +1605,23 @@ object SessionWriter {
         val analysis = facts.analysis ?: return JSONObject.NULL
         val shape = report.inputShape
         if (shape.size != 4) return JSONObject.NULL
+        // 🔴 **회전 후 치수로** 계산한다 — letterbox가 실제로 그 치수에서 나온다(규약 §5).
+        //    ⚠ 입력이 정사각이면 90° 스왑이 이 값을 바꾸지 않지만, 그건 이 모델의 우연이지
+        //      규칙이 아니다. 치수가 직사각으로 바뀌는 날 조용히 틀리지 않게 여기서 맞춰 둔다.
+        val rotation = facts.detectRotation
+        val srcW = if (rotation != null && rotation.rotatedWidth > 0) {
+            rotation.rotatedWidth
+        } else {
+            analysis.width
+        }
+        val srcH = if (rotation != null && rotation.rotatedHeight > 0) {
+            rotation.rotatedHeight
+        } else {
+            analysis.height
+        }
         val fraction = DetectContract.paddingPixelFraction(
-            analysis.width,
-            analysis.height,
+            srcW,
+            srcH,
             shape[3].toInt(),
             shape[2].toInt(),
         ) ?: return JSONObject.NULL
@@ -1587,10 +1635,20 @@ object SessionWriter {
             return "분석 프레임 해상도나 입력 shape을 알 수 없어 계산하지 않았다 — " +
                 "값을 지어내지 않는다(분석 use case가 붙지 않았거나 프레임이 하나도 오지 않았다)"
         }
+        val rotation = facts.detectRotation
+        val rotated = if (rotation != null && rotation.rotatedWidth > 0) {
+            " → 회전 후 ${rotation.rotatedWidth}x${rotation.rotatedHeight}" +
+                "(rotation_degrees=${rotation.degrees}, applied=${rotation.applied})"
+        } else {
+            ""
+        }
         return "1 − (내용 픽셀 수 / 입력 픽셀 수). 소스 " +
             "${analysis.width}x${analysis.height}(**camera_analysis_actual** — Preview가 " +
-            "아니라 분석 use case의 값이다) → 입력 ${shape[3]}x${shape[2]}(그래프에서 읽은 " +
-            "값)로 **계산한 값이며 상수 복사가 아니다.** 🔴 **F의 일부는 회색 패딩을 미는 " +
+            "아니라 분석 use case의 값이며 **센서 방향**이다)$rotated → 입력 " +
+            "${shape[3]}x${shape[2]}(그래프에서 읽은 값)로 **계산한 값이며 상수 복사가 " +
+            "아니다.** 🔴 **letterbox는 회전 후 치수에서 나온다**(규약 §5) — 이 값도 그 " +
+            "치수로 계산했다. ⚠ 입력이 정사각이면 90° 스왑이 이 값을 바꾸지 않지만 그건 " +
+            "이 모델의 우연이지 규칙이 아니다. 🔴 **F의 일부는 회색 패딩을 미는 " +
             "비용**이라 이 값 없이 다른 입력 크기의 F와 비교하면 안 된다. " +
             "⚠ 패딩을 어느 쪽에 붙이는지는 이 값에 영향이 없다(면적은 같다) — " +
             "그 미확정은 preprocess_assumptions.letterbox_align에 있다"
@@ -1619,7 +1677,10 @@ object SessionWriter {
         json.put("input_format_raw", analysis.imageFormat)
         json.put("input_format_requested", analysis.requestedFormatName)
         json.put("backpressure_strategy", analysis.backpressureStrategy)
+        // ⚠ 이것은 **마지막 프레임의 관측값**이다(카메라 소스가 들고 있는 값).
+        //    런이 실제로 **쓴** 각은 아래 rotation_degrees_locked다 — 규약 §4-3.
         json.put("rotation_degrees", analysis.rotationDegrees)
+        putAnalysisRotation(json, facts.detectRotation)
         json.put(
             "input_format_meaning",
             "🔴 **이 선택이 E의 뜻을 바꾼다.** YUV_420_888을 받아 letterbox·RGB 변환·/255· " +
@@ -1631,10 +1692,55 @@ object SessionWriter {
         json.put(
             "resolution_meaning",
             "⚠ **Preview(camera_actual)와 다른 use case의 값이다.** CameraX가 둘에 서로 " +
-                "다른 해상도를 줄 수 있으므로 섞어 읽지 말 것 — padding_pixel_fraction은 " +
-                "이 값으로 계산한다"
+                "다른 해상도를 줄 수 있으므로 섞어 읽지 말 것. 🔴 이 값은 **센서 방향**이고 " +
+                "letterbox는 **회전 후 치수**에서 나온다(규약 §5) — 90/270°면 아래 " +
+                "rotated_resolution과 폭·높이가 바뀐다"
         )
         return json
+    }
+
+    /**
+     * ③ 회전의 사실을 `detect.input` 옆에 붙인다(규약 §4). 🔴 **회전각은 첫 분석
+     * 프레임에서 잠근다**(§4-3) — 런 도중 바뀌면 letterbox 기하가 갈려 E와 박스 좌표가
+     * 한 런 안에서 두 뜻을 갖는다. 앱은 **잠근 값을 계속 쓰면서 센다.**
+     */
+    private fun putAnalysisRotation(json: JSONObject, rotation: DetectRotationFacts?) {
+        if (rotation == null) {
+            json.put("rotation_applied", JSONObject.NULL)
+            json.put("rotation_site", JSONObject.NULL)
+            json.put("rotation_locked", JSONObject.NULL)
+            json.put("rotation_changed_frames", JSONObject.NULL)
+            json.put(
+                "rotation_note",
+                "이 arm은 ③ 전처리를 돌리지 않으므로(detect_bind_only) 회전 사실이 없다 — " +
+                    "값을 지어내지 않는다"
+            )
+            return
+        }
+        json.put("rotation_degrees_locked", if (rotation.locked) rotation.degrees else JSONObject.NULL)
+        json.put("rotation_applied", rotation.applied)
+        json.put("rotation_site", rotation.site)
+        json.put("rotation_locked", rotation.locked)
+        json.put("rotation_changed_frames", rotation.changedFrames)
+        json.put(
+            "rotated_resolution",
+            if (rotation.rotatedWidth > 0) {
+                "${rotation.rotatedWidth}x${rotation.rotatedHeight}"
+            } else {
+                JSONObject.NULL
+            }
+        )
+        json.put("rotation_note", rotation.note)
+        json.put(
+            "rotation_lock_meaning",
+            "🔴 **회전각은 첫 분석 프레임에서 잠근다**(규약 §4-3). 이후 다른 값이 오면 " +
+                "**잠근 값을 계속 쓰면서 rotation_changed_frames를 센다** — 조용히 따라가지 " +
+                "않는다. 따라가면 letterbox 기하가 런 중간에 갈려 **E와 박스 좌표가 한 런 " +
+                "안에서 두 뜻을 갖고**, 그건 그 런의 숫자를 통째로 못 쓰게 만든다. " +
+                "⚠ **rotation_changed_frames != 0인 런은 승격 대상이 아니다.** " +
+                "⚠ **rotation_degrees=0과 rotation_applied=false는 다른 사실이다**(§4-2) — " +
+                "기기가 0°를 주면 회전은 적용됐는데 항등인 것이고 그때도 applied는 true다"
+        )
     }
 
     /**
@@ -1682,11 +1788,53 @@ object SessionWriter {
             "box_counts_meaning",
             "🔴 **boxes_pre_nms / boxes_out / max_conf를 탐지 정확도로 읽지 말 것.** " +
                 "이 라운드가 재는 것은 E·F·G이고, 그 열들의 용도는 (a) G가 실제로 일을 " +
-                "했는가와 (b) G 비용의 설명 변수까지다. 정확도로 못 읽는 이유가 둘 있다: " +
-                "회전을 적용하지 않아 모델이 옆으로 누운 장면을 본다" +
-                "(preprocess_assumptions.rotation), 그리고 전처리 가정 넷이 아직 미확정이다" +
-                "(preprocess_assumptions.used_this_round_note). 정확도 판정은 골든 샘플" +
-                "(INTERFACES.md §A-6)이 와야 가능하다"
+                "했는가와 (b) G 비용의 설명 변수까지다. " +
+                "🔎 **사유가 하나 줄었다(2026-08-07)** — 회전을 적용하면서 '모델이 옆으로 " +
+                "누운 장면을 본다'는 이유는 사라졌다(대조군 arm detect_cpu_norot 제외. " +
+                "실제 값은 preprocess_assumptions.rotation과 input.rotation_applied가 말한다). " +
+                "🔴 **그래도 결론은 그대로다.** 남은 이유: **정답 라벨이 없고 골든 샘플" +
+                "(INTERFACES.md §A-6)도 오지 않았다** — 그러니 mAP·누락률은 여전히 말할 수 " +
+                "없다. 그리고 전처리 가정 넷이 아직 미확정이다" +
+                "(preprocess_assumptions.used_this_round_note). " +
+                "⚠ **탐지가 돈다는 것과 안전을 평가했다는 것은 다른 사실이다** — " +
+                "안전 회귀는 여전히 evaluated=false다"
+        )
+        // 🔴 역전 박스(규약 §5-3) — **거른 개수가 아니라 센 개수다.** detect.csv에는 열을
+        //    더하지 않는다(행 하나 = 추론 1회인데 이 값은 런 전체의 성질에 가깝고,
+        //    좌표 표본은 CSV 한 칸에 담을 모양이 아니다).
+        json.put("inverted_boxes", run.invertedBoxes)
+        val invertedSamples = JSONArray()
+        for (b in run.invertedSamples) {
+            invertedSamples.put(
+                JSONObject()
+                    .put("cls", b.cls)
+                    .put("conf", b.conf.toDouble())
+                    // letterbox 역변환 직후 = ② 회전 후 좌표계
+                    .put("rot_x1", b.rotX1.toDouble())
+                    .put("rot_y1", b.rotY1.toDouble())
+                    .put("rot_x2", b.rotX2.toDouble())
+                    .put("rot_y2", b.rotY2.toDouble())
+                    // 회전 역변환까지 끝난 값 = ① 센서 좌표계
+                    .put("x1", b.x1.toDouble())
+                    .put("y1", b.y1.toDouble())
+                    .put("x2", b.x2.toDouble())
+                    .put("y2", b.y2.toDouble())
+            )
+        }
+        json.put("inverted_box_samples", invertedSamples)
+        json.put(
+            "inverted_boxes_meaning",
+            "🔴 **x2<x1 또는 y2<y1인 박스의 수다. 거른 개수가 아니라 센 개수이며 그 박스는 " +
+                "boxes_out 안에 그대로 있다**(규약 §5-3). 거르면 면적 0인 박스가 화면 " +
+                "가장자리에 남아 ④가 얇은 선을 그린다 — 사용자에게 보이는 쓰레기다. " +
+                "**나오면 그 자체가 결함**이고 조용히 지우면 결함이 숨는다. " +
+                "🔴 **좌표 표본을 함께 내는 이유**: 개수만으로는 못 고친다 — 알려진 이슈 34가 " +
+                "잡힌 것은 `x1=0.0, x2=-148.75`라는 구체 좌표 덕이었다. 두 좌표계를 같이 " +
+                "싣는 이유도 같다 — rot_*가 이미 뒤집혀 있으면 원인은 **모델의 w<0**이고" +
+                "(부등호를 보장하는 것은 scale이 아니라 모델이다), rot_*는 멀쩡한데 x/y가 " +
+                "뒤집혔으면 원인은 **회전 역변환**이다. " +
+                "⚠ 표본은 앞 몇 개만 남긴다 — inverted_boxes와 inverted_box_samples의 크기가 " +
+                "다르면 잘린 것이다(총계 쪽이 참이다)"
         )
         json.put("quiesced", run.quiesced)
         json.put("quiesce_timeout_ms", run.quiesceTimeoutMs)
@@ -1713,7 +1861,10 @@ object SessionWriter {
                         "note",
                         "이 런에서 **실제로 쓴** 값이다(마지막 프레임 기준. 해상도가 고정이라 " +
                             "전 프레임 같다). 전처리와 후처리가 **같은 객체**를 쓰므로 " +
-                            "역변환이 반올림에서 어긋나지 않는다"
+                            "역변환이 반올림에서 어긋나지 않는다. " +
+                            "🔴 **`src`는 ② 회전 후 치수다**(센서가 아니다 — 규약 §5). " +
+                            "90/270°면 camera_analysis_actual의 해상도와 폭·높이가 바뀌어 " +
+                            "있고, 그때 pad_left와 pad_top도 자리를 바꾼다"
                     )
             )
         }
@@ -1773,10 +1924,21 @@ object SessionWriter {
         )
         json.put(
             "rotation_note",
-            "🔴 매니페스트의 source.rotation_applied는 **false**다(알려진 이슈 29 — 앱이 " +
-                "rotationDegrees를 적용하지 않는다). **이 대조는 그래도 성립한다** — 폰과 PC가 " +
-                "**같은 (누운) 입력**을 보고 같은 답을 내는지를 재기 때문이다. " +
-                "🔴 다만 이 덤프로 '모델이 잘 맞힌다/못 맞힌다'를 말하면 안 된다"
+            "🔴 매니페스트의 source 블록이 **회전을 어떻게 다뤘는지**를 말한다(규약 §4): " +
+                "rotation_degrees(첫 프레임에서 **잠근** 값) · rotation_applied · " +
+                "rotation_site · rotated_width/height · rotation_locked · " +
+                "rotation_changed_frames. " +
+                "🔴 **`sample_NN_src.yuv`는 센서 방향 원본 그대로다**(회전 전 — 규약 §4-5). " +
+                "앱이 회전한 결과를 덤프하면 PC는 그 회전을 검사할 수 없고 **E 대조가 회전을 " +
+                "건너뛴다.** PC가 rotation_degrees·rotation_site를 읽어 **같은 회전을 같은 " +
+                "자리에서 자기 힘으로 재현**해야 E 대조가 YUV→회전→letterbox→RGB→/255→NCHW " +
+                "**전체**를 덮는다. " +
+                "⚠ **rotation_applied=false의 뜻이 둘이다**(§4-2): site=none이면 **의도된 " +
+                "대조군**(detect_cpu_norot)이고, site=preprocess_*면 **모순**이라 PC가 죽는다. " +
+                "알려진 이슈 29(미구현)는 이 라운드에서 닫혔다 — false가 보이면 대조군을 " +
+                "의심할 것이지 미구현을 의심할 것이 아니다. " +
+                "🔴 회전이 붙어도 이 덤프로 '모델이 잘 맞힌다/못 맞힌다'를 말하면 안 된다 — " +
+                "정답 라벨도 골든 샘플(INTERFACES.md §A-6)도 여전히 없다"
         )
         json.put(
             "scope_note",
@@ -1788,9 +1950,28 @@ object SessionWriter {
         )
         json.put(
             "boxes_coordinate_space",
-            "매니페스트의 boxes는 **원본 프레임 좌표계**다(규약 §5). 후처리는 상류 README의 " +
-                "**네 단계 그대로**이고 PC 재구현도 같아야 한다: conf 필터 → cxcywh→xyxy → " +
-                "**클래스별 NMS(letterbox 640 좌표계)** → 역변환. " +
+            "매니페스트의 boxes는 **① 센서 좌표계**다(규약 §5-2) — src.width/height와 **같은 " +
+                "공간**이며 '바로 선' 회전 후 공간이 아니다. ⚠ **두 공간의 좌표를 동시에 " +
+                "싣지 않는다**(두 사본은 반드시 어긋나는 날이 온다). " +
+                "사슬은 다섯 칸이다: ① 센서 → **회전** → ② 회전 후 → **letterbox** → " +
+                "③ 640 → 모델 → ④ 출력 텐서 → **역변환** → ① 센서. " +
+                "후처리 순서는 상류 README의 네 단계 + 회전 하나이고 PC 재구현도 **반드시 이 " +
+                "순서 그대로**여야 한다: conf 필터 → cxcywh→xyxy → **클래스별 NMS(letterbox " +
+                "640 좌표계)** → letterbox 역변환(② 회전 후) → **회전 역변환(① 센서)**. " +
+                "🔴 **회전 역변환은 NMS 뒤다.** 아핀이고 90° 배수라 순수 좌표 치환이지만 " +
+                "그래도 앞으로 옮기지 않는다 — *'아핀이니 앞에 둬도 된다'*는 논거가 **바로 " +
+                "클램프 사고를 낳았다.** " +
+                "⚠ **회전 역변환의 두 규칙(규약 §5-1이 축 대응표와 함께 정한다).** " +
+                "(1) **축 대응 + 순서 동반 이동**: 회전이 뒤집는 축에서는 두 끝점의 순서까지 " +
+                "함께 옮긴다(`x1' = N − x2`). min/max가 아니다 — min/max로 뭉개면 모델이 낸 " +
+                "역전(w<0)까지 조용히 고쳐져 inverted_boxes가 아무것도 못 잡는다. 이것을 " +
+                "안 하면 90/270°에서 **모든 박스가 역전**으로 나온다. " +
+                "(2) 🔴 **모서리(연속) 좌표 규약**: 반사식이 `N − v`이고 `(N−1) − v`가 " +
+                "아니다. 박스 좌표는 letterbox 역변환이 낸 연속 좌표라 `[0, N]`을 채운다 — " +
+                "전처리 샘플 맵(픽셀 인덱스, `(N−1) − v`)과 **규약이 다르고**, 한 식을 두 " +
+                "곳에 쓰면 프레임 전체가 원점 쪽으로 **정확히 1px** 밀린다. " +
+                "폰은 `Rotation.inverseBox`(모서리)와 `toSensorX/Y`(인덱스)를 **따로** 두고 " +
+                "geometry_selfcheck가 프레임 전체 박스로 그 자리를 감시한다. " +
                 "🔴 **원본 경계 클램프는 없다(2026-08-07 제거).** 상류 명세에 없는 5번째 " +
                 "단계였고, 게다가 비대칭이라(x1/y1은 아래만, x2/y2는 위만) 탐지가 letterbox " +
                 "패딩 안에만 있으면 **x2 < x1인 역전 박스**가 나왔다. " +
@@ -1798,6 +1979,54 @@ object SessionWriter {
                 "차이가 난다** — 그것은 이식 결함이 아니라 **코드 버전 차이**다. " +
                 "따라서 좌표는 **화면 밖으로 나갈 수 있다**(음수이거나 폭·높이를 넘을 수 있다). " +
                 "소비자가 in-frame을 가정하면 안 된다"
+        )
+        return json
+    }
+
+    /**
+     * ③ 기하 왕복 자체검사(`DetectGeometryCheck`). 🔴 **실패하면 앱이 런을 시작하지
+     * 않으므로** 이 블록이 있는 런은 통과한 런이다 — 그래도 **관측값을 싣는다.**
+     * 통과/실패보다 관측값이 먼저다(규약 §7).
+     */
+    private fun buildDetectGeometry(check: DetectGeometryCheck.Result): JSONObject {
+        val json = JSONObject()
+        json.put("cases", check.cases)
+        json.put("max_abs_delta_px", check.maxAbsDelta.toDouble())
+        json.put("tolerance_px", check.tolerancePx.toDouble())
+        json.put("passed", check.passed)
+        val failures = JSONArray()
+        for (f in check.failures) failures.put(f)
+        json.put("failures", failures)
+        json.put(
+            "what_it_checks",
+            "letterbox 640 좌표의 박스를 **역변환(letterbox 역 → 회전 역)으로 센서까지 " +
+                "보냈다가 정변환으로 되돌려** 원래 값으로 돌아오는지 본다. 케이스는 " +
+                "**회전 4각 × 소스 치수 6종(패딩이 홀수로 남는 것 포함) × 박스 8종**이고, " +
+                "박스에는 **letterbox 패딩 안에만 있는 것 · 프레임 경계를 넘는 것 · 1px · " +
+                "코너 · 역전 박스**가 들어 있다. " +
+                "🔴 **프로덕션 함수를 그대로 태운다 — 사본을 만들지 않는다.** 검사용으로 같은 " +
+                "공식을 다시 적으면 같은 오타를 두 번 적고 통과한다. " +
+                "🔴 **왕복만으로는 못 잡는 것이 둘 있어 표 대조를 따로 붙였다**(정·역이 같은 " +
+                "방향/같은 규약으로 같이 틀리면 왕복은 통과한다): (a) 회전 **방향**" +
+                "(시계/반시계) — 회전 후 (0,0)이 센서의 어디인가, (b) **모서리 규약** — " +
+                "회전 후 프레임 전체 박스가 센서 프레임 전체로 가는가. " +
+                "🔴 (b)가 잡는 것은 **정확히 1px**이다: 샘플 맵은 픽셀 인덱스라 반사가 " +
+                "`(N−1)−v`이고 박스는 연속 모서리 좌표라 `N−v`인데, 한 함수를 두 규약에 쓰면 " +
+                "프레임 전체가 원점 쪽으로 1px 밀린다"
+        )
+        json.put(
+            "why_here",
+            "🔴 **런을 거부하는 자리다** — '임계를 숫자로 못 읽으면 후처리를 시작하지 " +
+                "않는다'와 **같은 자리·같은 취지**다. 기하가 틀린 채로 돈 런은 E가 엉뚱한 " +
+                "픽셀을 읽고 G의 박스가 통째로 어긋나는데 **둘 다 그럴듯한 숫자로 나온다.** " +
+                "11분을 찍고 나서 아는 것보다 시작 전에 거부하는 쪽이 싸다"
+        )
+        json.put(
+            "tolerance_provenance",
+            "⚠ **우리가 선언한 검사 조건이지 계약값이 아니다**(SAMPLE_COUNT와 같은 부류). " +
+                "🔴 상류가 자기 대조에 쓴 바(0.0001px)와 **다른 검사다** — 그쪽은 " +
+                "PyTorch↔ONNX 값 대조이고 이쪽은 우리 기하의 왕복이다. 그 바를 여기 " +
+                "끌어오지 않는다"
         )
         return json
     }

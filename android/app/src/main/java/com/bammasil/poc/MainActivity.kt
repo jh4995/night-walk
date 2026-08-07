@@ -476,7 +476,10 @@ class MainActivity : ComponentActivity() {
             //    collectProfiles 앞이다** — 워커가 아직 파일을 쓰고 있으면 샘플이 반쪽이 되고,
             //    collectProfiles는 `_prof` arm에서 report를 비우므로 그 뒤에 부르면 매니페스트에
             //    실을 모델·EP 값이 사라진다. 덤프 arm이 아니면 null이다.
-            val parityResult = detectParityDumper.finish(runDir, detectReport)
+            // 🔴 회전 사실은 **한 곳에서만** 만든다 — 매니페스트(parity.json의 source)와
+            //    session.json이 같은 객체를 쓴다. 두 곳이 각자 계산하면 갈리는 날이 온다.
+            val rotationFacts = detectPipeline.rotationFacts()
+            val parityResult = detectParityDumper.finish(runDir, detectReport, rotationFacts)
             // `_prof` arm의 Chrome-trace JSON을 런 디렉토리로 옮긴다 — 예전에는 내부 캐시라
             // 루트 없이 못 꺼냈다.
             // ⚠ **세션을 연 arm에서만** 한다. 분모 arm에서 부르면 직전에 다른 arm이 남긴
@@ -539,12 +542,24 @@ class MainActivity : ComponentActivity() {
                             quiesceTimeoutMs = DETECT_QUIESCE_TIMEOUT_MS,
                             letterbox = detectPipeline.lastLetterbox,
                             profileFiles = profiles,
+                            // 🔴 **거른 개수가 아니라 센 개수다**(규약 §5-3). quiesce 뒤라
+                            //    마지막 추론까지 반영돼 있다.
+                            invertedBoxes = detectPipeline.invertedBoxesTotal,
+                            invertedSamples = detectPipeline.invertedBoxSamples,
                         )
                     } else {
                         null
                     },
                     // ③ 대조 덤프의 사실. 덤프 arm이 아니면 null이고 그때는 블록 자체가 없다.
                     detectParity = parityResult,
+                    // ③ 회전의 사실(규약 §4). 세션을 여는 arm이 아니면 null이다 —
+                    // 분모 arm(detect_bind_only)은 전처리를 돌리지 않으므로 회전 사실이 없다.
+                    detectRotation = if (arm.usesDetectSession) rotationFacts else null,
+                    detectGeometry = if (arm.usesDetectSession) {
+                        detectPipeline.geometryCheck
+                    } else {
+                        null
+                    },
                 ),
             )
             lastRunPath = runDir.absolutePath

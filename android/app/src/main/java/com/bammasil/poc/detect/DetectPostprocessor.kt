@@ -4,7 +4,7 @@ import java.nio.FloatBuffer
 
 /**
  * G(후처리): `output0` `[1, 4+nc, N]` → conf 필터 → `cxcywh`→`xyxy` → **클래스별** NMS →
- * letterbox 역변환(원본 프레임 좌표).
+ * letterbox 역변환 → **회전 역변환**(센서 좌표).
  *
  * ## 상류가 못 박은 4단계 (`models/det_c4b_loli0_640/README.md`)
  *
@@ -13,6 +13,15 @@ import java.nio.FloatBuffer
  * 3. **클래스별** NMS (IoU)
  * 4. letterbox 역변환 — 🔴 *"좌표는 letterbox 좌표계다. 원본 프레임에 그대로 그리면 박스가
  *    어긋난다. 후처리 4번을 반드시 구현할 것"*
+ *
+ * ## 5번째 칸 — 회전 역변환 (규약 v1.2 §5-1)
+ *
+ * 상류는 이미 정립된 이미지를 받으므로 이 칸이 상류에 없다. 우리는 카메라 원본을 먹고
+ * 전처리에서 회전을 합성했으므로 **되돌려야** 하고, 결과는 **① 센서 좌표계**다(§5-2).
+ *
+ * 🔴 **NMS 뒤에 둔다.** 회전 역변환은 아핀이고 90° 배수라 순수 좌표 치환이지만, 그래도
+ * 앞으로 옮기지 않는다 — *"아핀이니 앞에 둬도 된다"*는 논거가 **바로 클램프 사고를 낳았다**
+ * (아래 4단계 주석의 역사). 순서를 상류와 같게 두는 것이 논거 없이도 성립하는 유일한 방식이다.
  *
  * ⚠ 채널 `4..`는 **이미 sigmoid가 적용돼 있다.** 다시 씌우지 않는다 — 씌우면 점수가
  * 0.5 쪽으로 뭉쳐 conf 임계가 다른 뜻이 된다.
@@ -53,6 +62,9 @@ class DetectPostprocessor(
     /** NMS를 통과한 후보의 인덱스([boxX1] 등에 대한). [Result.boxesOut]개가 유효하다. */
     val keptIndices = IntArray(numAnchors)
 
+    /** 회전 역변환의 결과를 받는 자리. **재사용한다**(프레임당 객체 0개 규약). */
+    private val corner = FloatArray(4)
+
     class Result(
         /** conf 임계를 통과했고 **NMS 전**인 박스 수. G 비용의 설명 변수다. */
         val boxesPreNms: Int,
@@ -63,21 +75,90 @@ class DetectPostprocessor(
          * "박스 0개"와 "장면이 완전히 비었다"를 구분하는 유일한 단서다.
          */
         val maxConf: Float,
+        /**
+         * 이 추론에서 나온 **역전 박스**(`x2 < x1` 또는 `y2 < y1`) 수.
+         * 🔴 **거른 개수가 아니라 센 개수다** — 해당 박스는 [boxesOut] 안에 그대로 있다.
+         */
+        val boxesInverted: Int,
     )
+
+    /**
+     * 역전 박스 하나의 **실제 좌표**. 개수만으로는 못 고친다 — 알려진 이슈 34가 잡힌 것은
+     * `x1=0.0, x2=-148.75`라는 구체 좌표 덕이었다.
+     *
+     * 🔴 **두 좌표계를 같이 싣는다.** 회전 **전**(② 회전 후 좌표계)에 이미 뒤집혀 있었으면
+     * 원인은 모델의 `w<0`이고, 회전 전에는 멀쩡했는데 회전 **후**에 뒤집혔으면 원인은
+     * 회전 역변환이다. 한쪽만 있으면 이 둘을 못 가른다.
+     */
+    class InvertedBox(
+        val cls: Int,
+        val conf: Float,
+        /** letterbox 역변환 직후 = ② 회전 후 좌표계. */
+        val rotX1: Float,
+        val rotY1: Float,
+        val rotX2: Float,
+        val rotY2: Float,
+        /** 회전 역변환까지 끝난 값 = ① 센서 좌표계. */
+        val x1: Float,
+        val y1: Float,
+        val x2: Float,
+        val y2: Float,
+    )
+
+    /**
+     * 이 런에서 관측한 역전 박스 **총계**. 🔴 **거른 개수가 아니라 센 개수다.**
+     *
+     * ⚠ 탐지 워커 스레드가 올리고 정지 시점(A12 (2) quiesce **뒤**)에 GL 스레드가 읽는다 —
+     * quiesce가 `busy` AtomicBoolean을 통해 happens-before를 세워 준다.
+     * 🔴 **그래도 `@Volatile`이다** — quiesce가 **타임아웃하면**(`quiesced=false`) 그
+     * happens-before가 서지 않고, 그때도 읽기가 성립해야 한다.
+     */
+    @Volatile
+    var invertedBoxesTotal: Long = 0L
+        private set
+
+    // 🔴 **`ArrayList`가 아니라 고정 배열 + volatile 개수다.** quiesce가 타임아웃하면
+    //    GL 스레드가 아래 목록을 훑는 동안 워커가 아직 append 할 수 있고, 살아 있는
+    //    ArrayList였다면 그 순간 ConcurrentModificationException으로 **session.json이
+    //    통째로 날아간다**(런 하나를 잃는다). 배열은 그 실패 모드가 없다 — 최악이라도
+    //    개수가 한 박자 옛것일 뿐이고, 그건 총계와의 차이로 드러난다.
+    private val invertedSampleSlots = arrayOfNulls<InvertedBox>(INVERTED_SAMPLE_CAP)
+
+    /** 🔴 **원소를 먼저 쓰고 이 값을 마지막에 올린다** — volatile 쓰기가 발행 순서를 정한다. */
+    @Volatile
+    private var invertedSampleCount = 0
+
+    /**
+     * 처음 [INVERTED_SAMPLE_CAP]개의 역전 박스 좌표. 총계와 함께 `session.json`으로 나간다.
+     * **호출할 때마다 스냅샷을 뜬다**(런당 한 번 불린다).
+     */
+    val invertedSamples: List<InvertedBox>
+        get() {
+            val n = invertedSampleCount
+            if (n == 0) return emptyList()
+            val out = ArrayList<InvertedBox>(n)
+            for (i in 0 until n) invertedSampleSlots[i]?.let { out.add(it) }
+            return out
+        }
 
     /**
      * @param output `session.run()`이 낸 출력 텐서의 [FloatBuffer]. `[1, numChannels,
      *   numAnchors]`를 **채널 우선**으로 읽는다(YOLO v8/v11 헤드의 레이아웃).
      * @param box 전처리가 쓴 letterbox 기하. 🔴 **전처리와 같은 객체여야 한다** — 여기서
      *   다시 계산하면 반올림이 어긋나는 날 박스가 몇 px씩 조용히 밀린다.
+     * @param rotation 전처리가 쓴 회전 기하. 🔴 **같은 이유로 같은 객체여야 한다.**
+     *   회전을 적용하지 않는 대조군 arm에서는 항등(0°)이 들어오고, 그때 5단계는 항등이다.
      */
-    fun run(output: FloatBuffer, box: DetectContract.Letterbox): Result {
+    fun run(
+        output: FloatBuffer,
+        box: DetectContract.Letterbox,
+        rotation: DetectContract.Rotation,
+    ): Result {
         output.rewind()
         output.get(raw, 0, raw.size)
 
         var maxConf = 0f
         var count = 0
-        val invScale = 1f / box.scale
         var a = 0
         while (a < numAnchors) {
             // 1) 클래스별 점수의 최대값. (이미 sigmoid가 적용돼 있다 — 다시 씌우지 않는다.)
@@ -177,22 +258,68 @@ class DetectPostprocessor(
         //      개수만 받는다 — ③→④는 계약 A-4 충돌로 아직 연결하지 않았다). 그래서 지금이
         //      고치기 가장 싼 시점이다. 🔴 **PC 레퍼런스(`scripts/detect_parity.py`)도 같이
         //      고쳤다** — 한쪽만 고치면 이식 대조가 그 자리에서 어긋난다.
+        //
+        // 🔴 **회전이 그 불변식에 새 경로를 만든다(v1.2).** 위 문단은 "부등호를 보장하는
+        //    것은 모델이다"까지였는데, 이제 그 뒤에 좌표를 만지는 단계가 하나 더 붙었다 —
+        //    5단계의 회전 역변환이다. 반사가 붙는 축(90/180/270°)에서 순서를 되돌리지 않으면
+        //    **잘 생긴 박스까지 전부 뒤집힌다.** 되돌리는 일은 Rotation.inverseBox가 하고
+        //    (min/max가 아니라 **축 대응 + 순서 동반 이동**이라 모델이 낸 역전은 그대로
+        //    남는다), 그 뒤에 남은 역전을 여기서 **센다 — 거르지 않는다**(규약 §5-3).
+        //    ⚠ inverseBox는 **모서리(연속) 좌표 규약**(`N − v`)이다. 전처리 샘플 맵의
+        //      픽셀 인덱스 규약(`(N−1) − v`)과 다르며, 섞으면 정확히 1px 밀린다.
+        //    ⚠ 거르면 면적 0인 박스가 화면 가장자리에 남아 ④가 얇은 선을 그린다.
+        //      **나오면 그 자체가 결함**이고 조용히 지우면 결함이 숨는다.
         var k = 0
+        var inverted = 0
         while (k < kept) {
             val idx = keptIndices[k]
-            boxX1[idx] = (boxX1[idx] - box.padX) * invScale
-            boxY1[idx] = (boxY1[idx] - box.padY) * invScale
-            boxX2[idx] = (boxX2[idx] - box.padX) * invScale
-            boxY2[idx] = (boxY2[idx] - box.padY) * invScale
+            // 4) letterbox 역변환 → ② 회전 후 좌표계
+            val rx1 = box.toSrcX(boxX1[idx])
+            val ry1 = box.toSrcY(boxY1[idx])
+            val rx2 = box.toSrcX(boxX2[idx])
+            val ry2 = box.toSrcY(boxY2[idx])
+            // 5) 회전 역변환 → ① 센서 좌표계 (규약 §5-2: 소비자가 보는 공간은 센서다)
+            rotation.inverseBox(rx1, ry1, rx2, ry2, corner)
+            val x1 = corner[0]
+            val y1 = corner[1]
+            val x2 = corner[2]
+            val y2 = corner[3]
+            boxX1[idx] = x1
+            boxY1[idx] = y1
+            boxX2[idx] = x2
+            boxY2[idx] = y2
+            if (x2 < x1 || y2 < y1) {
+                inverted++
+                invertedBoxesTotal++
+                val n = invertedSampleCount
+                if (n < INVERTED_SAMPLE_CAP) {
+                    // 🔴 원소를 먼저 쓰고 개수를 나중에 올린다(위 필드 주석).
+                    invertedSampleSlots[n] = InvertedBox(
+                        cls = boxClass[idx],
+                        conf = boxScore[idx],
+                        rotX1 = rx1, rotY1 = ry1, rotX2 = rx2, rotY2 = ry2,
+                        x1 = x1, y1 = y1, x2 = x2, y2 = y2,
+                    )
+                    invertedSampleCount = n + 1
+                }
+            }
             k++
         }
-        return Result(boxesPreNms = count, boxesOut = kept, maxConf = maxConf)
+        return Result(
+            boxesPreNms = count,
+            boxesOut = kept,
+            maxConf = maxConf,
+            boxesInverted = inverted,
+        )
     }
 
     /**
-     * 최종 박스 하나. **원본 프레임 좌표계**다(역변환까지 거친 값).
+     * 최종 박스 하나. 🔴 **① 센서 좌표계**다(letterbox 역변환 + 회전 역변환까지 거친 값,
+     * 규약 §5-2). `src.width`/`src.height`와 **같은 공간**이며, 회전 후("바로 선") 공간이
+     * 아니다 — 두 공간의 좌표를 동시에 싣지 않는다.
      * 🔴 **화면 밖으로 나갈 수 있다** — 경계 클램프를 하지 않는다(위 4단계 주석).
      * 음수이거나 프레임 폭·높이를 넘을 수 있으므로 **소비자가 in-frame을 가정하면 안 된다.**
+     * ⚠ **역전(`x2<x1`/`y2<y1`)일 수도 있다** — 거르지 않고 세기만 한다(규약 §5-3).
      * ③ 이식 정확성 덤프(`DetectParityDumper`)가 매니페스트에 싣는 자리에서만 쓴다.
      */
     class Box(
@@ -258,5 +385,18 @@ class DetectPostprocessor(
             idx[j + 1] = v
             i++
         }
+    }
+
+    private companion object {
+        /**
+         * 좌표까지 남기는 역전 박스의 개수 상한. **개수만으로는 못 고친다** — 이슈 34가
+         * 잡힌 것은 `x1=0.0, x2=-148.75`라는 구체 좌표 덕이었다.
+         *
+         * ⚠ 이 상한이 있는 이유는 두 가지다: (1) 여기서만 객체를 만들므로("프레임당 객체 0개"
+         * 규약의 예외) 상한이 없으면 역전이 쏟아지는 런에서 GC가 G의 꼬리를 만든다,
+         * (2) `session.json`이 감당할 크기여야 한다. **총계는 상한 없이 센다** —
+         * 잘리는 것은 좌표 표본뿐이고 그 사실은 총계와 표본 수의 차이가 말한다.
+         */
+        const val INVERTED_SAMPLE_CAP = 8
     }
 }

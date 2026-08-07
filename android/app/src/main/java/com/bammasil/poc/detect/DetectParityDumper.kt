@@ -117,9 +117,19 @@ class DetectParityDumper(
     class Capture(
         val index: Int,
         val tRecvNs: Long,
+        /**
+         * 🔴 **센서 방향 그대로**(회전 전)다. 아래 [planes]도 같다 — 규약 §4-5.
+         * 앱이 회전한 결과를 덤프하면 PC는 그 회전을 검사할 수 없고 **E 대조가 회전을
+         * 건너뛴다.** PC가 `source.rotation_degrees`/`rotation_site`를 읽어 **같은 회전을
+         * 같은 자리에서 자기 힘으로 재현**한다.
+         */
         val srcWidth: Int,
         val srcHeight: Int,
-        /** `ImageProxy.imageInfo.rotationDegrees`. 🔴 **적용하지 않았다**(규약 §4). */
+        /**
+         * 이 프레임의 `ImageProxy.imageInfo.rotationDegrees` **관측값 그대로**다.
+         * ⚠ 런이 실제로 **쓴** 각은 첫 프레임에서 잠근 값이고(규약 §4-3) 그쪽은
+         * `DetectRotationFacts`가 들고 있다 — 아래 샘플 간 불일치 검사가 이 둘을 잇는다.
+         */
         val rotationDegrees: Int,
         val formatName: String,
         val planes: List<PlaneCopy>,
@@ -142,6 +152,8 @@ class DetectParityDumper(
         val outputSha256: String,
         val boxesPreNms: Int,
         val boxes: List<DetectPostprocessor.Box>,
+        /** 🔴 **센 개수**이지 거른 개수가 아니다 — 해당 박스는 [boxes] 안에 그대로 있다. */
+        val boxesInverted: Int,
     )
 
     // ── 시작 / 정리 ──────────────────────────────────────────────────────
@@ -268,17 +280,22 @@ class DetectParityDumper(
      *
      * @param output `session.run()`이 낸 출력 텐서의 버퍼. **그 자리에서 복사한다** —
      *   호출자가 곧 `Result`를 닫으므로 나중에 읽을 수 없다.
-     * @param boxes 후처리가 낸 최종 박스(**원본 좌표계**, 규약 §5).
+     * @param boxes 후처리가 낸 최종 박스. 🔴 **① 센서 좌표계**다(규약 §5-2) —
+     *   `src.width`/`src.height`와 같은 공간이며 "바로 선" 회전 후 공간이 아니다.
+     * @param boxesInverted 그중 `x2<x1` 또는 `y2<y1`인 박스 수. 🔴 **센 개수다**(§5-3).
      */
     fun write(
         capture: Capture,
         output: FloatBuffer,
         boxesPreNms: Int,
         boxes: List<DetectPostprocessor.Box>,
+        boxesInverted: Int,
     ) {
         val dir = stagingDir ?: return
         val idx = twoDigits(capture.index)
         try {
+            // 🔴 **센서 방향 원본 그대로** 쓴다(규약 §4-5). 회전한 결과를 쓰면 PC가 회전을
+            //    검사할 수 없어 E 대조가 회전을 건너뛴다.
             val srcName = "sample_${idx}_src.yuv"
             val srcSha = writePlanes(File(dir, srcName), capture.planes)
 
@@ -305,6 +322,7 @@ class DetectParityDumper(
                         outputSha256 = outputSha,
                         boxesPreNms = boxesPreNms,
                         boxes = boxes,
+                        boxesInverted = boxesInverted,
                     )
                 )
             }
@@ -321,9 +339,15 @@ class DetectParityDumper(
      *
      * @param report 이 런의 준비 보고. 🔴 **null이면 매니페스트를 쓰지 않는다** —
      *   모델 sha256·EP·클래스를 지어낼 수 없고, 그 값 없는 덤프는 대조에 쓸 수 없다.
+     * @param rotation 이 런의 회전 사실(규약 §4). 🔴 **`session.json`과 같은 객체에서
+     *   나온다** — 두 곳이 각자 계산하면 갈리는 날이 온다.
      * @return 덤프 arm이 아니었으면 null.
      */
-    fun finish(runDir: File, report: DetectReport?): DetectParityResult? {
+    fun finish(
+        runDir: File,
+        report: DetectReport?,
+        rotation: DetectRotationFacts,
+    ): DetectParityResult? {
         if (!enabled) return null
         val dir = stagingDir
         val requested = SAMPLE_COUNT
@@ -368,7 +392,7 @@ class DetectParityDumper(
                 "샘플 파일은 그대로 남긴다"
         } else {
             manifestWritten = try {
-                writeManifest(File(dir, MANIFEST_NAME), report, records, extraFailures)
+                writeManifest(File(dir, MANIFEST_NAME), report, rotation, records, extraFailures)
                 true
             } catch (t: Throwable) {
                 extraFailures += "매니페스트 쓰기 실패: ${t.javaClass.simpleName}: ${t.message}"
@@ -404,6 +428,7 @@ class DetectParityDumper(
     private fun writeManifest(
         file: File,
         report: DetectReport,
+        rotation: DetectRotationFacts,
         records: List<SampleRecord>,
         failures: MutableList<String>,
     ) {
@@ -501,19 +526,53 @@ class DetectParityDumper(
         )
 
         val first = records[0].capture
+        // 🔴 **이 검사는 유지한다**(규약 §4-3). 회전각을 첫 프레임에서 잠근 뒤로는 샘플 간
+        //    불일치가 나오는 것 자체가 결함이다 — 잠근 값을 쓰는데 관측값이 갈렸다는 뜻이고,
+        //    그 사실은 rotation_changed_frames와 함께 읽어야 한다.
         if (records.any { it.capture.rotationDegrees != first.rotationDegrees }) {
-            failures += "샘플마다 rotation_degrees가 다르다 — 매니페스트에는 첫 샘플의 값" +
-                "(${first.rotationDegrees})을 실었다"
+            failures += "샘플마다 관측 rotation_degrees가 다르다(첫 샘플 " +
+                "${first.rotationDegrees}). 🔴 회전각은 첫 분석 프레임에서 잠그므로" +
+                "(규약 §4-3) 이 불일치는 그 자체가 결함이다 — 매니페스트의 " +
+                "source.rotation_degrees는 **잠근 값**(${rotation.degrees})이고 " +
+                "rotation_changed_frames=${rotation.changedFrames}가 몇 번 갈렸는지 말한다"
         }
+        // 🔴 규약 §4. 값의 출처는 **런타임이 잠근 사실 하나**이고 여기서 다시 정하지 않는다.
+        //    §4-2: rotation_applied=false + rotation_site=preprocess_*는 **모순**이고 PC는
+        //    그것을 읽으면 죽는다. 두 값이 같은 객체에서 나오므로 그 조합은 생길 수 없다.
         root.put(
             "source",
             JSONObject()
-                .put("rotation_degrees", first.rotationDegrees)
-                // 🔴 규약 §4. 앱은 회전을 적용하지 않는다(알려진 이슈 29) — 이 대조는 그래도
-                //    성립하지만(폰과 PC가 같은 누운 입력을 본다) "모델이 잘 맞힌다"는 말할 수 없다.
-                .put("rotation_applied", false)
+                // 잠근 값이다(관측값 그대로가 아니다 — 위 불일치 검사가 그 차이를 잡는다).
+                .put("rotation_degrees", rotation.degrees)
+                .put("rotation_applied", rotation.applied)
+                .put("rotation_site", rotation.site)
+                // 🔴 **회전 후 치수**. 90/270이면 아래 src.width/height와 스왑이다.
+                //    회전을 적용하지 않은 arm에서는 센서 치수와 같고, 그래야 각 샘플의
+                //    letterbox.src_w/src_h와 어긋나지 않는다(규약 §5).
+                .put("rotated_width", rotation.rotatedWidth)
+                .put("rotated_height", rotation.rotatedHeight)
+                .put("rotation_locked", rotation.locked)
+                .put("rotation_changed_frames", rotation.changedFrames)
                 .put("format", first.formatName)
         )
+        // 🔴 매니페스트가 자기 모순을 안고 나가지 않게 여기서 먼저 잡는다 — PC가 죽는
+        //    자리를 폰 로그 없이 되묻게 되면 그 런이 통째로 낭비된다.
+        if (!rotation.applied && rotation.site != DetectContract.ROTATION_SITE_NONE) {
+            failures += "🔴 모순: rotation_applied=false인데 rotation_site=" +
+                "${rotation.site}다(규약 §4-2). PC는 이 매니페스트를 읽으면 죽는다"
+        }
+        if (rotation.applied && rotation.site == DetectContract.ROTATION_SITE_NONE) {
+            failures += "🔴 모순: rotation_applied=true인데 rotation_site=none이다(규약 §4-2)"
+        }
+        val expectedRotated = records.all {
+            it.capture.letterbox.srcW == rotation.rotatedWidth &&
+                it.capture.letterbox.srcH == rotation.rotatedHeight
+        }
+        if (!expectedRotated) {
+            failures += "🔴 source.rotated_*(${rotation.rotatedWidth}x" +
+                "${rotation.rotatedHeight})와 샘플의 letterbox.src_w/src_h가 다르다 — " +
+                "규약 §5는 그 둘이 같기를 요구한다(letterbox는 **회전 후 치수**에서 계산된다)"
+        }
 
         val shapeProduct = { shape: List<Long> ->
             var n = 1L
@@ -574,6 +633,7 @@ class DetectParityDumper(
             "src",
             JSONObject()
                 .put("file", record.srcFile)
+                // 🔴 **센서 방향 그대로**(회전 전)다 — 규약 §3의 주석과 §4-5.
                 .put("width", capture.srcWidth)
                 .put("height", capture.srcHeight)
                 .put("planes", planes)
@@ -586,6 +646,12 @@ class DetectParityDumper(
         json.put(
             "letterbox",
             JSONObject()
+                // 🔴 **v1.2(/2)의 핵심 변화**: 이 블록은 ② **회전 후** 치수에서 계산된
+                //    값이다(① 센서가 아니다). 90/270°에서 pad_x와 pad_y가 자리를 바꾸므로
+                //    /1로 읽으면 종횡비가 뒤집힌다 — 그래서 format을 올렸다(규약 §3-3).
+                //    src_w/src_h는 그 기준 치수를 명시한 것이고 source.rotated_*와 같다.
+                .put("src_w", box.srcW)
+                .put("src_h", box.srcH)
                 .put("scale", box.scale.toDouble())
                 .put("pad_x", box.padX)
                 .put("pad_y", box.padY)
@@ -615,6 +681,8 @@ class DetectParityDumper(
         )
 
         json.put("boxes_pre_nms", record.boxesPreNms)
+        // 🔴 **① 센서 좌표계**다(규약 §5-2) — src.width/height와 같은 공간이며 회전 후
+        //    공간이 아니다. 두 공간의 좌표를 동시에 싣지 않는다(반드시 어긋나는 날이 온다).
         val boxes = JSONArray()
         for (b in record.boxes) {
             boxes.put(
@@ -630,6 +698,10 @@ class DetectParityDumper(
             )
         }
         json.put("boxes", boxes)
+        // 🔴 규약 §5-3 — **거른 개수가 아니라 센 개수다.** 해당 박스는 위 boxes 배열에
+        //    그대로 들어 있다. 거르면 면적 0인 박스가 화면 가장자리에 남아 ④가 얇은 선을
+        //    그리고, 조용히 지우면 결함이 숨는다.
+        json.put("boxes_inverted", record.boxesInverted)
         return json
     }
 
@@ -773,8 +845,16 @@ class DetectParityDumper(
         /** [lastCaptureNs]의 "아직 없음". 0은 유효한 시각일 수 있어 쓰지 않는다. */
         const val NO_CAPTURE = Long.MIN_VALUE
 
-        /** 🔴 PC는 이 문자열이 다르면 죽는다(규약 §3). */
-        const val FORMAT = "bammasil-detect-parity/1"
+        /**
+         * 🔴 PC는 이 문자열이 다르면 죽는다(규약 §3).
+         *
+         * **v1.2에서 `/1` → `/2`로 올렸다**(§3-3). 필드가 늘어서가 아니라 **기존 필드의 뜻이
+         * 바뀌어서**다: `letterbox.*`가 센서 치수가 아니라 **회전 후 치수**에서 계산되고,
+         * `boxes`가 **센서 좌표로 되돌린 값**이 됐다. 같은 키가 다른 것을 말하므로 버전을
+         * 올린다 — 선택 필드로 구분하면 *"letterbox를 읽기 전에 다른 키를 먼저 봐야 하는"*
+         * 포맷이 되고 그건 조용히 틀릴 자리를 하나 더 만드는 것이다.
+         */
+        const val FORMAT = "bammasil-detect-parity/2"
 
         /** 🔴 PC는 이 값이 아니면 **읽지 않고 죽는다**(규약 §2). 그래서 LE로 **고정**해 쓴다. */
         const val BYTE_ORDER = "little_endian"

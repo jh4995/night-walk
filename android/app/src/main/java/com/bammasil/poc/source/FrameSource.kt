@@ -77,9 +77,20 @@ data class AnalysisConfig(
     /** 위 상수의 이름(사람이 읽는 값). 모르면 `"unknown(<int>)"`. */
     val imageFormatName: String,
     /**
-     * `ImageProxy.imageInfo.rotationDegrees`. **앱은 회전을 적용하지 않는다** —
-     * 이번 라운드가 재는 것은 E·F·G뿐이고 박스를 그리지 않으므로 회전은 비용에도 영향이 없다.
-     * ④를 연결하는 라운드가 이 값을 반드시 읽어야 한다.
+     * `ImageProxy.imageInfo.rotationDegrees` — **마지막으로 관측한 값**이다.
+     * `session.json`의 `detect.input.rotation_degrees`가 이 값에서 나온다.
+     *
+     * 🔴 **③ 전처리는 이 값을 쓰지 않는다.** 앱은 **첫 분석 프레임의 값으로 잠그고**
+     * (규약 §4-3) 이후 다른 값이 오면 잠근 값을 계속 쓰면서 센다 — 런 도중에 기하가 갈리면
+     * E와 박스 좌표가 한 런 안에서 두 뜻을 갖기 때문이다. 실제로 쓴 각은
+     * `detect.input.rotation_degrees_locked`이고, 이 값과 다르면 그 자체가 신호다
+     * (`rotation_changed_frames` 참고).
+     *
+     * ⚠ **회전은 비용에 영향이 있다**(2026-08-07 정정). 예전 주석은 *"회전을 적용하지 않으니
+     * 비용에도 영향이 없다"* 였는데 **두 문장 다 이제 거짓이다** — 회전은 전처리 샘플 맵에
+     * 합성돼 있고(`rotation_site = preprocess_sample_map`), 90/270°에서는 목적지 행 하나가
+     * 센서의 **열**을 훑어 **E의 값이 바뀐다**(정의가 아니라 값이다). 그 차분을 재려고
+     * 짝 arm `detect_cpu_norot`이 있다. **비용은 미측정이다.**
      */
     val rotationDegrees: Int,
     /** 우리가 **요청한** 출력 포맷 이름. 받은 것과 다를 수 있어 따로 싣는다. */

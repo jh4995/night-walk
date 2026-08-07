@@ -6,7 +6,29 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
 /**
- * E(전처리): `YUV_420_888` [ImageProxy] → letterbox → RGB → `/255` → NCHW float32.
+ * E(전처리): `YUV_420_888` [ImageProxy] → **회전** → letterbox → RGB → `/255` → NCHW float32.
+ *
+ * ## 좌표 사슬과 각 변환의 방향 (규약 §5)
+ *
+ * ```
+ * ① 센서 프레임        image.width × image.height       (예: 1280×720)
+ *      ↓ 회전 (rotationDegrees, 시계 방향)
+ * ② 회전 후 프레임      rotation.rotatedW × rotatedH     (예: 720×1280)
+ *      ↓ letterbox (🔴 **②의 치수에서** 계산한다)
+ * ③ letterbox 640 좌표계 = 입력 텐서의 목적지 좌표
+ * ```
+ *
+ * 🔴 **[convert]는 이 사슬을 거꾸로 탄다.** 목적지 픽셀 하나마다
+ * `③ → letterbox 역 → ② → 회전 역 → ①`을 **한 번에** 계산해 센서 평면에서 곧장 샘플한다
+ * (`rotation_site = "preprocess_sample_map"`). **추가 패스도 추가 버퍼도 없다** — 평면을
+ * 회전 복사한 뒤 기존 경로를 태우는 길(`preprocess_plane_copy`)과 다르다.
+ *
+ * ⚠ 90/270°에서는 목적지 **행** 하나가 센서의 **열**을 훑는다. Y 평면의 캐시 지역성이
+ * 나빠지고 그만큼 E의 **값**이 오른다 — 🔴 **정의가 아니라 값이다**(회귀가 아니라 조건
+ * 변경이다). **그 비용은 미측정이며 짝 arm `detect_cpu_norot`과의 차분으로만 말한다.**
+ *
+ * ⚠ 90° 배수 회전은 **순수 인덱스 치환**이라 보간을 새로 끌어들이지 않는다. 아래 이중선형·
+ * 색차 최근접·BT.601 full range·`/255`는 회전 전과 **글자 그대로 같다.**
  *
  * ## 무엇을 어디까지 재는가 (E의 정의)
  *
@@ -71,16 +93,25 @@ class DetectPreprocessor(
     /**
      * 프레임 하나를 입력 텐서로 만든다. 반환값은 [inputBuffer](position=0으로 되감겨 있다).
      *
+     * @param rotation 이 런이 **실제로 쓰는** 회전. 🔴 첫 분석 프레임에서 잠근 값이고
+     *   (규약 §4-3), 회전을 적용하지 않는 대조군 arm에서는 **항등(0°)이 들어온다** —
+     *   그 arm도 별도 코드 경로가 아니라 **이 함수를 그대로 탄다.**
      * @throws IllegalStateException 평면 구성이 `YUV_420_888`이 아닐 때. 🔴 **조용히
      *   그럴듯한 텐서를 만들지 않는다** — 색이 뒤집힌 입력은 "돌긴 도는데 박스가 이상한"
      *   상태를 만들고 그게 가장 오래 걸리는 실패다.
      */
-    fun convert(image: ImageProxy): FloatBuffer {
+    fun convert(image: ImageProxy, rotation: DetectContract.Rotation): FloatBuffer {
         val planes = image.planes
         check(planes.size == 3) { "YUV_420_888이 아니다 — 평면이 ${planes.size}개다" }
 
         val srcW = image.width
         val srcH = image.height
+        // 🔴 회전 기하는 **이 프레임의 치수**로 만든 것이어야 한다. 해상도가 런 도중 바뀌면
+        //    반사식의 `N−1`이 다른 프레임의 것이 되어 박스가 조용히 밀린다.
+        check(rotation.srcW == srcW && rotation.srcH == srcH) {
+            "회전 기하의 소스 치수가 이 프레임과 다르다: " +
+                "${rotation.srcW}x${rotation.srcH} vs ${srcW}x$srcH"
+        }
 
         val yPlane = planes[0]
         val uPlane = planes[1]
@@ -95,7 +126,9 @@ class DetectPreprocessor(
         val vRow = vPlane.rowStride
         val vPix = vPlane.pixelStride
 
-        val box = DetectContract.letterbox(srcW, srcH, dstW, dstH)
+        // 🔴 **회전 후 치수로** letterbox를 잡는다(규약 §3-3 · §5). 센서 치수를 넣으면
+        //    90/270°에서 종횡비가 뒤집혀 pad_x와 pad_y가 자리를 바꾼다.
+        val box = DetectContract.letterbox(rotation.rotatedW, rotation.rotatedH, dstW, dstH)
         lastLetterbox = box
 
         val pixels = dstH * dstW
@@ -103,11 +136,11 @@ class DetectPreprocessor(
         val gOff = pixels
         val bOff = 2 * pixels
         val padValue = DetectContract.PAD_VALUE_U8 / 255f
-        val invScale = 1f / box.scale
 
         var dy = 0
         while (dy < dstH) {
             val rowBase = dy * dstW
+            // 🔴 패딩 판정은 **목적지 좌표**이고 기하는 회전 후 기준이다(위 box).
             if (dy < box.padY || dy >= box.padY + box.contentH) {
                 // 패딩 행 — 세 채널 전부 회색. (720p→640이면 전체의 43.75%가 여기다.)
                 var dx = 0
@@ -121,19 +154,10 @@ class DetectPreprocessor(
                 dy++
                 continue
             }
-            // 픽셀 중심 정렬(cv2.resize와 같은 규약). 0.5를 빼고 더하지 않으면 축소 시
-            // 반 픽셀이 계통적으로 밀린다.
-            var fy = ((dy - box.padY) + 0.5f) * invScale - 0.5f
-            if (fy < 0f) fy = 0f
-            var y0 = fy.toInt()
-            if (y0 > srcH - 1) y0 = srcH - 1
-            var y1 = y0 + 1
-            if (y1 > srcH - 1) y1 = srcH - 1
-            val ay = fy - y0
-            val yRow0 = y0 * yRow
-            val yRow1 = y1 * yRow
-            val cRow = (y0 shr 1) * uRow
-            val cRowV = (y0 shr 1) * vRow
+            // ③ → ② : letterbox 역변환. 픽셀 중심 정렬(cv2.resize와 같은 규약)이라
+            // 0.5를 더했다 빼며, 이 값은 **회전 후 프레임의 y**다(아직 센서가 아니다).
+            // 🔴 반 픽셀을 빼고 더하지 않으면 축소 시 계통적으로 밀린다.
+            val fyr = box.toSrcY(dy + 0.5f) - 0.5f
 
             var dx = 0
             while (dx < dstW) {
@@ -145,13 +169,33 @@ class DetectPreprocessor(
                     dx++
                     continue
                 }
-                var fx = ((dx - box.padX) + 0.5f) * invScale - 0.5f
+                // ③ → ② : letterbox 역변환 (x). 여기까지가 회전 후 좌표계다.
+                val fxr = box.toSrcX(dx + 0.5f) - 0.5f
+
+                // ② → ① : 회전 역함수. 🔴 **여기가 rotation_site = preprocess_sample_map의
+                //    실체다** — 목적지 좌표에서 센서 좌표를 한 번에 잡는다.
+                //    ⚠ 90/270°면 센서 y가 dx를 따라 움직인다(= 열 방향 접근). 그래서 행마다
+                //      끌어올리던 y 관련 값들을 여기 안으로 내렸다 — 회전각을 특별 취급해
+                //      항등만 빠른 길로 빼면 `detect_cpu_norot`이 "회전 여부"가 아니라
+                //      "루프 모양"까지 다른 arm이 되어 차분의 뜻이 사라진다.
+                var fx = rotation.toSensorX(fxr, fyr)
+                var fy = rotation.toSensorY(fxr, fyr)
                 if (fx < 0f) fx = 0f
+                if (fy < 0f) fy = 0f
                 var x0 = fx.toInt()
                 if (x0 > srcW - 1) x0 = srcW - 1
                 var x1 = x0 + 1
                 if (x1 > srcW - 1) x1 = srcW - 1
                 val ax = fx - x0
+                var y0 = fy.toInt()
+                if (y0 > srcH - 1) y0 = srcH - 1
+                var y1 = y0 + 1
+                if (y1 > srcH - 1) y1 = srcH - 1
+                val ay = fy - y0
+                val yRow0 = y0 * yRow
+                val yRow1 = y1 * yRow
+                val cRow = (y0 shr 1) * uRow
+                val cRowV = (y0 shr 1) * vRow
 
                 // 휘도는 이중선형(DetectContract.RESIZE_INTERPOLATION_ASSUMPTION).
                 val y00 = (yBytes[yRow0 + x0 * yPix].toInt() and 0xFF).toFloat()
