@@ -21,6 +21,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.bammasil.poc.detect.DetectContract
+import com.bammasil.poc.detect.DetectOverlayPublisher
 import com.bammasil.poc.detect.DetectParityDumper
 import com.bammasil.poc.detect.DetectPipeline
 import com.bammasil.poc.detect.DetectRuntime
@@ -85,6 +86,14 @@ class MainActivity : ComponentActivity() {
      */
     private lateinit var detectParityDumper: DetectParityDumper
 
+    /**
+     * ③ → ④ 게시자. **탐지 워커가 쓰고 GL 스레드가 읽는다**(`AtomicReference` 슬롯 하나).
+     * 🔴 오버레이 arm이 아니면 꺼져 있어 두 스레드 중 어느 쪽에도 일이 늘지 않는다.
+     * ⚠ [detectPipeline]과 [renderer] **둘 다** 이 객체를 받으므로 여기서 먼저 만든다.
+     */
+    private val detectOverlayPublisher =
+        DetectOverlayPublisher(RenderArm.OVERLAY_BOX_CAP_MEASUREMENT_VALUE)
+
     /** `onFrameAvailable` 전용 스레드. 메인 루퍼를 쓰면 UI 지연이 `t_recv_ns`에 섞인다. */
     private var signalThread: HandlerThread? = null
 
@@ -145,7 +154,9 @@ class MainActivity : ComponentActivity() {
         val externalDir = getExternalFilesDir(null)
         detectRuntime = DetectRuntime(externalDir, File(externalDir, DETECT_PROFILE_DIR))
         detectParityDumper = DetectParityDumper(File(externalDir, DETECT_PARITY_STAGING_DIR))
-        detectPipeline = DetectPipeline(detectRuntime, detectRecorder, detectParityDumper)
+        detectPipeline = DetectPipeline(
+            detectRuntime, detectRecorder, detectParityDumper, detectOverlayPublisher
+        )
 
         statusText = findViewById(R.id.status_text)
         toggleButton = findViewById(R.id.toggle_button)
@@ -155,7 +166,9 @@ class MainActivity : ComponentActivity() {
 
         val thread = HandlerThread("frame-signal").apply { start() }
         signalThread = thread
-        renderer = PassthroughRenderer(recorder, Handler(thread.looper))
+        renderer = PassthroughRenderer(
+            recorder, Handler(thread.looper), detectOverlayPublisher
+        )
         renderer.onFrameSignal = { glView.requestRender() }
         renderer.onGlReady = { uiHandler.post { onGlReady() } }
 
@@ -363,6 +376,12 @@ class MainActivity : ComponentActivity() {
         } else if (arm == RenderArm.DETECT_BIND_ONLY) {
             // 분모 arm — 추론은 안 하고 **분석 프레임이 실제로 오고 있다는 사실만** 센다.
             detectPipeline.startBindOnly()
+        } else {
+            // 🔴 **세 번째 경로.** ③도 분모도 아닌 arm(highlight_boxes · blit_2pass ·
+            //    passthrough …)에서는 위 두 함수가 불리지 않아 직전 detect 런의 게시자가
+            //    켜진 채 남는다. 지금은 GL 읽기가 arm으로 게이트돼 관측되지 않지만,
+            //    런 단위 상태는 런 시작에서 내린다는 관행을 이 경로에도 적용한다.
+            detectPipeline.disableOverlayPublish()
         }
         recording = true
         toggleButton.setText(R.string.stop)
@@ -380,7 +399,13 @@ class MainActivity : ComponentActivity() {
             // GPU 패스 시간 칸의 개수와 이름은 **arm이 정한다**(RenderArm.gpuColumns).
             // 패스스루는 계측하지 않으므로 목록이 비어 있고 CSV 열도 없다. 실제로 열을
             // 실을지는 정지 시점에 timer 실적을 보고 정한다(프로브가 실패했으면 안 싣는다).
-            recorder.start(startedNs, gpuColumns = arm.gpuColumns)
+            // ④ 오버레이 열 3개도 같은 규약이다 — 🔴 **③ 결과를 그리는 arm에서만** 싣는다
+            // (정적 더미 arm에 -1로 채워 내면 "쟀는데 못 얻었다"가 된다).
+            recorder.start(
+                startedNs,
+                gpuColumns = arm.gpuColumns,
+                overlayColumns = arm.usesDynamicHighlightBoxes,
+            )
         }
         Log.i(TAG, "측정 시작 (arm=${arm.id}, run=${runDirName})")
     }
@@ -557,6 +582,20 @@ class MainActivity : ComponentActivity() {
                     detectRotation = if (arm.usesDetectSession) rotationFacts else null,
                     detectGeometry = if (arm.usesDetectSession) {
                         detectPipeline.geometryCheck
+                    } else {
+                        null
+                    },
+                    // ③→④ 연결 arm만 낸다(다른 블록들과 같은 규약).
+                    // 🔴 게시 사실은 **quiesce 뒤에** 뜬다 — 위에서 이미 기다렸으므로 마지막
+                    //    추론의 게시까지 반영돼 있다. 앞에서 뜨면 그 게시가 빠진다.
+                    overlayPublish = if (arm.usesDynamicHighlightBoxes) {
+                        detectOverlayPublisher.facts()
+                    } else {
+                        null
+                    },
+                    // H칸 사실은 GL 스레드가 소유한다 — 이 블록이 GL 스레드에서 돈다.
+                    overlaySmoothing = if (arm.usesDynamicHighlightBoxes) {
+                        renderer.overlaySmootherFacts()
                     } else {
                         null
                     },

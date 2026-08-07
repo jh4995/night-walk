@@ -505,6 +505,68 @@ enum class RenderArm(
         "detect_cpu_norot",
         listOf("blit_2pass", "detect"),
         listOf("stage_b_ms", "stage_d_ms", "gpu_present_ms"),
+    ),
+
+    // ── ③→④ 연결 arm 3개 (스키마 v7) ─────────────────────────────────────
+    // 🔴 **셋이 한 세트다.** 셋을 같은 세션에서 재야 I칸의 상한·하한이 둘 다 나온다
+    // (`lib/frame_log.py`의 같은 블록이 이 세트를 이미 등록해 두었다):
+    //
+    //   detect_cpu_highlight     4패스 오버레이 + 패스별 query + stage_h_ms + overlay_boxes
+    //                            → I 상한 · H. **본진**이다. 상한의 분모는 기존 detect_cpu다.
+    //   detect_cpu_highlight_1q  **위와 글자 그대로 같은 렌더**, 프레임 단일 query
+    //   detect_cpu_1q            3패스(오버레이 없음), 프레임 단일 query
+    //                            → 🔴 **하한의 분모**
+    //
+    // 🔴 **왜 `detect_cpu_1q`가 따로 필요한가:** 하한은 "같은 계측 방식의 두 arm 차"로만 낼 수
+    //   있는데 지금 있는 단일 query 분모는 [BLIT_2PASS_1Q]뿐이고 **거기에는 탐지 부하가 없다.**
+    //   알려진 이슈 36이 그 부류다 — `highlight_boxes_1q`가 분모와 소수점 셋째 자리까지 같아
+    //   I 하한이 0으로 나왔고, 그 0은 "오버레이가 공짜"가 아니라 **분모가 상한을 통째로 중복
+    //   계상했다**는 뜻이었다. 그러므로 하한은 `detect_cpu_highlight_1q − detect_cpu_1q`뿐이다.
+    //
+    // 🔴 [pipelineStages]에 **`stage4_smoothing`이 붙는다** — H칸(좌표 평활·hold)이 실제로
+    //   도는 arm이라는 뜻이고, 그래서 오버레이 arm 둘은 `highlight_boxes`와도 조건이 갈린다
+    //   (그쪽은 정적 더미 박스에 평활이 없다). `detect_cpu_1q`는 오버레이가 없으므로 그 토큰도
+    //   `stage4_highlight`도 없다.
+    //
+    // ⚠ 목록 **맨 뒤**에 붙인다. 스피너는 entries 순서라 중간에 끼우면 측정자가 손으로 고르던
+    //   기존 arm의 위치가 전부 밀린다(`_1q` 셋·회전 대조군을 뒤에 붙인 것과 같은 이유다).
+
+    /**
+     * 🔴 **③ 탐지 결과를 ④ 오버레이가 실제로 그리는 첫 arm.** 렌더 4패스이며 [HIGHLIGHT_BOXES]와
+     * **같은 골격**이지만 박스가 정적 더미가 아니라 **그 프레임에 게시돼 있는 탐지 결과**다.
+     *
+     * 재는 것 셋: `stage_i_ms`(I 상한) · `stage_h_ms`(H, **CPU 벽시계**) ·
+     * `overlay_boxes`(그 프레임에 실제로 그린 수).
+     *
+     * 🔴 **박스 개수가 프레임마다 다르다** → [highlightBoxCount]가 [HIGHLIGHT_BOX_COUNT_DYNAMIC]
+     * 이고 `session.json`의 `overlay.box_count`는 null이다([OVERLAY_DYNAMIC_BOX_NOTE]).
+     * 개수 조건은 `frames.csv`의 `overlay_boxes` 열이 프레임별로 말한다.
+     */
+    DETECT_CPU_HIGHLIGHT(
+        "detect_cpu_highlight",
+        listOf("blit_2pass", "detect", "stage4_highlight", "stage4_smoothing"),
+        listOf("stage_b_ms", "stage_d_ms", "stage_i_ms", "gpu_present_ms"),
+    ),
+
+    /**
+     * [DETECT_CPU_HIGHLIGHT]의 프레임 단일 query 판. 렌더 4패스, 열 1개.
+     * 🔴 **렌더는 짝과 글자 그대로 같다** — 평활·hold도 같은 자리에서 같은 값으로 돈다.
+     */
+    DETECT_CPU_HIGHLIGHT_1Q(
+        "detect_cpu_highlight_1q",
+        listOf("blit_2pass", "detect", "stage4_highlight", "stage4_smoothing"),
+        listOf("gpu_frame_ms"),
+    ),
+
+    /**
+     * 🔴 **I 하한의 분모.** [DETECT_CPU]와 렌더가 글자 그대로 같은 3패스이고(오버레이가 없다)
+     * 계측만 프레임 단일 query다. 탐지는 돈다 — 그게 [BLIT_2PASS_1Q]를 분모로 쓸 수 없는
+     * 이유다(위 블록 참고).
+     */
+    DETECT_CPU_1Q(
+        "detect_cpu_1q",
+        listOf("blit_2pass", "detect"),
+        listOf("gpu_frame_ms"),
     );
 
     /**
@@ -570,7 +632,20 @@ enum class RenderArm(
      */
     val usesHighlightOverlay: Boolean
         get() = this == HIGHLIGHT_BOXES || this == HIGHLIGHT_BOXES_STRESS ||
-            this == HIGHLIGHT_BOXES_1Q
+            this == HIGHLIGHT_BOXES_1Q || usesDynamicHighlightBoxes
+
+    /**
+     * 🔴 오버레이 박스가 **③ 탐지 결과**인가(정적 더미가 아닌가). true면 GL 스레드가 매 프레임
+     * `DetectOverlayPublisher.latest()`를 읽어 H칸(좌표 평활·hold)을 거친 목록을 그린다.
+     *
+     * 🔴 **이 값이 `stage_h_ms`·`overlay_boxes` 열의 유일한 판별식이다** — false인 arm은 그
+     * 열을 싣지 않는다(정적 더미 arm에 H 열을 -1로 채워 내보내면 하네스가 "쟀는데 못 얻었다"로
+     * 읽는데 그건 다른 뜻이다 — `FrameLogRecorder.CSV_HEADER`의 같은 규약).
+     *
+     * ⚠ 이 값이 true인 arm은 [highlightBoxCount]를 **쓰지 않는다**(개수가 프레임마다 다르다).
+     */
+    val usesDynamicHighlightBoxes: Boolean
+        get() = this == DETECT_CPU_HIGHLIGHT || this == DETECT_CPU_HIGHLIGHT_1Q
 
     /** ② 자리에 bilateral 한 패스가 붙는 arm인가(체인이든 융합이든). */
     val usesBilateral: Boolean
@@ -591,6 +666,10 @@ enum class RenderArm(
             DRAGO_CLAHE_FUSED_1Q -> DRAGO_CLAHE_FUSED
             DRAGO_CLAHE_FUSED_BF_1Q -> DRAGO_CLAHE_FUSED_BF
             HIGHLIGHT_BOXES_1Q -> HIGHLIGHT_BOXES
+            // ③→④ 연결 세트(v7). 🔴 이 둘을 빠뜨리면 [renderPassCount]가 열 수(1)를 그대로
+            //    쓰고 GpuTimerRing이 **첫 패스만** 감싼다 — 그런데 로그만 보면 그럴듯하다.
+            DETECT_CPU_HIGHLIGHT_1Q -> DETECT_CPU_HIGHLIGHT
+            DETECT_CPU_1Q -> DETECT_CPU
             else -> null
         }
 
@@ -630,7 +709,8 @@ enum class RenderArm(
     val usesDetectSession: Boolean
         get() = this == DETECT_CPU || this == DETECT_NNAPI || this == DETECT_XNNPACK ||
             this == DETECT_CPU_PROF || this == DETECT_NNAPI_PROF || this == DETECT_XNNPACK_PROF ||
-            this == DETECT_CPU_NOROT ||
+            this == DETECT_CPU_NOROT || this == DETECT_CPU_1Q ||
+            usesDynamicHighlightBoxes ||
             usesDetectParityDump
 
     /**
@@ -666,7 +746,8 @@ enum class RenderArm(
      */
     val detectEpRequested: String?
         get() = when (this) {
-            DETECT_CPU, DETECT_CPU_PROF, DETECT_PARITY_CPU, DETECT_CPU_NOROT -> "cpu"
+            DETECT_CPU, DETECT_CPU_PROF, DETECT_PARITY_CPU, DETECT_CPU_NOROT,
+            DETECT_CPU_HIGHLIGHT, DETECT_CPU_HIGHLIGHT_1Q, DETECT_CPU_1Q -> "cpu"
             DETECT_NNAPI, DETECT_NNAPI_PROF, DETECT_PARITY_NNAPI -> "nnapi"
             DETECT_XNNPACK, DETECT_XNNPACK_PROF, DETECT_PARITY_XNNPACK -> "xnnpack"
             else -> null
@@ -688,6 +769,11 @@ enum class RenderArm(
      * 이 arm이 그리는 ④ 박스 수. 오버레이 arm이 아니면 0이다.
      *
      * ⚠ **사양이 아니라 우리가 선언한 측정 조건**이다([HIGHLIGHT_BOX_PROVENANCE]).
+     *
+     * 🔴 **정적 더미 arm 전용이다.** ③ 결과를 그리는 arm([usesDynamicHighlightBoxes])에서는
+     * 개수가 프레임마다 다르므로 [HIGHLIGHT_BOX_COUNT_DYNAMIC]을 돌려준다 — 여기서 0이나
+     * 어떤 고정값을 돌려주면 `session.json`의 `overlay.box_count`가 **거짓 조건**이 된다.
+     * 그 arm의 개수는 `frames.csv`의 `overlay_boxes` 열이 프레임별로 말한다.
      */
     val highlightBoxCount: Int
         get() = when (this) {
@@ -695,6 +781,7 @@ enum class RenderArm(
             //    짝과 달라지고, 그러면 두 계측의 차분이 아무 뜻이 없어진다.
             HIGHLIGHT_BOXES, HIGHLIGHT_BOXES_1Q -> HIGHLIGHT_BOX_COUNT
             HIGHLIGHT_BOXES_STRESS -> HIGHLIGHT_BOX_COUNT_STRESS
+            DETECT_CPU_HIGHLIGHT, DETECT_CPU_HIGHLIGHT_1Q -> HIGHLIGHT_BOX_COUNT_DYNAMIC
             else -> 0
         }
 
@@ -1489,6 +1576,13 @@ enum class RenderArm(
         /** `highlight_boxes_stress` — 개당 비용 기울기용. */
         const val HIGHLIGHT_BOX_COUNT_STRESS = 32
 
+        /**
+         * 🔴 [highlightBoxCount]의 **"이 arm은 개수가 고정이 아니다"**. 0을 쓰지 않는다 —
+         * 0은 "박스를 하나도 그리지 않는다"는 적극적 주장이고, `overlay_boxes` 열에서 0이
+         * 정상값인 것과 같은 이유로 두 사실을 한 값에 담으면 안 된다.
+         */
+        const val HIGHLIGHT_BOX_COUNT_DYNAMIC = -1
+
         /** 본선 두께의 기준값(720p에서 px). 상류 확정 사양이다. */
         const val HIGHLIGHT_STROKE_PX_AT_720P = 4f
 
@@ -1568,8 +1662,13 @@ enum class RenderArm(
                 "CELL_INSET/CELL_COLS = 폭의 1.5%(720p에서 x 19.2px) · " +
                 "CELL_INSET/CELL_ROWS = 높이의 3%(y 21.6px)라 " +
                 "${(HIGHLIGHT_STROKE_PX_AT_720P + 2f * HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P) / 2f}" +
-                "px보다 훨씬 크다. 그러므로 **이 라운드의 stage_i_ms는 잘림의 영향을 받지 " +
-                "않는다** — 잘림은 ③의 실제 탐지 박스를 그리기 시작하는 날의 문제다. " +
+                "px보다 훨씬 크다. 그러므로 **정적 더미 arm 셋의 stage_i_ms는 잘림의 영향을 " +
+                "받지 않는다.** 🔴 **그러나 ③ 결과 arm(detect_cpu_highlight / _1q)에서는 " +
+                "그 조건이 실제로 생긴다**(2026-08-07): 탐지 박스는 프레임 경계에 붙을 수 " +
+                "있고 경계 밖으로 나갈 수도 있다(후처리가 클램프하지 않는다). 그때 GL 뷰포트가 " +
+                "밖을 자르므로 **가장자리에서 검정 밑선이 한쪽만 잘려 보인다** — 이것은 " +
+                "이 기하 선택의 알려진 결과이지 결함이 아니며, 클램프로 막지 않는다" +
+                "(클램프는 면적 0 박스를 가장자리에 남겨 더 나쁜 쓰레기를 만든다). " +
                 "**(5) 비용에 대한 영향**: 드로우콜(프레임당 1회)과 정점 수(박스당 " +
                 "${HighlightOverlay.VERTS_PER_BOX}개)는 이 선택과 무관하게 같다. 다만 **채우는 " +
                 "프래그먼트 수는 완전히 같지 않다** — 두께 t 띠 하나의 면적이 가운데 맞춤이면 " +
@@ -1596,11 +1695,18 @@ enum class RenderArm(
                 "뽑은 것이다(gcd(7,32)=1이라 순열이고, 개수가 적어도 화면 전체에 퍼진다). " +
                 "**박스 크기가 두 arm에서 같으므로** 두 값을 나란히 놓아 개당 기울기로 쓸 수 " +
                 "있다 — 격자를 개수에 맞춰 바꾸면 박스마다 둘레가 달라져 그 기울기가 깨진다. " +
-                "박스는 **정적 더미**이고 ③ 탐지 결과가 아니다(③ 미구현)"
+                "🔴 **이 문단은 정적 더미 arm(highlight_boxes / _stress / _1q) 셋에만 해당한다.** " +
+                "③ 결과를 그리는 arm(detect_cpu_highlight / _1q)에서는 개수도 배치도 크기도 " +
+                "**장면이 정한다** — 그 arm의 box_count는 null이고 프레임별 개수는 frames.csv의 " +
+                "overlay_boxes 열이 말한다(box_count_dynamic 참고). 그러므로 그 arm의 " +
+                "stage_i_ms를 위 개당 기울기로 나눠 검산하지 말 것: 박스 크기가 이 격자와 다르다"
 
-        const val HIGHLIGHT_COLOR_STAIRS = "노랑 (1, 1, 0)"
-        const val HIGHLIGHT_COLOR_PERSON = "시안 (0, 1, 1)"
-        const val HIGHLIGHT_COLOR_UNDERLINE = "검정 (0, 0, 0)"
+        // 🔴 **색 문장의 출처는 [OverlayClassColors] 하나다** — 여기에 사본("노랑 (1, 1, 0)"
+        //    같은 문자열)을 두면 색을 고치는 날 session.json의 두 블록(`overlay.colors`와
+        //    `overlay.class_color_mapping.table`)이 서로 다른 말을 한다.
+        const val HIGHLIGHT_COLOR_STAIRS = OverlayClassColors.STAIRS_COLOR_TEXT
+        const val HIGHLIGHT_COLOR_PERSON = OverlayClassColors.PERSON_COLOR_TEXT
+        const val HIGHLIGHT_COLOR_UNDERLINE = OverlayClassColors.UNDERLINE_COLOR_TEXT
 
         const val HIGHLIGHT_NO_RED_REASON =
             "🔴 **빨강 금지.** 빨강은 휘도가 낮아 야간 배경에 묻히고 적록색약에서 무너진다 " +
@@ -1614,24 +1720,184 @@ enum class RenderArm(
 
         /**
          * 🔴 이 문장이 빠지면 "깜빡임이 없었다"가 **성능 근거처럼** 읽힌다.
-         * 실제 깜빡임 위험은 H칸이고 미구현이다.
+         *
+         * ⚠ **2026-08-07 갱신** — 예전 문장은 "H칸은 미구현이다"였고 그것이 이번 라운드에
+         * 거짓이 됐다. 정적 더미 arm과 ③ 결과 arm에서 이 문장의 뜻이 갈리므로 둘을 갈라 적는다.
          */
         const val HIGHLIGHT_BLINK_NOT_A_PERF_CLAIM =
-            "🔴 **이 arm에 깜빡임이 없다는 사실을 성능·안전 근거로 쓰지 말 것.** 박스가 정적 " +
-                "더미라 구조적으로 없을 뿐이고, 이 런은 깜빡임을 **시험하지 않았다.** 실제 " +
-                "깜빡임 위험은 ③을 N프레임마다 돌릴 때 박스가 튀는 것이고(버짓 H칸: 좌표 IIR " +
-                "평활·hold) **미구현**이다. 상류가 그것을 안전 이슈로 규정했다" +
+            "🔴 **깜빡임이 없다는 사실을 성능 근거로 쓰지 말 것 — 그리고 arm마다 뜻이 다르다.** " +
+                "(a) 정적 더미 arm(highlight_boxes / _stress / _1q): 박스가 프레임마다 완전히 " +
+                "같아 **구조적으로** 깜빡임이 없을 뿐이고 그 런은 깜빡임을 **시험하지 않았다.** " +
+                "(b) ③ 결과 arm(detect_cpu_highlight / _1q): 박스가 실제로 바뀌므로 이제 " +
+                "**깜빡임이 시험된다** — H칸(좌표 IIR 평활·hold)이 이 라운드에 구현됐고, " +
+                "'만들지 않았다'의 유일한 기계 근거는 하네스의 overlay.flicker 블록" +
+                "(blank_transitions + zero_frame_fraction + zero_runs_at_edge + " +
+                "drew_then_stopped)이다. 🔴 **눈으로 본 것은 계측이 아니다** — 그 블록 없이 " +
+                "'깜빡이지 않았다'고 쓰지 말 것. 설계상 무엇을 막았는지는 " +
+                "overlay_no_flicker_design에 있다. 상류가 이것을 안전 이슈로 규정했다" +
                 "(RESEARCH_20260803_UPSTREAM.md §5)"
 
         /**
          * 🔴 `INTERFACES.md` §A-4의 클래스 2번은 ☐(미정)다. 3번째 색을 지어내지 않는다.
+         *
+         * ⚠ **2026-08-07 갱신** — 예전 문장은 "`stairs`(index 0) · `person`(index 1)"이라고
+         * **인덱스로** 클래스를 말했다. ③→④가 이어진 지금 그 서술은 거짓이며(모델의 순서는
+         * 그 반대다) 색은 [com.bammasil.poc.gl.OverlayClassColors]가 **이름으로** 고른다.
          */
         const val HIGHLIGHT_CLASS_NOTE =
-            "클래스는 `stairs`(index 0) · `person`(index 1) 두 종만 그린다. " +
-                "🔴 INTERFACES.md §A-4의 **클래스 2번은 ☐(미정)**이라 3번째 클래스의 색을 " +
-                "지어내지 않았다 — 클래스가 늘면 그 자체가 렌더 규약 변경이고(§A-4 불변 규칙) " +
-                "이 오버레이도 함께 고쳐야 한다. 색은 픽셀 비용에 영향이 없다(어느 색이든 같은 " +
-                "면적을 채운다)"
+            "🔴 **색은 클래스 이름으로 고른다 — 인덱스로 고르지 않는다**" +
+                "(OverlayClassColors). 어휘는 `stairs`·`person` 둘이고 이름의 출처는 " +
+                "**모델 임베드 메타의 names 하나뿐**이다(계약 문서의 순서를 쓰지 않는다). " +
+                "그래서 INTERFACES.md §A-4와 모델의 순서가 반대인 채로도(contract_a4_conflict) " +
+                "이 코드는 옳게 그리고, 팀이 어느 쪽으로 확정해도 **바뀌지 않는다** — 그것이 " +
+                "이 설계의 목적이다. " +
+                "🔴 어휘 밖 이름·범위 밖 cls는 **지우지 않고 중립색(흰색)으로** 그린다" +
+                "(unknown_policy) — 3번째 클래스의 색을 지어내지 않았다는 뜻이며, 클래스가 " +
+                "늘면 그 자체가 렌더 규약 변경이라(§A-4 불변 규칙) 오버레이 어휘를 팀과 함께 " +
+                "갱신해야 한다. 색은 픽셀 비용에 영향이 없다(어느 색이든 같은 면적을 채운다)"
+
+        // ── ④ H칸: 좌표 평활·hold (스키마 v7) ─────────────────────────────
+        // 🔴 **계약에 이 항목 자체가 없다.** `INTERFACES.md`의 계약은 A(모델)·B(①②)·C(녹화)
+        //    셋뿐이고 **④ 계약도, hold·평활·트래킹 항목도 없다** — 그러므로 아래 값들은
+        //    "계약의 ☐"가 **아니라 계약에 항목이 부재한 것**이다. 두 사실을 섞어 적으면
+        //    "팀장이 확정해 주면 된다"로 읽히는데, 그런 칸이 아직 존재하지도 않는다.
+        //
+        // 🔴 그래서 [GAMMA_MEASUREMENT_VALUE]와 **같은 틀**을 쓴다: 상수 이름에
+        //    `_MEASUREMENT_`를 넣고, **제안값이 아니라 비용 봉투를 재기 위한 임의값**이라고
+        //    적고, 같은 문장을 `session.json`에도 싣는다([OVERLAY_SMOOTHING_PROVENANCE]).
+
+        /**
+         * hold 길이 — **표시 프레임 수**. 마지막으로 자기를 지지한 측정이 사라진 뒤 이만큼
+         * 버티다 그린 목록에서 빠진다. **제안값이 아니라 임의 측정값이다.**
+         *
+         * 🔴 **벽시계 길이가 표시 FPS에 딸리고, 몇 번의 탐지에 해당하는지는 탐지 주기 N에
+         * 딸린다.** N은 미정이므로(`FRAME_BUDGET.md` §7 질문 3) 이 값을 인용할 때 그 런의
+         * **실측 cadence**(`detect_cadence_ms`)를 함께 옮긴다 → [OVERLAY_HOLD_CADENCE_NOTE].
+         * 30FPS·실측 3.4Hz 기준으로 18프레임은 약 0.6초 = 탐지 약 2주기다.
+         */
+        const val OVERLAY_HOLD_FRAMES_MEASUREMENT_VALUE = 18
+
+        /**
+         * 프레임 간 박스를 이어 붙이는 IoU 임계 — 그리고 그것이 곧 **폐기 조건**이다
+         * (이 임계 이상인 측정이 [OVERLAY_HOLD_FRAMES_MEASUREMENT_VALUE] 프레임 연속으로
+         * 없으면 폐기한다). **제안값이 아니라 임의 측정값이다.**
+         */
+        const val OVERLAY_MATCH_IOU_MEASUREMENT_VALUE = 0.30f
+
+        /**
+         * 좌표 IIR 평활 계수. 매 프레임 `s ← s + α(target − s)`이며 **α가 클수록 덜 평활하다.**
+         * **제안값이 아니라 임의 측정값이다.**
+         */
+        const val OVERLAY_IIR_ALPHA_MEASUREMENT_VALUE = 0.35f
+
+        /**
+         * 한 게시/한 프레임에 담을 박스 수의 상한. 초과분은 **세고 버린다**
+         * (`overlay.dropped_over_cap`) — 조용히 버리지 않는다. **제안값이 아니라 임의 측정값**
+         * 이며, [HIGHLIGHT_BOX_COUNT_STRESS]와 같은 값으로 둔 이유는 GL 정점 버퍼의 용량이
+         * **한 숫자**로 정해지게 하려는 것이다(정적 arm의 최대와 같다).
+         */
+        const val OVERLAY_BOX_CAP_MEASUREMENT_VALUE = 32
+
+        /** 🔴 위 네 값의 출처 문장. **같은 문장이 `session.json`으로 나간다.** */
+        const val OVERLAY_SMOOTHING_PROVENANCE =
+            "🔴 **제안값이 아니다 — H칸의 비용 봉투를 재기 위한 임의값이다.** " +
+                "hold_frames=$OVERLAY_HOLD_FRAMES_MEASUREMENT_VALUE(표시 프레임) / " +
+                "match_iou=$OVERLAY_MATCH_IOU_MEASUREMENT_VALUE / " +
+                "iir_alpha=$OVERLAY_IIR_ALPHA_MEASUREMENT_VALUE / " +
+                "box_cap=$OVERLAY_BOX_CAP_MEASUREMENT_VALUE. " +
+                "🔴 **INTERFACES.md에 이 항목 자체가 없다** — 계약은 A(모델)·B(①②)·C(녹화) " +
+                "셋뿐이고 ④ 계약도 hold·평활·트래킹 항목도 없다. 그러므로 '계약의 ☐'가 " +
+                "아니라 **항목 부재**이며, 확정해 줄 칸이 아직 존재하지 않는다. " +
+                "GAMMA_MEASUREMENT_VALUE와 같은 취급이다: 팀이 ④ 항목을 만들면 그때 교체한다. " +
+                "⚠ 값 자체가 H의 비용에 미치는 영향은 거의 없다(연결·평활의 일 양은 박스 수가 " +
+                "정한다) — 그러나 **화면에 보이는 결과는 크게 달라진다.** 그래서 이 값들은 " +
+                "성능 인용이 아니라 **화면 판단**의 조건이며, 값을 옮길 때 이 문장을 함께 옮긴다"
+
+        /** 🔴 hold를 프레임으로 표현한 것의 함정. `session.json`으로 나간다. */
+        const val OVERLAY_HOLD_CADENCE_NOTE =
+            "🔴 **hold를 프레임 수로 적었으므로 '몇 번의 탐지를 버티는가'는 이 값만으로 " +
+                "말할 수 없다.** 탐지 주기 N이 미정이라(FRAME_BUDGET.md §7 질문 3) 앱은 " +
+                "idle-gated로 돌고, 실제 주기는 하네스가 detect_cadence_ms 분포로 낸다 — " +
+                "**선언된 N이 아니라 관측값이다.** 그러므로 hold_frames를 인용할 때 그 런의 " +
+                "cadence 분포를 함께 옮긴다. " +
+                "🔴 **H의 1회 비용을 프레임당으로 환산하지 말 것** — H는 탐지 주기마다가 아니라 " +
+                "**표시 프레임마다** 돈다(그래서 stage_h_ms가 프레임당 1행이다). 환산하면 " +
+                "탐지 주기에 딸린 값처럼 보이는데 그렇지 않다"
+
+        /**
+         * 🔴 **깜빡임을 만들지 않기 위해 설계에서 무엇을 했는가.** 이 문장은 "깜빡이지
+         * 않았다"는 **주장이 아니다** — 그 주장의 근거는 하네스의 `overlay.flicker`뿐이다
+         * ([HIGHLIGHT_BLINK_NOT_A_PERF_CLAIM]).
+         */
+        const val OVERLAY_NO_FLICKER_DESIGN =
+            "설계에서 막은 것 넷: " +
+                "(1) **점멸·펄스·알파 변조가 코드에 없다** — 광과민 사용자에게 안전 이슈로 " +
+                "규정된 항목이라(no_blink_reason) 밝기·알파를 시간에 따라 바꾸는 경로를 두지 " +
+                "않았다. 블렌딩 자체를 켜지 않는다. " +
+                "(2) **hold 안에서는 끊지 않는다** — 갱신이 안 온 프레임에 박스를 0으로 " +
+                "떨어뜨리지 않고 마지막 좌표를 계속 그린다. 사라졌다 나타나는 구간이 곧 " +
+                "깜빡임이기 때문이다. " +
+                "(3) **새 게시가 그 박스를 다시 담으면 TTL이 다시 찬다** — 게시 주기가 실측 " +
+                "약 3.4Hz(30FPS에서 ≈9프레임)이고 hold가 " +
+                "${OVERLAY_HOLD_FRAMES_MEASUREMENT_VALUE}프레임이므로, **탐지가 정상인 동안은 " +
+                "만료 전에 다음 게시가 온다.** 그래서 탐지 주기와 표시 주기가 다르다는 사실 " +
+                "때문에 깜빡이는 일은 생기지 않는다. " +
+                "🔴 **TTL은 새 게시가 왔을 때만 다시 찬다 — 같은 스냅샷을 다시 보는 " +
+                "프레임에서는 깎인다.** 게시 슬롯은 새 게시가 올 때까지 직전 스냅샷을 " +
+                "보존하므로(정상 동작), 프레임마다 재충전하면 **탐지 워커가 멈추거나 매 " +
+                "프레임 실패해도 낡은 좌표의 박스가 무한히 그려진다.** 야간 보행 보조에서 " +
+                "낡은 위험물 위치를 현재인 것처럼 계속 보여 주는 것이 더 위험하다. " +
+                "(4) **크기·위치는 IIR로만 움직인다** — 새 좌표로 순간 이동하지 않고 " +
+                "iir_alpha로 수렴한다(태어나는 프레임만 예외이며, 거기서 0에서 자라게 하면 " +
+                "그게 곧 튐이다). IIR은 **매 프레임** 돌아 한 게시를 쓰는 ≈9프레임 동안 계속 " +
+                "수렴한다 — TTL 재충전과는 별개다. " +
+                "⚠ **hold가 만료돼 박스가 사라지는 동작은 남아 있고 그것이 정상이다.** " +
+                "두 경우에 일어난다: (a) 새 게시가 왔는데 그 박스가 빠졌다(장면에서 실제로 " +
+                "사라졌을 수 있다), (b) **게시가 아예 끊겼다**(탐지가 멈췄거나 매 프레임 " +
+                "실패했다). 🔴 **둘 다 깜빡임이 아니다** — 빠른 on/off가 아니라 탐지가 끊긴 " +
+                "사실의 **정직한 표시**다. 하네스가 그것을 `drew_then_stopped`로 지목하면 " +
+                "**그 지목이 맞는 것이고**, 원인이 (a)인지 (b)인지는 그 지표가 가르지 못한다" +
+                "(detect.run의 errors·inferences_run과 함께 읽어야 갈린다). " +
+                "그 사라짐은 로그에 그대로 남는다(overlay_boxes의 >0→0 전이·뒷자락). " +
+                "⚠ 그리고 박스가 크게 튀면 이어지지 않고 **새 박스가 태어난다**(match_iou " +
+                "미달) — 그때 이전 박스는 hold 동안 함께 그려지므로 잠깐 둘로 보인다. " +
+                "**그 실패 방향을 일부러 택했다**: 잠깐 하나 더 그리는 것이 깜빡이는 것보다 " +
+                "안전하다"
+
+        /** 🔴 `stage_h_ms` 구간이 **정확히 무엇을 감싸는가**. `session.json`으로 나간다. */
+        const val OVERLAY_STAGE_H_SCOPE =
+            "🔴 **CPU 벽시계**(SystemClock.elapsedRealtimeNanos, GL 스레드)이며 GPU query가 " +
+                "아니다 — gpu_sum_ms에도 stage_d_total_ms에도 들어가지 않는다. " +
+                "구간은 **GPU 패스를 열기 전에 닫힌다**(gpuTimer.beginFrame보다 앞이다). " +
+                "안에 있는 것: (새 게시일 때) 스냅샷의 박스를 NDC로 매핑 → 이전 프레임 목록과 " +
+                "IoU 연결 → 좌표 IIR 평활(**매 프레임**) → hold/TTL 갱신 → " +
+                "**그릴 목록을 정점 버퍼에 in-place 재기록**" +
+                "까지다. 정점 재기록을 일부러 포함했다 — 그 CPU 비용이 GPU query 안에 있으면 " +
+                "(GPU 시간을 재는 query라) **어디에도 계상되지 않는다.** " +
+                "밖에 있는 것: `latest()` 참조 읽기 하나(t_render_start_ns를 찍기 **전에** " +
+                "읽는다 — 그래야 어떤 프레임도 자기 렌더 시작보다 미래에 게시된 결과를 쓰지 " +
+                "않는다)와 오버레이 GPU 패스(그쪽은 stage_i_ms다)"
+
+        /** 🔴 `overlay.box_count`가 null인 이유. `session.json`으로 나간다. */
+        const val OVERLAY_DYNAMIC_BOX_NOTE =
+            "🔴 **이 arm의 박스 개수는 선언된 조건이 아니라 프레임마다 다른 관측값이다.** " +
+                "그래서 box_count가 null이고, 조건은 frames.csv의 **overlay_boxes** 열이 " +
+                "프레임별로 말한다(그 열에서 **0은 정상값**이다 — 그 프레임에 그린 박스가 " +
+                "없었다는 뜻이고 야간 보행에서는 그런 프레임이 다수다). " +
+                "⚠ 그러므로 이 arm의 stage_i_ms·stage_h_ms를 **개수 없이 인용하지 말 것** — " +
+                "정적 arm에서 box_count가 필수 조건인 것과 같은 논거이며, 여기서는 그 조건이 " +
+                "분포다. 정적 arm의 개당 기울기로 나눠 검산하지도 말 것(박스 크기가 다르다)"
+
+        /** 🔴 게시가 할당을 한다는 사실과 그것이 어디에 있는가. `session.json`으로 나간다. */
+        const val OVERLAY_PUBLISH_ALLOCATION_NOTE =
+            "🔴 **게시당 객체를 만든다**(스냅샷 1개 + 배열 3개 + 박스 복사 목록). 게시는 실측 " +
+                "약 3.4Hz이고 그 자리는 **E·F·G 구간 밖**이다 — DetectPipeline.infer에서 gNs가 " +
+                "확정되고 detect.csv 행 기록이 끝난 뒤, parity 덤프와 **같은 자리**다. " +
+                "그래서 이 할당이 stage_e/f/g_ms에 섞이지 않고, 승격된 F 실측과의 비교도 " +
+                "끊기지 않는다(그 구간의 코드는 바이트 단위로 그대로다). " +
+                "🔴 **GL 스레드에는 프레임당 할당이 없다**: latest()는 참조 읽기 하나이고, " +
+                "평활 트랙·그릴 목록·정점 버퍼는 전부 상한 크기로 **한 번** 잡아 두고 " +
+                "in-place로 재기록한다. GL 스레드에서 GC가 돌면 그것이 곧 프레임타임 꼬리다"
 
         // ── 프레임 단일 query arm(`*_1q`) ─────────────────────────────────
         // 🔴 **이 arm들은 알고리즘이 아니라 계측 방식이 다르다.** 아래 네 문장이 그 사실과
@@ -1702,8 +1968,16 @@ enum class RenderArm(
                 "drago_clahe_chain_bf_1q↔drago_clahe_chain_bf · " +
                 "drago_clahe_fused_1q↔drago_clahe_fused · " +
                 "drago_clahe_fused_bf_1q↔drago_clahe_fused_bf · " +
-                "highlight_boxes_1q↔highlight_boxes. 다른 arm과 짝지으면 렌더가 " +
+                "highlight_boxes_1q↔highlight_boxes · " +
+                "detect_cpu_highlight_1q↔detect_cpu_highlight · " +
+                "detect_cpu_1q↔detect_cpu. 다른 arm과 짝지으면 렌더가 " +
                 "달라 그 차분은 아무 뜻이 없다. " +
+                "🔴 **③→④ 세트(v7)에서 I 하한의 분모는 `detect_cpu_1q` 하나다** — " +
+                "`detect_cpu_highlight_1q − detect_cpu_1q`이며, `blit_2pass_1q`를 분모로 " +
+                "쓰면 **거기에 탐지 부하가 없어서** 차이에 탐지 비용이 섞인다. 알려진 이슈 36이 " +
+                "그 부류다(`highlight_boxes_1q`가 분모와 소수점 셋째 자리까지 같아 I 하한이 " +
+                "0으로 나왔고, 그 0은 '오버레이가 공짜'가 아니라 분모가 상한을 통째로 중복 " +
+                "계상했다는 뜻이었다). " +
                 "🔴 **부풀림 비율을 arm 사이에서 옮기지 말 것** — 중복 계상량은 마지막 " +
                 "전체화면 패스의 비용을 따라가므로 패스 구성마다 다르다(같은 라운드에서 " +
                 "④ 오버레이 arm +2% / 9패스 arm +43%). 하한이 필요하면 **그 arm의 `_1q` " +

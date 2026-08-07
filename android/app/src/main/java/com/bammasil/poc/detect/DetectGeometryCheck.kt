@@ -1,8 +1,10 @@
 package com.bammasil.poc.detect
 
+import com.bammasil.poc.gl.OverlayCoordMap
+
 /**
- * ③ **기하 왕복 자체검사.** 회전과 letterbox가 서로의 역함수인지를 런을 시작하기 **전에**
- * 기계로 확인한다.
+ * ③ **기하 왕복 자체검사.** 회전과 letterbox가 서로의 역함수인지, 그리고 ④가 쓰는 센서→NDC
+ * 매핑이 프레임 전체를 화면 전체로 보내는지를 런을 시작하기 **전에** 기계로 확인한다.
  *
  * ## 왜 런을 시작하는 자리에 다는가
  *
@@ -18,7 +20,11 @@ package com.bammasil.poc.detect
  * `Rotation.inverseBox` · `Rotation.forwardBox`(그리고 그것들이 부르는 점 함수 넷).
  * 검사용으로 같은 공식을 다시 적으면 **같은 오타를 두 번 적고 통과한다.**
  *
- * ## 두 검사
+ * ## 다섯 검사
+ *
+ * 🔴 **번호는 아래 인라인 주석의 `검사 N`과 같다** — 세 자리(이 목록 · 인라인 주석 ·
+ * `SessionWriter`의 `overlay.coordinate_map.selfcheck`)가 같은 번호를 써야 한다.
+ * 갈리면 실패 문장을 읽는 사람이 다른 검사를 들여다본다.
  *
  * 1. **왕복** — letterbox 640 좌표의 박스 → (역) → 센서 → (정) → 640. 원래 값으로 돌아오는가.
  *    잡는 것: 정방향과 역방향이 서로의 역함수인가, 반사 축의 교환 규칙이 짝이 맞는가.
@@ -28,9 +34,19 @@ package com.bammasil.poc.detect
  * 3. **프레임 전체 박스** — `(0,0,rotatedW,rotatedH)` → `(0,0,srcW,srcH)`(박스 = 연속
  *    모서리 규약). 🔴 **박스에 인덱스 식 `(N−1)−v`를 쓰는 1px 실수를 잡는 유일한 검사다.**
  *    정·역이 같은 규약으로 같이 틀리면 왕복은 통과한다.
+ * 4. **샘플 맵의 가역성** — 회전 후 픽셀 인덱스 → 센서 → 복귀. 🔴 **박스 왕복이 이 두 함수를
+ *    건드리지 않는다**(모서리 규약이라 다른 경로다) — 전처리가 픽셀마다 부르는 것은
+ *    `toSensorX/Y`이므로 그 가역성은 따로 확인해야 한다. 여기서 안 잡으면 E만 조용히 틀린다.
+ * 5. **④ 센서 → NDC** — `(0,0,srcW,srcH)` → `(-1,-1,1,1)`([OverlayCoordMap]).
+ *    🔴 위 넷은 ③ 안에서만 닫히고 **화면에 나가는 좌표를 확인하지 않는다** — 매핑의 스케일이나
+ *    부호가 어긋나면 박스가 화면 어딘가에 **그럴듯하게** 그려지고 기계로는 아무것도 안 걸린다.
+ *    ⚠ 이 검사가 확인하는 것도 **자기 일관성까지**다. [OverlayCoordMap.FLIP_Y]의 참·거짓은
+ *    **눈으로만** 확인된다(그 파일의 KDoc이 이미 그렇게 적었다). 🔴 그리고 **호출부가 잘못된
+ *    처리 해상도를 넘기는 실수도 잡지 못한다**(process 치수가 약분된다) — 그건
+ *    `session.json`의 `overlay.coordinate_map`만이 관측한다.
  *
- * 2·3의 기대값 표가 이 파일의 유일한 "사본"이고, **사본이어야 하는 것이 맞다** —
- * 오라클은 구현과 독립이어야 한다.
+ * 2·3·5의 기대값 표가 이 파일의 유일한 "사본"이고, **사본이어야 하는 것이 맞다** —
+ * 오라클은 구현과 독립이어야 한다(4는 왕복이라 사본이 없다).
  *
  * ⚠ [TOLERANCE_PX]는 **우리가 선언한 검사 조건이지 계약값이 아니다**(`SAMPLE_COUNT`와 같은
  * 부류다). 판정보다 먼저 **관측값**(`max|d|`)을 그대로 낸다 — 규약 §7과 같은 태도다.
@@ -160,6 +176,62 @@ object DetectGeometryCheck {
                     )
                 }
 
+                // ── 검사 5: ① 센서 → ④ NDC 매핑 (모서리 → NDC 모서리) ──────────
+                // 🔴 **④를 연결하면서 들어온 검사다.** 오버레이가 그리는 좌표는
+                //    OverlayCoordMap이 만드는데, 그 식이 축을 뒤집거나 스케일이 어긋나면
+                //    **박스가 화면 어딘가에 그럴듯하게 그려진다** — 눈으로 봐도 "좀 안 맞네"
+                //    까지만 알 수 있고 기계로는 아무것도 안 걸린다.
+                //    주장: 센서 프레임 전체 (0,0,srcW,srcH)는 NDC 전체 (-1,-1,1,1)로 가야 한다.
+                // 🔴 **이 검사는 호출부가 잘못된 처리 해상도를 넘기는 실수를 잡지 못한다.**
+                //   ndcX/ndcY 안에서 process 치수가 대수적으로 약분되므로 **어떤 process 값을
+                //   넣어도 결과가 같다**(독립 검증의 파괴 시험이 Preview 1920x1080을 넣어
+                //   차 0.0을 확인했다). 여기서 두 치수를 다 넘기는 것은 **식의 형태를 유지해
+                //   다음 사람이 접힌 식만 보고 "처리 해상도를 안 쓴다"로 읽지 않게** 하는
+                //   것까지이며, 그 이상을 주장하지 않는다.
+                //   ⚠ **실제 관측 수단은 session.json의 overlay.coordinate_map뿐이다** —
+                //   analysis_resolution / process_resolution을 나란히 싣고 aspect_matches로
+                //   기계 대조한다. 두 use case의 시야가 다르면 거기서만 보인다.
+                // 🔴 이 검사가 확인하는 것은 **자기 일관성까지**이고 FLIP_Y의 참·거짓이
+                //   아니다 — 그 값은 **눈으로만** 확인된다(OverlayCoordMap의 KDoc).
+                for (proc in PROCESS_SIZES) {
+                    cases++
+                    val pw = proc[0]
+                    val ph = proc[1]
+                    if (!OverlayCoordMap.canMap(srcW, srcH, pw, ph)) {
+                        note(
+                            failures,
+                            "canMap이 false다 src=${srcW}x$srcH process=${pw}x$ph — " +
+                                "매핑을 만들 수 없는 치수를 검사표에 넣었다"
+                        )
+                        continue
+                    }
+                    val nx0 = OverlayCoordMap.ndcX(0f, srcW, pw)
+                    val nx1 = OverlayCoordMap.ndcX(srcW.toFloat(), srcW, pw)
+                    val ny0 = OverlayCoordMap.ndcY(0f, srcH, ph)
+                    val ny1 = OverlayCoordMap.ndcY(srcH.toFloat(), srcH, ph)
+                    // FLIP_Y면 y의 두 끝이 뒤바뀐다 — 그 경우도 **모서리로는 가야 한다.**
+                    val expectY0 = if (OverlayCoordMap.FLIP_Y) 1f else -1f
+                    val expectY1 = if (OverlayCoordMap.FLIP_Y) -1f else 1f
+                    var dn = abs(nx0 - (-1f))
+                    val dn2 = abs(nx1 - 1f)
+                    val dn3 = abs(ny0 - expectY0)
+                    val dn4 = abs(ny1 - expectY1)
+                    if (dn2 > dn) dn = dn2
+                    if (dn3 > dn) dn = dn3
+                    if (dn4 > dn) dn = dn4
+                    // ⚠ **maxAbsDelta에 섞지 않는다** — 그 값은 px 단위 왕복 오차이고 이쪽은
+                    //   NDC(무차원)다. 한 칸에 담으면 관측값의 단위가 두 가지가 된다.
+                    if (!(dn <= NDC_TOLERANCE)) {
+                        note(
+                            failures,
+                            "센서→NDC 모서리 어긋남 src=${srcW}x$srcH process=${pw}x$ph: " +
+                                "(0,0,$srcW,$srcH) → ($nx0,$ny0,$nx1,$ny1), " +
+                                "기대 (-1.0,$expectY0,1.0,$expectY1), |d|=$dn. " +
+                                "**OverlayCoordMap의 스케일·부호를 의심할 것**"
+                        )
+                    }
+                }
+
                 // ── 검사 1: 왕복 ────────────────────────────────────────────────
                 for (b in boxCases(box, dstW, dstH)) {
                     cases++
@@ -275,6 +347,30 @@ object DetectGeometryCheck {
      * 이쪽은 우리 기하의 왕복이다. 그 바를 여기 끌어오지 않는다.
      */
     const val TOLERANCE_PX = 1e-2f
+
+    /**
+     * ④ NDC 매핑 검사의 허용치(무차원). ⚠ **우리가 선언한 검사 조건이지 계약값이 아니다**
+     * ([TOLERANCE_PX]와 같은 부류다). NDC 폭이 2이므로 1e-5는 720p에서 0.007px 수준이다.
+     * 🔴 [TOLERANCE_PX]와 **다른 값이고 다른 단위다** — 한 상수를 돌려 쓰면 px 허용치가
+     * 무차원 좌표에 적용된다(720p에서 1e-2 NDC = 6.4px이라 부호 실수를 놓칠 수 있다).
+     */
+    const val NDC_TOLERANCE = 1e-5f
+
+    /**
+     * ④ NDC 매핑 검사가 쓸 **처리 해상도** 표. 대수적으로는 약분되지만 두 치수를 다 태우는
+     * 형태를 유지한다(위 검사 5의 ⚠).
+     *
+     * | 치수 | 왜 |
+     * |---|---|
+     * | 1280×720 | 측정 기기가 실제로 협상하는 값 |
+     * | 640×360 | 처리 해상도를 깎는 레버가 검토 중이다(§6) |
+     * | 720×1280 | 분석 치수와 **종횡비가 어긋난** 경우(그때도 모서리는 모서리로 가야 한다) |
+     */
+    private val PROCESS_SIZES: List<IntArray> = listOf(
+        intArrayOf(1280, 720),
+        intArrayOf(640, 360),
+        intArrayOf(720, 1280),
+    )
 
     /** 실패 문장을 남기는 상한. 다 남기면 `session.json`이 실패 문장으로 뒤덮인다. */
     private const val MAX_FAILURES = 6

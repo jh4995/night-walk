@@ -9,6 +9,8 @@ import android.os.Handler
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
+import com.bammasil.poc.detect.DetectOverlayPublisher
+import com.bammasil.poc.detect.DetectOverlaySnapshot
 import com.bammasil.poc.log.CaptureClockProbe
 import com.bammasil.poc.log.CaptureClockVerdict
 import com.bammasil.poc.log.ClockProbeSample
@@ -79,6 +81,12 @@ import javax.microedition.khronos.opengles.GL10
  *   ⚠ **패스3은 `glClear`를 부르지 않는다** — ② 출력 위에 얹는 패스라 지우면 그림이 사라진다.
  *   패스마다 clear를 명시한다는 아래 규약의 **의도된 예외**이며, 그래서 이 패스에는 타일
  *   재적재 비용이 섞인다(`session.json`의 `overlay` 블록에 그대로 적는다).
+ * - **④ ③결과 오버레이 arm**([RenderArm.usesDynamicHighlightBoxes] — `detect_cpu_highlight` /
+ *   `_1q`) — 위와 **같은 4패스**이고, 그 앞에 **H칸(좌표 평활·hold)** 하나가 더 붙는다
+ *   ([OverlaySmoother]). 🔴 **GPU 패스가 아니라 GL 스레드의 CPU 구간**이라 GPU query가 아니라
+ *   `stage_h_ms`(CPU 벽시계) 열로 나가고, GPU 패스를 **열기 전에** 닫힌다
+ *   ([RenderArm.OVERLAY_STAGE_H_SCOPE]). 박스는 [DetectOverlayPublisher]가 게시한 ③ 결과이고
+ *   개수가 프레임마다 다르므로 `overlay_boxes` 열이 그 프레임의 개수를 말한다.
  *
  * 패스스루가 아닌 arm은 [GpuTimerRing]으로 패스별 GPU 시간을 잰다. **패스스루 arm에는
  * query를 하나도 걸지 않는다** — query 자체가 GPU 동작과 드라이버 스케줄링을 바꾸므로,
@@ -105,6 +113,11 @@ class PassthroughRenderer(
      * `t_recv_ns`에 섞여 "프레임 도착 시각"이 도착 시각이 아니게 된다.
      */
     private val frameSignalHandler: Handler,
+    /**
+     * ③ → ④ 게시자. 🔴 **읽기만 한다**(`latest()`는 참조 읽기 하나다). 오버레이 arm이 아니면
+     * 게시자가 꺼져 있어 이 객체가 있다는 사실이 프레임 경로에 새지 않는다.
+     */
+    private val overlayPublisher: DetectOverlayPublisher,
 ) : GLSurfaceView.Renderer, SurfaceTexture.OnFrameAvailableListener, FrameTarget {
 
     /** GL 스레드에서 SurfaceTexture가 준비되면 호출된다(GL 스레드에서 불린다). */
@@ -360,6 +373,30 @@ class PassthroughRenderer(
     /** ④ 오버레이 arm. 프로그램·정점 데이터를 스스로 소유한다. */
     private val highlightOverlay = HighlightOverlay()
 
+    /**
+     * ④ **H칸(좌표 평활·hold).** ③ 결과를 그리는 arm에서만 돈다.
+     * 🔴 트랙·출력 배열을 상한 크기로 **여기서 한 번** 잡는다 — GL 스레드 프레임당 할당 0.
+     */
+    private val overlaySmoother =
+        OverlaySmoother(RenderArm.OVERLAY_BOX_CAP_MEASUREMENT_VALUE)
+
+    /**
+     * 이번 [onDrawFrame]이 쓸 게시 스냅샷. 🔴 **`t_render_start_ns`를 찍기 전에** 읽어 둔 것이다
+     * — 그래야 어떤 프레임도 자기 렌더 시작보다 **미래에** 게시된 결과를 쓰지 않는다
+     * (`docs/FRAME_LOG_SCHEMA.md` §2의 요구이며, 어기면 하네스가 신선도 폐기로 세고 "두 시각의
+     * 순서가 뒤집혔다"고 경고한다). GL 스레드 전용.
+     */
+    private var frameOverlaySnapshot: DetectOverlaySnapshot? = null
+
+    /** 이번 프레임의 `stage_h_ms`(ns). 재지 않았으면 [FrameLogRecorder.MISSING_NS]. */
+    private var frameStageHNs = FrameLogRecorder.MISSING_NS
+
+    /**
+     * 이번 프레임에 **실제로 그린** 박스 수. `0`은 정상값이고
+     * [FrameLogRecorder.OVERLAY_BOXES_UNRECORDED]만 "기록 안 함"이다.
+     */
+    private var frameOverlayBoxes = FrameLogRecorder.OVERLAY_BOXES_UNRECORDED
+
     /** [0]=FBO_A, [1]=FBO_B. 0이면 미생성. GL 스레드 전용. */
     private val fbos = IntArray(FBO_COUNT)
     private val fboTextures = IntArray(FBO_COUNT)
@@ -498,6 +535,7 @@ class PassthroughRenderer(
             blitFragment = FRAGMENT_SHADER_BLIT,
         )
         val chainSites = ColorTransformCensus.countByPass(chainSources)
+        val overlaySites = ColorTransformCensus.countByPass(overlaySources)
         val chainBfSites = ColorTransformCensus.countByPass(
             BilateralStage.withDenoisePass(chainSources)
         )
@@ -513,11 +551,20 @@ class PassthroughRenderer(
             // 그대로 가리킨다** — 두 키의 값이 갈라질 수 없다.
             RenderArm.DRAGO_CLAHE_CHAIN_1Q.id to chainSites,
             RenderArm.DRAGO_CLAHE_CHAIN_BF_1Q.id to chainBfSites,
-            // ④ arm 둘은 같은 셰이더를 쓴다(개수만 다르다). 여기 계수는 전부 0이어야 하고,
-            // 그 0이 "오버레이가 색공간 변환을 하지 않는다"는 기계 확증이다.
-            RenderArm.HIGHLIGHT_BOXES.id to ColorTransformCensus.countByPass(overlaySources),
-            RenderArm.HIGHLIGHT_BOXES_STRESS.id to
-                ColorTransformCensus.countByPass(overlaySources),
+            // ④ arm은 같은 셰이더를 쓴다(박스 개수·출처만 다르다). 여기 계수는 전부 0이어야
+            // 하고, 그 0이 "오버레이가 색공간 변환을 하지 않는다"는 기계 확증이다.
+            // 🔴 ③→④ 연결 arm 둘도 **같은 셰이더**다 — 박스가 탐지 결과라고 셰이더가 바뀌지
+            //    않는다(색은 정점 속성으로 들어간다). 여기서 빠뜨리면 그 arm의
+            //    color_transform_sites가 비고 "셰이더를 세지 못했다"는 **거짓 사유**가 나간다.
+            RenderArm.HIGHLIGHT_BOXES.id to overlaySites,
+            RenderArm.HIGHLIGHT_BOXES_STRESS.id to overlaySites,
+            // 🔴 `highlight_boxes_1q`는 예전부터 빠져 있었다 — 그래서 그 arm의 session.json에
+            //    "onSurfaceCreated가 돌기 전에 세션이 끝나 셰이더 소스를 세지 못했다"는
+            //    **거짓 사유**가 나갔다(셌는데 키가 없었을 뿐이다). 계측 방식만 다른 arm이라
+            //    셰이더가 짝과 같으므로 **같은 계수를 가리킨다**(다시 세지 않는다).
+            RenderArm.HIGHLIGHT_BOXES_1Q.id to overlaySites,
+            RenderArm.DETECT_CPU_HIGHLIGHT.id to overlaySites,
+            RenderArm.DETECT_CPU_HIGHLIGHT_1Q.id to overlaySites,
         )
         oesTextureId = createOesTexture()
         Matrix.setIdentityM(texMatrix, 0)
@@ -558,6 +605,17 @@ class PassthroughRenderer(
         //    될 수 있고, 하네스 교차검사 A(render_latency <= recv_to_render)가 **거짓 위반**을
         //    낸다. AtomicLong 읽기 하나이므로 "onDrawFrame 진입 직후"라는 규약과 어긋나지 않는다.
         val tRecvNs = pendingRecvNs.getAndSet(NO_FRAME)
+        // ① 바로 뒤, `t_render_start_ns`를 찍기 **전에** ④ 게시 스냅샷을 집는다.
+        //    🔴 순서를 뒤집으면 이 사이에 탐지 워커가 게시해 **t_overlay_source_ns >
+        //    t_render_start_ns**가 될 수 있고, 그건 "미래에 게시된 결과를 썼다"가 되어
+        //    하네스가 신선도 폐기로 세고 시계 순서 결함으로 경고한다
+        //    (스키마 v7의 요구다. DetectOverlayPublisher의 게시 시각 KDoc과 짝이다).
+        //    ⚠ ③ 결과를 그리는 arm이 아니면 **참조 읽기조차 하지 않는다** — 다른 arm의
+        //      프레임 경로에 이 배선이 새지 않게 하는 게이트다(parity 덤프와 같은 관행).
+        frameOverlaySnapshot =
+            if (arm.usesDynamicHighlightBoxes) overlayPublisher.latest() else null
+        frameStageHNs = FrameLogRecorder.MISSING_NS
+        frameOverlayBoxes = FrameLogRecorder.OVERLAY_BOXES_UNRECORDED
         val tRenderStartNs = SystemClock.elapsedRealtimeNanos()
         val hasNewFrame = tRecvNs != NO_FRAME
 
@@ -577,7 +635,16 @@ class PassthroughRenderer(
 
         val tRenderEndNs = SystemClock.elapsedRealtimeNanos()
         if (hasNewFrame) {
-            val slot = recorder.record(tRecvNs, tCaptureNs, tRenderStartNs, tRenderEndNs)
+            val slot = recorder.record(
+                tRecvNs, tCaptureNs, tRenderStartNs, tRenderEndNs,
+                stageHNs = frameStageHNs,
+                overlayBoxes = frameOverlayBoxes,
+                // 🔴 **박스가 0개(빈 결과)여도 게시 시각을 적는다** — "결과가 없다"와
+                //    "빈 결과가 있다"는 다른 사실이고, 후자에 -1을 적으면 신선도 분포가
+                //    박스가 있는 프레임 쪽으로만 치우친다(스키마 v7).
+                tOverlaySourceNs =
+                    frameOverlaySnapshot?.publishedNs ?: FrameLogRecorder.MISSING_NS,
+            )
             // 이번 프레임에 건 query가 어느 행을 채워야 하는지 여기서 확정한다.
             // 계측하지 않은 프레임에서 불러도 안전하다(링이 스스로 걸러 낸다).
             gpuTimer.commitFrame(slot)
@@ -669,7 +736,25 @@ class PassthroughRenderer(
         offscreenFallbackDraws = 0
         // 세대를 올려 이전 런의 in-flight query 결과가 이번 런의 행에 들어가는 것을 막는다.
         gpuTimer.beginRun()
+        // 🔴 H칸의 런 단위 상태도 여기서 내린다. 안 내리면 **직전 런의 트랙이 이 런의 첫
+        //    프레임에 그려지고** 누계가 남의 런 값과 합쳐진다(DetectPipeline.lastLetterbox
+        //    누수와 같은 실패 양식이다 — 이 객체는 Activity 수명이고 값은 런 단위 사실이다).
+        overlaySmoother.reset()
+        frameOverlaySnapshot = null
+        frameStageHNs = FrameLogRecorder.MISSING_NS
+        frameOverlayBoxes = FrameLogRecorder.OVERLAY_BOXES_UNRECORDED
     }
+
+    /**
+     * H칸의 런 사실. **정지 뒤 GL 스레드에서 부른다**(그 상태를 소유한 스레드가 GL 스레드다).
+     * ③ 결과를 그리는 arm이 아니면 값이 전부 0이고 `session.json`이 블록을 내지 않는다.
+     */
+    fun overlaySmootherFacts(): OverlaySmootherFacts = OverlaySmootherFacts(
+        tracksCreated = overlaySmoother.tracksCreated,
+        tracksExpired = overlaySmoother.tracksExpired,
+        droppedOverCap = overlaySmoother.droppedOverCap,
+        mapFailedFrames = overlaySmoother.mapFailedFrames,
+    )
 
     /**
      * 측정 정지 후 `frames.csv`를 쓰기 **직전에** GL 스레드에서 부른다.
@@ -713,7 +798,7 @@ class PassthroughRenderer(
                 drawPassthrough(oes)
                 return
             }
-            drawHighlightOverlay(oes, present, present, arm.highlightBoxCount, instrument)
+            drawHighlightOverlay(oes, present, present, instrument)
             return
         }
         if (arm.usesChainedBilateral) {
@@ -1362,8 +1447,8 @@ class PassthroughRenderer(
     }
 
     /**
-     * ④ **오버레이** arm(`highlight_boxes` / `highlight_boxes_stress`)의 4패스.
-     * [drawThreePass]의 세 패스 사이에 오버레이 패스가 하나 끼워진 것이다:
+     * ④ **오버레이** arm의 4패스([RenderArm.usesHighlightOverlay] — 정적 더미 셋과
+     * ③ 결과 둘). [drawThreePass]의 세 패스 사이에 오버레이 패스가 하나 끼워진 것이다:
      * ```
      * 패스1  OES   → FBO_A              stage_b_ms
      * 패스2  FBO_A → FBO_B (단순 복사)   stage_d_ms
@@ -1380,14 +1465,33 @@ class PassthroughRenderer(
      * 사이에 바인드·뷰포트를 다시 명시한다(쪼갤 기회를 주는 것까지가 우리가 할 수 있는 일이다).
      *
      * 왜 또 함수를 따로 만드는가: [drawThreePass]는 `blit_2pass`·`gamma_only`의 재현 경로다.
+     *
+     * 🔴 **③ 결과 arm에서는 패스1보다 앞에 H칸(좌표 평활·hold)이 하나 더 있다** — GPU 패스가
+     * 아니라 **GL 스레드의 CPU 구간**이고 `stage_h_ms`로 나간다. GPU query 안에 두지 않는
+     * 이유는 [RenderArm.OVERLAY_STAGE_H_SCOPE]에 있다.
+     * ⚠ 정적 더미 arm 셋은 그 블록을 타지 않는다 — 그 arm의 GL 호출 열은 이전과 같아야 한다.
      */
     private fun drawHighlightOverlay(
         oes: QuadProgram,
         stage2Copy: QuadProgram,
         present: QuadProgram,
-        boxCount: Int,
         instrument: Boolean,
     ) {
+        // ── ④ H칸(좌표 평활·hold) — 🔴 **GPU 패스를 열기 전에 끝낸다** ────────────
+        // stage_h_ms는 **CPU 벽시계**다. GPU timer query 안에 넣으면 (a) 그 열은 GPU 시간을
+        // 재므로 이 CPU 일이 어디에도 계상되지 않고, (b) 두 시계가 섞인 값이 나가면 하네스
+        // 자기검사가 잡는다. 구간의 정확한 범위는 RenderArm.OVERLAY_STAGE_H_SCOPE에 있다.
+        // ⚠ **정적 더미 arm은 이 블록을 타지 않는다** — 그 arm들의 렌더는 이전과 바이트 단위로
+        //   같아야 하고(승격 비교), H 열도 싣지 않는다.
+        val dynamicBoxes = arm.usesDynamicHighlightBoxes
+        if (dynamicBoxes) {
+            val hStart = SystemClock.elapsedRealtimeNanos()
+            val drawn = overlaySmoother.update(frameOverlaySnapshot, fboWidth, fboHeight)
+            // 정점 재기록도 H 안이다 — 이 CPU 비용을 stage_i_ms(GPU 시계) 쪽에 두면 사라진다.
+            highlightOverlay.setDynamicGeometry(overlaySmoother)
+            frameStageHNs = SystemClock.elapsedRealtimeNanos() - hStart
+            frameOverlayBoxes = drawn
+        }
         val timing = instrument && gpuTimer.beginFrame()
 
         // 패스1: OES → FBO_A (처리 해상도). stage_b_ms.
@@ -1411,7 +1515,12 @@ class PassthroughRenderer(
         if (timing) gpuTimer.beginPass()
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[1])
         GLES20.glViewport(0, 0, fboWidth, fboHeight)
-        highlightOverlay.draw(boxCount)
+        if (dynamicBoxes) {
+            // 정점은 위 H 구간에서 이미 다 썼다 — 여기서는 드로우콜만 낸다.
+            highlightOverlay.drawPrepared()
+        } else {
+            highlightOverlay.draw(arm.highlightBoxCount)
+        }
         if (timing) gpuTimer.endPass()
 
         // 패스4: FBO_B → 화면 (surface 크기). gpu_present_ms.

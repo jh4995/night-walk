@@ -55,6 +55,12 @@ class DetectPipeline(
      * 있다는 사실이 비용으로 새면 안 되기 때문이다.
      */
     private val parity: DetectParityDumper,
+    /**
+     * ③ → ④ 게시자. **오버레이 arm이 아니면 아무 일도 하지 않는다**
+     * ([DetectOverlayPublisher.enabled]가 false이고 호출자도 박스 복사를 건너뛴다) —
+     * [parity]와 **같은 취지·같은 자리**다. 그래야 `detect_cpu` 경로가 바이트 단위로 유지된다.
+     */
+    private val publisher: DetectOverlayPublisher,
 ) : AnalysisSink {
 
     private val worker: ExecutorService =
@@ -189,6 +195,17 @@ class DetectPipeline(
             parity.disable()
         }
 
+        // ③ → ④ 게시자. 🔴 **클래스 이름의 출처는 모델 임베드 메타 하나뿐이다**(계약 문서의
+        //    순서가 아니다) — 오버레이 색이 이 이름으로 정해지므로, 여기서 계약 순서를 넘기면
+        //    사람과 계단의 색이 뒤바뀐다. parity 덤프가 이름을 받는 자리와 같은 논거다.
+        // 🔴 런 단위 리셋도 여기서 한다(start가 reset을 먼저 부른다) — 안 내리면 직전 런의
+        //    게시가 이 런 첫 프레임에 그려지고 t_overlay_source_ns가 남의 런 시각이 된다.
+        if (arm.usesDynamicHighlightBoxes) {
+            publisher.start(runtime.report?.classNames ?: emptyList())
+        } else {
+            publisher.disable()
+        }
+
         // 🔴 회전을 적용하는가는 **arm이 정한다.** 대조군(`detect_cpu_norot`)만 false다.
         appliesRotation = arm.appliesDetectRotation
         lockedRotationDegrees = ROTATION_UNLOCKED
@@ -217,6 +234,8 @@ class DetectPipeline(
     fun startBindOnly() {
         // 이 arm은 추론이 없으므로 덤프도 없다. 이전 런의 상태가 남지 않게 내린다.
         parity.disable()
+        // 게시자도 같다 — 남겨 두면 직전 런의 스냅샷이 이 런의 GL 스레드에 보인다.
+        publisher.disable()
         // 🔴 런 단위 상태를 전부 내린다. 남겨 두면 **직전 detect 런의 사실이 이 런의
         //    session.json으로 샌다** — arm을 바꿔 연속 측정할 수 있으므로 실제로 일어난다.
         //    이 arm은 전처리를 돌리지 않으므로 여기서 내린 값이 그대로 기록된다.
@@ -234,6 +253,20 @@ class DetectPipeline(
         busy.set(false)
         inferenceEnabled.set(false)
         enabled.set(true)
+    }
+
+    /**
+     * ③ arm도 분모 arm도 아닌 arm(`highlight_boxes` · `blit_2pass` · `passthrough` …)으로 런을
+     * 시작할 때. **UI 스레드에서, [start]/[startBindOnly]와 같은 자리에서 부른다.**
+     *
+     * 🔴 **게시자를 내리는 것이 전부다.** 그 두 함수 어느 쪽도 불리지 않는 **세 번째 경로**라,
+     * 그대로 두면 직전 detect 런의 `enabled=true`와 스냅샷이 살아남는다. 지금은 GL 읽기가
+     * `RenderArm.usesDynamicHighlightBoxes`로 게이트돼 **관측되지 않지만**, 남의 런 시각이
+     * `t_overlay_source_ns`에 실릴 수 있는 부류의 결함이고 이 저장소의 방어 관행은
+     * **"런 단위 상태는 런 시작에서 내린다"**다(`lastLetterbox` 누수와 같은 논거).
+     */
+    fun disableOverlayPublish() {
+        publisher.disable()
     }
 
     /** 이 런에서 추론을 돌렸는가. `session.json`이 회계 불변식을 적용할지의 판별식이다. */
@@ -484,6 +517,24 @@ class DetectPipeline(
                     //    런 전체의 총계는 session.json이 따로 들고, 두 곳은 **다른 것을
                     //    센다**(전자는 덤프 K개, 후자는 런 전체).
                     out.boxesInverted,
+                )
+            }
+
+            // ── ③ → ④ 게시 ───────────────────────────────────────────────
+            // 🔴 **E·F·G 구간 밖이고 행 기록도 끝난 뒤다** — parity 덤프와 **같은 자리·같은
+            //    논거**다. 구간 안에 넣으면 게시당 할당(스냅샷 1개 + 배열 3개 + 박스 복사)이
+            //    G에 섞이고, 승격된 F 실측과의 비교가 끊긴다.
+            // 🔴 **게시자가 꺼져 있으면 박스 복사조차 하지 않는다** — 그래야 오버레이가 아닌
+            //    arm의 워커 경로에 늘어나는 것이 volatile 읽기 하나뿐이다.
+            // ⚠ 박스는 **여기서** 복사한다(후처리기의 내부 배열은 다음 프레임이 덮어쓴다).
+            //    역전 박스를 세고 그리지 않는 것은 게시자가 한다(규약 §5-3) — 그 수는
+            //    session.json에서 detect.run.inverted_boxes와 **교차 대조**된다.
+            if (publisher.enabled) {
+                publisher.publish(
+                    postprocessor.copyBoxes(out.boxesOut),
+                    rotation,
+                    appliesRotation,
+                    box,
                 )
             }
         } catch (t: Throwable) {

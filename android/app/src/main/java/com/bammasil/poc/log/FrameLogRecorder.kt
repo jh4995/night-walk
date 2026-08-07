@@ -42,6 +42,18 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
      */
     private var gpuHeader = ""
 
+    /**
+     * 이 런이 ④ 오버레이 열 3개(`stage_h_ms` / `overlay_boxes` / `t_overlay_source_ns`)를
+     * 싣는가. **③ 결과를 그리는 arm에서만** true다(`RenderArm.usesDynamicHighlightBoxes`).
+     *
+     * 🔴 **정적 더미 arm에는 싣지 않는다.** 재지 않은 열을 헤더에 넣고 -1로 채우면 하네스가
+     * "쟀는데 못 얻었다"로 읽는데 그건 다른 뜻이다 — [CSV_HEADER]의 같은 규약이다.
+     */
+    private var overlayColumns = false
+
+    /** [overlayColumns]가 true면 3, 아니면 0. [stride] 계산과 오프셋에 함께 쓴다. */
+    private var overlayValueCount = 0
+
     @Volatile
     var isRecording = false
         private set
@@ -74,8 +86,14 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
      * @param gpuColumns 이 런이 실을 GPU 패스 시간 열 이름 — **패스 순서 그대로**이며
      *   출처는 `RenderArm.gpuColumns` 하나다. 비어 있으면(패스스루) 청크에 그 칸 자체가
      *   없고 [setGpuTiming]은 무시된다.
+     * @param overlayColumns ④ 오버레이 열 3개를 실을 것인가. 🔴 **③ 결과를 그리는 arm에서만
+     *   true다** — 그렇지 않은 런에 이 열을 -1로 채워 내면 "쟀는데 못 얻었다"가 된다.
      */
-    fun start(startedElapsedNs: Long, gpuColumns: List<String>) {
+    fun start(
+        startedElapsedNs: Long,
+        gpuColumns: List<String>,
+        overlayColumns: Boolean = false,
+    ) {
         chunks.clear()
         cursor = 0
         recordedFrames = 0
@@ -83,7 +101,9 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
         surfaceFramesAvailable.set(0)
         gpuColumnCount = gpuColumns.size
         gpuHeader = gpuColumns.joinToString(",")
-        stride = VALUES_PER_FRAME_BASE + gpuColumnCount
+        this.overlayColumns = overlayColumns
+        overlayValueCount = if (overlayColumns) OVERLAY_VALUE_COUNT else 0
+        stride = VALUES_PER_FRAME_BASE + gpuColumnCount + overlayValueCount
         this.startedElapsedNs = startedElapsedNs
         this.stoppedElapsedNs = 0L
         isRecording = true
@@ -112,6 +132,21 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
         tCaptureNs: Long,
         tRenderStartNs: Long,
         tRenderEndNs: Long,
+        /**
+         * ④ H칸(좌표 평활·hold)의 구간 길이(ns). **CPU 벽시계**이며 GPU 시계가 아니다.
+         * 재지 않았으면 [MISSING_NS].
+         */
+        stageHNs: Long = MISSING_NS,
+        /**
+         * 🔴 **그 프레임에 실제로 그린 박스 수.** `0`은 정상값이고
+         * [OVERLAY_BOXES_UNRECORDED]만 "기록하지 않았다"다.
+         */
+        overlayBoxes: Int = OVERLAY_BOXES_UNRECORDED,
+        /**
+         * 그 프레임이 쓴 탐지 결과의 **게시 시각**(`CLOCK_BOOTTIME`).
+         * 🔴 **박스가 0개(빈 결과)여도 적는다** — [MISSING_NS]는 첫 추론 완료 전만이다.
+         */
+        tOverlaySourceNs: Long = MISSING_NS,
     ): Int {
         if (!isRecording) return NO_SLOT
         var chunk = if (chunks.isEmpty()) null else chunks[chunks.size - 1]
@@ -130,6 +165,14 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
         while (g < gpuColumnCount) {
             chunk[cursor + VALUES_PER_FRAME_BASE + g] = MISSING_NS
             g++
+        }
+        // ④ 오버레이 칸은 **GPU 칸 뒤**에 온다. 그 순서 덕에 [setGpuTiming]의 오프셋 계산이
+        // 그대로 남는다(back-fill 오프셋을 건드리면 열이 한 칸씩 밀린 채 그럴듯해 보인다).
+        if (overlayValueCount > 0) {
+            val o = cursor + VALUES_PER_FRAME_BASE + gpuColumnCount
+            chunk[o] = stageHNs
+            chunk[o + 1] = overlayBoxes.toLong()
+            chunk[o + 2] = tOverlaySourceNs
         }
         cursor += stride
         val slot = recordedFrames
@@ -173,7 +216,10 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
         val emitGpu = includeGpuColumns && gpuColumnCount > 0
         var rows = 0
         BufferedWriter(FileWriter(file), 1 shl 16).use { out ->
-            out.write(if (emitGpu) CSV_HEADER + ',' + gpuHeader else CSV_HEADER)
+            val header = StringBuilder(CSV_HEADER)
+            if (emitGpu) header.append(',').append(gpuHeader)
+            if (overlayValueCount > 0) header.append(',').append(OVERLAY_HEADER)
+            out.write(header.toString())
             out.write("\n")
             val line = StringBuilder(128)
             for (chunkIndex in chunks.indices) {
@@ -194,6 +240,17 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
                             appendMs(line.append(','), chunk[i + VALUES_PER_FRAME_BASE + g])
                             g++
                         }
+                    }
+                    if (overlayValueCount > 0) {
+                        val o = i + VALUES_PER_FRAME_BASE + gpuColumnCount
+                        // stage_h_ms — ms **소수 6자리**다. 🔴 소수 1자리로 쓰면 싼 샘플이
+                        // 0.0이 되고 하네스의 하한 가드(`> 0`)가 그 샘플만 골라 폐기한다
+                        // (E·F·G에 같은 요구가 있는 이유와 글자 그대로 같다).
+                        appendMs(line.append(','), chunk[o])
+                        // overlay_boxes — **개수**다. 0은 정상값이고 -1만 "기록 안 함"이다.
+                        line.append(',').append(chunk[o + 1])
+                        // t_overlay_source_ns — 정수 ns 그대로.
+                        line.append(',').append(chunk[o + 2])
                     }
                     line.append('\n')
                     out.write(line.toString())
@@ -232,6 +289,29 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
 
         /** GPU 칸의 "아직/영영 없음". CSV에는 `-1`로 나간다. */
         const val MISSING_NS = -1L
+
+        /** ④ 오버레이 칸 수(`stage_h_ms` / `overlay_boxes` / `t_overlay_source_ns`). */
+        const val OVERLAY_VALUE_COUNT = 3
+
+        /**
+         * 🔴 `overlay_boxes`의 **"이 프레임을 기록하지 않았다"**. `0`은 "그 프레임에 그린
+         * 박스가 없었다"는 **정상값**이므로 없음의 표식으로 쓸 수 없다 —
+         * 하네스의 폐기 하한이 `>= 0`인 것과 같은 논거다(`docs/FRAME_LOG_SCHEMA.md` §2).
+         */
+        const val OVERLAY_BOXES_UNRECORDED = -1
+
+        /**
+         * ④ 오버레이 열 헤더(스키마 v7). 이름은 `lib/frame_log.py`의 `OPTIONAL_COLUMNS`와
+         * **글자까지** 같아야 한다.
+         *
+         * 🔴 **GPU 열이 아니다.** `stage_h_ms`는 CPU 벽시계(`elapsedRealtimeNanos`, GL 스레드)라
+         * `gpu_sum_ms`·`stage_d_total_ms`에 들어가지 않고, 그래서 `RenderArm.gpuColumns`가
+         * 아니라 여기 상수로 있다(그 목록에 넣으면 GPU 열로 읽힌다).
+         *
+         * 🔴 **신선도(`t_render_start_ns − t_overlay_source_ns`)를 싣지 않는다** — 유도값이라
+         * PC가 계산한다. 같은 이름의 열을 앱이 내면 하네스가 미지 열 경고를 낸다.
+         */
+        const val OVERLAY_HEADER = "stage_h_ms,overlay_boxes,t_overlay_source_ns"
 
         /**
          * 헤더 규칙 (스키마 v4):

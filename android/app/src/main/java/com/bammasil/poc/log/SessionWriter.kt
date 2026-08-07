@@ -9,6 +9,7 @@ import com.bammasil.poc.gl.GpuTimerReport
 import com.bammasil.poc.gl.GpuTimerRing
 import com.bammasil.poc.detect.DetectContract
 import com.bammasil.poc.detect.DetectGeometryCheck
+import com.bammasil.poc.detect.DetectOverlayPublishFacts
 import com.bammasil.poc.detect.DetectParityDumper
 import com.bammasil.poc.detect.DetectParityResult
 import com.bammasil.poc.detect.DetectPostprocessor
@@ -16,6 +17,9 @@ import com.bammasil.poc.detect.DetectReport
 import com.bammasil.poc.detect.DetectRotationFacts
 import com.bammasil.poc.gl.HighlightOverlay
 import com.bammasil.poc.gl.LabGlsl
+import com.bammasil.poc.gl.OverlayClassColors
+import com.bammasil.poc.gl.OverlayCoordMap
+import com.bammasil.poc.gl.OverlaySmootherFacts
 import com.bammasil.poc.gl.RenderArm
 import com.bammasil.poc.source.AnalysisConfig
 import com.bammasil.poc.source.FrameRequest
@@ -111,6 +115,14 @@ class SessionFacts(
      * 그래도 관측값(`max|d|`)을 싣는다. 통과/실패보다 관측값이 먼저다(규약 §7).
      */
     val detectGeometry: DetectGeometryCheck.Result?,
+    /**
+     * ④ 게시(③→④)의 런 사실. **③ 결과를 그리는 arm이 아니면 null**이고 그때는 `overlay`
+     * 블록에 게시 키가 나가지 않는다(다른 블록들과 같은 규약).
+     * 🔴 **A12 (2) quiesce 뒤에 뜬 스냅샷이어야 한다** — 그 앞이면 마지막 게시가 빠진다.
+     */
+    val overlayPublish: DetectOverlayPublishFacts?,
+    /** ④ H칸(좌표 평활·hold)의 런 사실. 위와 같은 규약으로 null일 수 있다. */
+    val overlaySmoothing: OverlaySmootherFacts?,
 )
 
 /**
@@ -307,8 +319,31 @@ object SessionWriter {
      * 새 열이 하나도 늘지 않았다(스키마 v6 = "`detect.csv`라는 파일과 그 열들"이다).
      * 앞선 라운드가 v6를 선언한 채 `detect` **블록만** 낸 것도 같은 이유였다 — 그때는
      * `detect.enabled`가 false였고 지금은 추론이 도는 arm에서 true다.
+     *
+     * v7에서 ③→④가 이어졌다: `frames.csv`에 ④ 오버레이 열 **3개**가 늘었다
+     * (`stage_h_ms` / `overlay_boxes` / `t_overlay_source_ns` —
+     * `FrameLogRecorder.OVERLAY_HEADER`). 🔴 **GPU 열이 아니다** — `stage_h_ms`는 CPU 벽시계라
+     * `gpu_sum_ms`·`stage_d_total_ms`에 들어가지 않고, `overlay_boxes`는 시간이 아니라 개수라
+     * 폐기 하한이 `>= 0`이다(**0은 정상값이다**).
+     *
+     * 🔴 **신선도(`t_render_start_ns − t_overlay_source_ns`) 열을 내지 않는다** — 유도값이라
+     * PC가 계산한다(앱이 같은 이름 열을 내면 미지 열 경고가 난다).
+     *
+     * ⚠ **6에서 7로 올린 것은 이 앱이 그 열을 실제로 내기 시작했기 때문이다.** 하네스는 이미
+     * v7이었고(`docs/FRAME_LOG_SCHEMA.md` §6대로 하네스가 먼저 들어간다), 앱이 6을 선언한 채
+     * v7 열을 실으면 "앱이 하네스보다 뒤처졌다"는 **거짓 경고**가 그 열이 실제로 있는 로그에
+     * 붙는다(v4→v5 때와 같은 논거다).
      */
-    const val SCHEMA_VERSION = 6
+    const val SCHEMA_VERSION = 7
+
+    /**
+     * ④ 좌표 매핑에서 **분석 치수와 처리 치수의 종횡비가 같다고 볼 허용치**.
+     *
+     * ⚠ **우리가 선언한 검사 조건이지 계약값이 아니다**(`DetectGeometryCheck.TOLERANCE_PX`와
+     * 같은 부류다). 근거: 1280×720(1.7778)과 640×360(1.7778)은 정확히 같고, 실제로 어긋나는
+     * 조합(16:9 vs 4:3 = 1.7778 vs 1.3333)은 0.44 떨어져 있어 자릿수가 한참 멀다.
+     */
+    const val ASPECT_TOLERANCE = 1e-3
 
     fun write(file: File, facts: SessionFacts) {
         file.writeText(build(facts).toString(2) + "\n")
@@ -462,7 +497,16 @@ object SessionWriter {
                     "t_render_start_ns",
                     "GLSurfaceView.Renderer.onDrawFrame 진입 직후, updateTexImage 전 " +
                         "(도착 시각 AtomicLong을 먼저 소비한 뒤 찍는다 — 순서를 뒤집으면 " +
-                        "t_recv > t_render_start 가 되어 하네스 교차검사 A가 거짓 위반을 낸다)"
+                        "t_recv > t_render_start 가 되어 하네스 교차검사 A가 거짓 위반을 낸다). " +
+                        "⚠ **v7부터 이 스탬프 앞에 한 줄이 더 있다**: ④ 게시 스냅샷 읽기다" +
+                        "(t_render_start_ns보다 **먼저** 읽어야 어떤 프레임도 자기 렌더 " +
+                        "시작보다 미래에 게시된 결과를 쓰지 않는다 — overlay.publish.clock). " +
+                        "🔴 그 줄은 **arm과 무관하게 실행되지만**(오버레이 arm이 아니면 조건이 " +
+                        "false여서 참조 읽기조차 하지 않는다) **할당·GL 호출·syscall이 없고 " +
+                        "계측 창 밖이다** — 즉 passthrough arm의 승격 베이스라인 동등성은 " +
+                        "유지된다(그 arm은 query를 하나도 걸지 않으므로 GPU 동작이 " +
+                        "그대로이고, 이 줄이 t_render_start_ns 앞에 있어 render_latency_ms에도 " +
+                        "들어가지 않는다)"
                 )
                 .put(
                     "t_render_end_ns",
@@ -700,7 +744,9 @@ object SessionWriter {
             "패스스루 arm에는 query를 하나도 걸지 않는다 — query 자체가 GPU 동작과 드라이버 " +
                 "스케줄링을 바꾸므로, 승격 베이스라인을 재현하는 경로에 넣으면 그 기준이 " +
                 "기준이 아니게 된다. stage_i_ms는 ④ 오버레이 arm" +
-                "(highlight_boxes / highlight_boxes_stress)이 낸다"
+                "(highlight_boxes / highlight_boxes_stress / detect_cpu_highlight)이 낸다. " +
+                "🔴 stage_h_ms는 **GPU 열이 아니다** — CPU 벽시계(GL 스레드)라 이 블록의 " +
+                "어느 칸에도 들어가지 않는다(overlay.smoothing 참고)"
         )
         return json
     }
@@ -896,6 +942,25 @@ object SessionWriter {
             // ④ arm의 ② 자리는 **단순 복사**다. 오버레이 서술은 root의 overlay 블록에 있다.
             RenderArm.HIGHLIGHT_BOXES, RenderArm.HIGHLIGHT_BOXES_STRESS ->
                 putHighlightCopy(json, facts)
+            // ── ③→④ 연결 세트(v7) ────────────────────────────────────────
+            // ② 자리는 위 두 부류를 **합친 것**이다: 오버레이 arm이므로 단순 복사이고
+            // (putHighlightCopy) 동시에 탐지가 도는 arm이다(detect_round_scope).
+            // 🔴 짝의 서술을 그대로 재사용하고 else 낙하로 처리하지 않는다.
+            RenderArm.DETECT_CPU_HIGHLIGHT -> {
+                putHighlightCopy(json, facts)
+                json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
+            }
+            RenderArm.DETECT_CPU_HIGHLIGHT_1Q -> {
+                putHighlightCopy(json, facts)
+                json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
+                putSingleFrameQueryNotes(json, RenderArm.DETECT_CPU_HIGHLIGHT_1Q)
+            }
+            // 오버레이가 없는 3패스 골격 + 탐지. 짝은 detect_cpu다.
+            RenderArm.DETECT_CPU_1Q -> {
+                putBlit2Pass(json)
+                json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
+                putSingleFrameQueryNotes(json, RenderArm.DETECT_CPU_1Q)
+            }
         }
         return json
     }
@@ -1139,12 +1204,31 @@ object SessionWriter {
         json.put("upstream_reference", "scripts/emphasize.py")
         json.put("spec_provenance", RenderArm.HIGHLIGHT_SPEC_PROVENANCE)
         // 🔴 조건. 지우지 말 것.
-        json.put("box_count", facts.arm.highlightBoxCount)
+        val dynamicBoxes = facts.arm.usesDynamicHighlightBoxes
+        if (dynamicBoxes) {
+            // 🔴 **개수를 지어내지 않는다.** 이 arm의 개수는 선언된 조건이 아니라 프레임마다
+            //    다른 관측값이고, 고정값을 적으면 그것이 곧 거짓 조건이 된다.
+            json.put("box_count", JSONObject.NULL)
+            json.put("box_count_dynamic", true)
+            json.put("box_count_column", "overlay_boxes")
+            json.put("box_count_note", RenderArm.OVERLAY_DYNAMIC_BOX_NOTE)
+        } else {
+            json.put("box_count", facts.arm.highlightBoxCount)
+            json.put("box_count_dynamic", false)
+        }
         json.put("box_count_provenance", RenderArm.HIGHLIGHT_BOX_PROVENANCE)
         json.put(
             "box_source",
-            "🔴 **정적 더미 박스다.** ③ 탐지 결과가 아니다(③ 미구현). 난수를 쓰지 않으므로 " +
-                "프레임마다 완전히 같고, 그래서 재현 가능하다"
+            if (dynamicBoxes) {
+                "🔴 **③ 탐지 결과다.** DetectOverlayPublisher가 게시한 스냅샷을 GL 스레드가 " +
+                    "H칸(좌표 평활·hold)에 태워 그린다 — 정적 더미가 아니므로 **프레임마다 " +
+                    "다르고 재현 가능하지 않다.** 같은 장면을 다시 찍어도 같은 박스가 나오지 " +
+                    "않는다. 좌표 공간의 사슬은 coordinate_map에, 평활 정책은 smoothing에 있다"
+            } else {
+                "🔴 **정적 더미 박스다.** ③ 탐지 결과가 아니다. 난수를 쓰지 않으므로 " +
+                    "프레임마다 완전히 같고, 그래서 재현 가능하다. " +
+                    "⚠ ③ 결과를 그리는 arm은 detect_cpu_highlight / _1q이며 이 arm이 아니다"
+            }
         )
         json.put("shape", "이중 스트로크 (검정 밑선 + 대비색 본선)")
         json.put(
@@ -1223,8 +1307,311 @@ object SessionWriter {
             }
         )
         json.put("gpu_status", facts.overlayStatus)
+        // ── ③→④ 연결 arm에만 있는 것 (스키마 v7) ──────────────────────────
+        if (dynamicBoxes) {
+            json.put("class_color_mapping", buildOverlayClassColorMapping(facts))
+            json.put("coordinate_map", buildOverlayCoordinateMap(facts))
+            json.put("smoothing", buildOverlaySmoothing(facts))
+            json.put("publish", buildOverlayPublish(facts))
+            json.put("csv_columns", buildOverlayCsvColumns())
+            // 🔴 **버린 것의 개수는 이 블록의 최상위에 둔다.** 조용히 버리지 않는다는 규약의
+            //    실체이고, 하위 블록에 묻으면 읽는 사람이 찾지 못한다.
+            putOverlayDiscards(json, facts)
+        }
         return json
     }
+
+    /**
+     * 🔴 **세고 버린 것들.** 두 값 모두 "거른 개수"이며 **그린 개수가 아니다.**
+     * `overlay.rejected_inverted`는 후처리가 센 `detect.run.inverted_boxes`와 **교차 대조한다** —
+     * 두 수가 다르면 어느 단계가 역전을 만들었는지가 갈린다.
+     */
+    private fun putOverlayDiscards(json: JSONObject, facts: SessionFacts) {
+        val p = facts.overlayPublish
+        val s = facts.overlaySmoothing
+        if (p == null) {
+            json.put("rejected_inverted", JSONObject.NULL)
+            json.put("dropped_over_cap", JSONObject.NULL)
+            json.put(
+                "discards_note",
+                "게시 사실을 잡지 못했다 — 값을 지어내지 않는다"
+            )
+            return
+        }
+        json.put("rejected_inverted", p.rejectedInverted)
+        json.put(
+            "rejected_inverted_note",
+            "🔴 **역전 박스(x2<x1 / y2<y1)를 세고 그리지 않은 수다**(규약 §5-3). 후처리는 " +
+                "거르지 않고 세기만 하므로 그 박스가 게시자까지 온다 — 그리면 면적이 0이거나 " +
+                "음수인 사각형이 화면 가장자리에 얇은 선으로 남고 그건 사용자에게 보이는 " +
+                "쓰레기다. 🔴 **detect.run.inverted_boxes와 교차 대조할 것** — 그 값은 후처리가 " +
+                "센 런 총계이고 이 값은 게시자가 거른 런 총계다. 두 수가 다르면 어느 단계가 " +
+                "역전을 만들었는지가 갈린다(게시자는 게시된 추론만 보고, 후처리는 모든 추론을 " +
+                "본다 — 게시자가 꺼져 있던 구간이 없으면 두 수는 같아야 한다). " +
+                "⚠ 클램프로 막지 않는다(클램프가 바로 그 면적 0 박스를 만들었다)"
+        )
+        // 🔴 상한 초과는 **두 자리에서** 생긴다. 합치지 않고 갈라 싣는다 — 어느 쪽이 넘쳤는지가
+        //    사라지면 상한을 올려야 할 곳을 못 찾는다.
+        json.put(
+            "dropped_over_cap",
+            JSONObject()
+                .put("publish", p.droppedOverCap)
+                .put("smoothing", s?.droppedOverCap ?: JSONObject.NULL)
+                .put(
+                    "note",
+                    "상한(smoothing.box_cap)을 넘어 **세고 버린** 박스 수다 — 조용히 버리지 " +
+                        "않는다. `publish`는 탐지 워커가 게시할 때, `smoothing`은 GL 스레드가 " +
+                        "hold 중인 트랙까지 합쳐 셀 때 넘친 수다(후자는 **프레임마다** 세므로 " +
+                        "같은 초과가 여러 번 계상될 수 있다 — 두 수를 더하지 말 것). " +
+                        "🔴 0이 아니면 그 런의 화면에 실제로 있던 위험물 일부가 그려지지 " +
+                        "않았다는 뜻이고, 그때는 상한을 올려 다시 재야 한다(임의 측정값이다)"
+                )
+        )
+    }
+
+    /**
+     * 🔴 **색을 무엇으로 골랐는지의 전기록.** 이 블록이 없으면 "사람에게 계단 색을 칠했다"를
+     * 나중에 되짚을 수 없다 — 계약 A-4와 모델의 순서가 **반대**이므로 그 위험이 실재한다.
+     *
+     * `contract_a4_conflict`는 [DetectContract.contractConflictText]가 만든 문장을 **재사용**
+     * 한다(사본을 만들면 한쪽만 고쳐진다). 값은 [DetectReport]가 이미 들고 있다.
+     */
+    private fun buildOverlayClassColorMapping(facts: SessionFacts): JSONObject {
+        val json = JSONObject()
+        val publish = facts.overlayPublish
+        json.put(
+            "source",
+            "🔴 **모델 임베드 메타의 names 하나뿐이다**(DetectRuntime.classNames) — " +
+                "INTERFACES.md 계약 A-4의 순서를 쓰지 않는다. 색은 **이름**으로 고르므로" +
+                "(gl/OverlayClassColors) 팀이 A-4를 어느 쪽으로 확정해도 코드가 바뀌지 않는다"
+        )
+        json.put("normalization", OverlayClassColors.NORMALIZATION)
+        json.put(
+            "table",
+            JSONObject()
+                .put(OverlayClassColors.CLASS_STAIRS, OverlayClassColors.STAIRS_COLOR_TEXT)
+                .put(OverlayClassColors.CLASS_PERSON, OverlayClassColors.PERSON_COLOR_TEXT)
+                .put("underline", OverlayClassColors.UNDERLINE_COLOR_TEXT)
+                .put("<unknown>", OverlayClassColors.UNKNOWN_NAME_COLOR_TEXT)
+        )
+        json.put("unknown_policy", OverlayClassColors.UNKNOWN_POLICY)
+        json.put("no_red_reason", RenderArm.HIGHLIGHT_NO_RED_REASON)
+        // 🔴 이 런에서 **실제로 색의 출처가 된** 이름 목록. 선언이 아니라 관측이다.
+        json.put(
+            "class_names_used",
+            JSONArray().apply { publish?.classNamesUsed?.forEach { put(it) } }
+        )
+        json.put(
+            "unknown_names_seen",
+            JSONArray().apply { publish?.unknownNamesSeen?.forEach { put(it) } }
+        )
+        val counts = JSONObject()
+        publish?.countsByClass?.forEach { (name, n) -> counts.put(name, n) }
+        json.put("counts_by_class", counts)
+        json.put(
+            "counts_by_class_note",
+            "🔴 **그린 박스를 정규화된 이름으로 센 값이다**(게시 시점 계수 = 그린 시점과 다를 " +
+                "수 있다: hold 때문에 한 게시가 여러 프레임에 걸쳐 그려지고, 이 표는 " +
+                "**게시당 한 번** 센다). 프레임당 개수는 frames.csv의 overlay_boxes다. " +
+                "키가 `<cls N: ...>` 꼴이면 cls가 **모델 이름 목록의 범위 밖**이었다는 뜻이고 " +
+                "그때 이름을 지어내지 않았다"
+        )
+        // 🔴 기존 생성기를 재사용한다 — 충돌 문장의 사본을 만들지 않는다.
+        json.put("contract_a4_conflict", facts.detect?.contractConflict ?: JSONObject.NULL)
+        json.put(
+            "contract_a4_conflict_note",
+            if (facts.detect?.contractConflict == null) {
+                "이 런에서는 모델의 클래스 순서가 계약 A-4와 **같았다**(또는 보고를 " +
+                    "잡지 못했다) — 그래도 색은 이름으로 고른다"
+            } else {
+                "🔴 위 문장은 detect.classes.contract_conflict와 **같은 문장이다**" +
+                    "(DetectContract.contractConflictText 하나가 만든다). 여기 함께 싣는 " +
+                    "이유는 오버레이 색을 되짚는 사람이 detect 블록까지 안 열어도 이 충돌을 " +
+                    "만나게 하려는 것이다"
+            }
+        )
+        return json
+    }
+
+    /**
+     * ① 센서 → ④ NDC 매핑의 사실. 🔴 **분석 치수와 처리 치수를 나란히 싣는다** — 종횡비가
+     * 어긋나면 두 use case의 시야가 다르다는 뜻이고, 그 crop을 알려 주는 런타임 값이 없어
+     * 매핑이 그만큼 틀린다([OverlayCoordMap.ASSUMPTIONS] (4)).
+     */
+    private fun buildOverlayCoordinateMap(facts: SessionFacts): JSONObject {
+        val json = JSONObject()
+        json.put("formula", OverlayCoordMap.FORMULA)
+        json.put("assumptions", OverlayCoordMap.ASSUMPTIONS)
+        json.put("flip_y", OverlayCoordMap.FLIP_Y)
+        // 🔴 분석 치수(센서 공간) — 값을 지어내지 않는다. 분석 프레임이 없었으면 null이다.
+        val analysis = facts.analysis
+        if (analysis == null) {
+            json.put("analysis_resolution", JSONObject.NULL)
+            json.put(
+                "analysis_resolution_note",
+                "분석 use case가 실제로 준 치수를 못 잡았다(프레임이 하나도 안 왔다) — " +
+                    "값을 지어내지 않는다. Preview 해상도로 대체하지 **않는다**"
+            )
+        } else {
+            json.put("analysis_resolution", "${analysis.width}x${analysis.height}")
+        }
+        if (facts.processWidth > 0 && facts.processHeight > 0) {
+            json.put("process_resolution", "${facts.processWidth}x${facts.processHeight}")
+        } else {
+            json.put("process_resolution", JSONObject.NULL)
+        }
+        // 🔴 두 치수의 종횡비를 **기계로** 대조한다. 문장으로만 두면 어긋난 날 아무 일도 없다.
+        if (analysis != null && facts.processWidth > 0 && facts.processHeight > 0 &&
+            analysis.width > 0 && analysis.height > 0
+        ) {
+            val ar = analysis.width.toDouble() / analysis.height.toDouble()
+            val pr = facts.processWidth.toDouble() / facts.processHeight.toDouble()
+            json.put("analysis_aspect", ar)
+            json.put("process_aspect", pr)
+            json.put("aspect_matches", kotlin.math.abs(ar - pr) <= ASPECT_TOLERANCE)
+            json.put("aspect_tolerance", ASPECT_TOLERANCE)
+            json.put(
+                "aspect_note",
+                "⚠ aspect_matches가 false면 두 use case의 **시야(crop)가 다르다**는 뜻이고 " +
+                    "이 매핑은 그만큼 틀린다 — 그 crop을 알려 주는 런타임 값이 없어 앱이 " +
+                    "보정할 수 없다. 그 런의 박스 위치를 화면 기준으로 인용하지 말 것. " +
+                    "⚠ aspect_tolerance는 **우리가 선언한 검사 조건이지 계약값이 아니다**"
+            )
+        }
+        // 🔴 번호는 DetectGeometryCheck의 KDoc 목록·인라인 주석과 **같아야 한다**(세 자리).
+        json.put(
+            "selfcheck",
+            "detect.geometry(DetectGeometryCheck)의 **검사 5**가 이 매핑을 태운다 — " +
+                "센서 프레임 전체 (0,0,srcW,srcH)가 NDC 전체 (-1,-1,1,1)로 가는지. " +
+                "🔴 그 검사는 **자기 일관성까지**이고 flip_y의 참·거짓도, 호출부가 잘못된 " +
+                "처리 해상도를 넘기는 실수도 잡지 못한다(process 치수가 대수적으로 " +
+                "약분된다) — 후자를 관측하는 것은 이 블록의 " +
+                "analysis_resolution/process_resolution/aspect_matches뿐이다"
+        )
+        return json
+    }
+
+    /** ④ H칸의 정책값과 그 출처. 🔴 **정책값 넷은 전부 임의 측정값이다.** */
+    private fun buildOverlaySmoothing(facts: SessionFacts): JSONObject {
+        val json = JSONObject()
+        json.put("stage", "④ 좌표 평활·hold (버짓 H칸)")
+        json.put("cpu_column", "stage_h_ms")
+        json.put("pipeline_stage_token", "stage4_smoothing")
+        json.put("scope", RenderArm.OVERLAY_STAGE_H_SCOPE)
+        json.put("hold_frames", RenderArm.OVERLAY_HOLD_FRAMES_MEASUREMENT_VALUE)
+        json.put("match_iou", RenderArm.OVERLAY_MATCH_IOU_MEASUREMENT_VALUE.toDouble())
+        json.put("iir_alpha", RenderArm.OVERLAY_IIR_ALPHA_MEASUREMENT_VALUE.toDouble())
+        json.put("box_cap", RenderArm.OVERLAY_BOX_CAP_MEASUREMENT_VALUE)
+        // 🔴 지어낸 계약값을 조용히 굳히지 않기 위한 문장이다. 지우지 말 것.
+        json.put("provenance", RenderArm.OVERLAY_SMOOTHING_PROVENANCE)
+        json.put("hold_cadence_note", RenderArm.OVERLAY_HOLD_CADENCE_NOTE)
+        json.put("no_flicker_design", RenderArm.OVERLAY_NO_FLICKER_DESIGN)
+        json.put(
+            "discard_condition",
+            "match_iou 이상인 측정이 hold_frames 프레임 **연속으로** 없으면 폐기한다. " +
+                "🔴 **TTL은 새 게시가 왔을 때만 다시 찬다** — 같은 스냅샷을 다시 보는 " +
+                "프레임에서는 깎인다(게시 슬롯은 새 게시가 올 때까지 직전 스냅샷을 " +
+                "보존하므로, 프레임마다 재충전하면 탐지가 멈춰도 낡은 박스가 무한히 " +
+                "그려진다). 게시 주기가 실측 ≈9프레임이고 hold가 " +
+                "${RenderArm.OVERLAY_HOLD_FRAMES_MEASUREMENT_VALUE}프레임이므로 **탐지가 " +
+                "정상인 동안은 만료되지 않고**, 사라지는 것은 새 게시에서 그 박스가 빠졌거나 " +
+                "게시가 끊긴 경우다(no_flicker_design 참고). " +
+                "🔴 연결은 **같은 클래스끼리만** 한다(사람과 계단이 겹쳤을 때 색이 서로 " +
+                "뒤바뀌는 것을 막는다)"
+        )
+        json.put(
+            "latency_note",
+            "⚠ **H는 render_latency_ms를 키운다** — GL 스레드에서 도는 CPU 구간이고 " +
+                "onDrawFrame 안에 있으므로 그렇다. **예상된 결과이며 결함이 아니다.** " +
+                "그 증분은 짝 arm(detect_cpu / detect_cpu_1q)의 같은 열과 나란히 놓아야 " +
+                "보이고, 오버레이 GPU 패스(stage_i_ms)와 **다른 물리량**이다"
+        )
+        val s = facts.overlaySmoothing
+        if (s == null) {
+            json.put("run_facts", JSONObject.NULL)
+        } else {
+            json.put(
+                "run_facts",
+                JSONObject()
+                    .put("tracks_created", s.tracksCreated)
+                    .put("tracks_expired", s.tracksExpired)
+                    .put("dropped_over_cap", s.droppedOverCap)
+                    .put("map_failed_frames", s.mapFailedFrames)
+                    .put(
+                        "note",
+                        "🔴 **관측값이지 판정이 아니다.** tracks_expired가 0이 아닌 것은 " +
+                            "결함일 수도 있고 '장면에서 위험물이 실제로 사라졌다'일 수도 " +
+                            "있는데, 가르려면 정답 라벨이 필요하다(하네스의 " +
+                            "safety_regression이 evaluated=false인 이유와 같다). " +
+                            "🔴 map_failed_frames가 0이 아니면 그 프레임들은 좌표를 만들 " +
+                            "치수가 없어(FBO가 아직 없거나 분석 치수가 0) **새 게시를 " +
+                            "소비하지 못했다** — 값을 지어내지 않고 다음 프레임에 다시 " +
+                            "시도한다. 그 프레임에도 hold 중인 트랙은 그대로 그려지므로 " +
+                            "overlay_boxes가 반드시 0인 것은 아니다(런 앞자락에서는 트랙이 " +
+                            "없어 0이다). ⚠ 이 수가 크면 그 런의 앞자락에서 게시가 여러 번 " +
+                            "버려졌다는 뜻이고, t_overlay_source_ns가 그만큼 낡은 값에 " +
+                            "머문다"
+                    )
+            )
+        }
+        return json
+    }
+
+    /** ③→④ 게시의 사실. 🔴 **역전·상한 초과를 조용히 버리지 않았다는 증거다.** */
+    private fun buildOverlayPublish(facts: SessionFacts): JSONObject {
+        val json = JSONObject()
+        json.put("site", "DetectPipeline.infer — gNs 확정 + detect.csv 행 기록 뒤 (parity와 같은 자리)")
+        json.put("allocation_note", RenderArm.OVERLAY_PUBLISH_ALLOCATION_NOTE)
+        json.put(
+            "clock",
+            "t_overlay_source_ns = SystemClock.elapsedRealtimeNanos()(CLOCK_BOOTTIME)이며 " +
+                "frames.csv의 t_recv_ns·t_render_start_ns와 **같은 시계**다. 시각은 슬롯 교체 " +
+                "**직전에** 찍고, GL 스레드는 t_render_start_ns를 찍기 **전에** 읽는다 — " +
+                "그래서 어떤 프레임도 자기 렌더 시작보다 미래에 게시된 결과를 쓰지 않는다"
+        )
+        val p = facts.overlayPublish
+        if (p == null) {
+            json.put("run_facts", JSONObject.NULL)
+            return json
+        }
+        json.put(
+            "run_facts",
+            JSONObject()
+                .put("enabled", p.enabled)
+                .put("publish_count", p.publishCount)
+                .put("boxes_published", p.boxesPublished)
+                .put(
+                    "boxes_published_note",
+                    "🔴 **게시된 박스의 런 총계이고 그린 박스 수가 아니다** — hold 때문에 한 " +
+                        "게시가 여러 표시 프레임에 걸쳐 그려진다. 프레임당 개수는 " +
+                        "frames.csv의 overlay_boxes다"
+                )
+        )
+        // 🔴 버린 것의 개수는 **overlay 블록 최상위**에 있다(putOverlayDiscards) —
+        //    여기 사본을 만들지 않는다.
+        return json
+    }
+
+    /** ④ 오버레이 CSV 열 3개의 규약. 🔴 **열의 뜻을 로그 자체에 남긴다.** */
+    private fun buildOverlayCsvColumns(): JSONObject = JSONObject()
+        .put(
+            "stage_h_ms",
+            "④ 좌표 평활·hold의 구간 길이. 🔴 **CPU 벽시계**(GL 스레드)이므로 gpu_sum_ms에도 " +
+                "stage_d_total_ms에도 들어가지 않는다. ms **소수 6자리**로 쓴다 — 소수 1자리로 " +
+                "쓰면 싼 샘플이 0.0이 되어 하한 가드(> 0)가 그 샘플만 골라 폐기한다"
+        )
+        .put(
+            "overlay_boxes",
+            "🔴 **그 프레임에 실제로 그린 박스 수. `0`은 정상값이고 `-1`만 '기록 안 함'이다.** " +
+                "session.json의 overlay.box_count와 **다른 값이다**(그쪽은 선언된 조건이고 " +
+                "이 arm에서는 null이다)"
+        )
+        .put(
+            "t_overlay_source_ns",
+            "그 프레임이 쓴 탐지 결과의 게시 시각(CLOCK_BOOTTIME). 🔴 **박스가 0개(빈 결과)여도 " +
+                "적는다** — `-1`은 **첫 추론 완료 전**만이다. 신선도" +
+                "(t_render_start_ns − 이 값)는 **PC가 계산한다** — 유도값을 앱이 저장하지 않는다"
+        )
 
     /**
      * ③ 탐지 블록. 🔴 **하네스가 값을 읽고 판정에 쓰는 유일한 세션 블록이다**
@@ -2656,6 +3043,15 @@ object SessionWriter {
                 facts.arm.usesComputeStage2 ->
                     "그리기 패스는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), " +
                         "통계 패스 2개는 glDispatchCompute"
+                facts.arm.usesDynamicHighlightBoxes ->
+                    "패스1·2·4는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), " +
+                        "패스3(④ 오버레이)은 glDrawArrays(" +
+                        "${HighlightOverlay.GL_PRIMITIVE_NAME}) **최대 1회**다 — 정점 수가 " +
+                        "**프레임마다 다르다**(그 프레임에 그린 박스 수 × 박스당 " +
+                        "${HighlightOverlay.VERTS_PER_BOX}정점, 상한 " +
+                        "${HighlightOverlay.MAX_BOX_COUNT * HighlightOverlay.VERTS_PER_BOX}). " +
+                        "🔴 **박스가 0개인 프레임에서는 드로우콜을 내지 않는다**(0은 정상값이다) " +
+                        "— 그때 패스3은 바인드·뷰포트뿐이다. 개수는 frames.csv의 overlay_boxes"
                 facts.arm.usesHighlightOverlay ->
                     "패스1·2·4는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), " +
                         "패스3(④ 오버레이)은 glDrawArrays(" +
@@ -2753,13 +3149,23 @@ object SessionWriter {
                         Triple(
                             "stage4_highlight",
                             "FBO_B (처리 해상도. **clear하지 않고 덧그린다**)",
-                            "④ 이중 스트로크 박스 ${facts.arm.highlightBoxCount}개" +
+                            "④ 이중 스트로크 박스 " +
+                                (if (facts.arm.usesDynamicHighlightBoxes) {
+                                    "**프레임마다 다른 개수**(frames.csv의 overlay_boxes)"
+                                } else {
+                                    "${facts.arm.highlightBoxCount}개"
+                                }) +
                                 "(검정 밑선 + 대비색 본선, 비채움). " +
                                 "얇은 사각형 스트로크 quad를 " +
                                 "${HighlightOverlay.GL_PRIMITIVE_NAME} **드로우콜 1회**로 " +
                                 "그린다. 두께는 처리 해상도의 짧은 변에서 계산한다" +
                                 "(720p 기준 ${RenderArm.HIGHLIGHT_STROKE_PX_AT_720P}px). " +
-                                "박스는 정적 더미이고 ③ 결과가 아니다 — 자세한 것은 " +
+                                (if (facts.arm.usesDynamicHighlightBoxes) {
+                                    "🔴 박스는 **③ 탐지 결과**를 H칸(좌표 평활·hold)에 태운 " +
+                                        "것이며 정적 더미가 아니다 — 평활 정책과 좌표 사슬은 "
+                                } else {
+                                    "박스는 정적 더미이고 ③ 결과가 아니다 — 자세한 것은 "
+                                }) +
                                 "session.json의 overlay 블록",
                         ),
                         Triple(
