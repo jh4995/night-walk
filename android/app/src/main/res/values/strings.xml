@@ -6,4 +6,10 @@
     <string name="idle">대기 중 — 카메라 프리뷰만 흐르고 있다</string>
     <string name="lighting_label">조명 조건 (session.json 에 그대로 들어간다)</string>
     <string name="arm_label">렌더 arm (pipeline_stages 로 나간다 — arm 이 다르면 비교 조건이 다르다)</string>
+    <!--
+      ④ 강조가 실제로 어떻게 보이는지 촬영·캡처할 때 정보 패널을 접는 버튼.
+      ⚠ 정지 버튼은 접어도 남는다 — 뒤로가기로 끝내면 flush 가 버려진다(알려진 이슈 10).
+    -->
+    <string name="hud_hide">정보 숨기기</string>
+    <string name="hud_show">정보 보기</string>
 </resources>

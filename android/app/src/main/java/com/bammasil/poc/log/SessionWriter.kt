@@ -41,6 +41,18 @@ class SessionFacts(
     /** `BuildConfig.GIT_DIRTY` — `"true"` / `"false"` / `"unknown"`의 3-상태 문자열. */
     val gitDirty: String,
     val lightingCondition: String,
+    /**
+     * 화면의 정보 패널(상태 텍스트 + 스피너)이 **정지 시점에** 접혀 있었는가.
+     *
+     * ④ 강조가 도는 모습을 촬영·캡처하려고 접는 버튼이 있고, 그 패널은 `GLSurfaceView`와
+     * **별 서피스**라 접어도 GL 스레드의 계측 창(`t_render_start_ns` ~ `t_render_end_ns`,
+     * GPU query)은 달라지지 않는다. 그래도 지속 런에서 컴포지션·UI 스레드 일이 줄어드는 것은
+     * **조건 차이**이므로 남긴다 — 조건을 기록하지 않고 넘기지 않는다.
+     *
+     * 🔴 **런 내내 한 상태였다는 뜻이 아니다** — 런 도중에도 접을 수 있어서 이 값은
+     * 정지 시점의 스냅샷이다. 촬영용으로 접었다 폈다 한 런은 **비교 근거로 쓰지 않는다.**
+     */
+    val hudInfoHidden: Boolean,
     /** **측정 시작 시점에 잠근 arm.** 스피너의 현재 값이 아니다. */
     val arm: RenderArm,
     val request: FrameRequest,
@@ -384,6 +396,10 @@ object SessionWriter {
         root.put("pipeline_stages", stages)
         root.put("render_arm", facts.arm.id)
         root.put("lighting_condition", facts.lightingCondition)
+        // 🔴 조건이지 판정이 아니다. 접기는 GLSurfaceView 밖의 View 이므로 GL 계측 창을
+        //    건드리지 않지만, 지속 런에서 컴포지션·UI 일이 줄어드는 것은 조건 차이다.
+        //    ⚠ 정지 시점의 값이며 "런 내내 그랬다"는 뜻이 아니다 (SessionFacts.hudInfoHidden).
+        root.put("hud_info_hidden", facts.hudInfoHidden)
         root.put("capture_clock_base", facts.clock.base)
         root.put("source_kind", facts.sourceKind)
 

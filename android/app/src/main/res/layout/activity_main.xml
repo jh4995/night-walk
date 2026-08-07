@@ -10,7 +10,17 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!--
+      정보 패널. 🔴 **접을 수 있다** (아래 hud_button) — ④ 강조가 실제로 어떻게 보이는지
+      촬영·캡처할 때 이 패널이 화면 절반을 가리기 때문이다.
+
+      ⚠ 이 패널은 GLSurfaceView 와 **별 서피스**이므로 접어도 GL 스레드의 계측 창
+      (t_render_start_ns ~ t_render_end_ns, GPU query)은 달라지지 않는다. 다만 지속 런에서
+      컴포지션·UI 스레드 일이 줄어드는 것은 **조건 차이**라, 접힌 상태를 session.json 의
+      `hud_info_hidden` 으로 남긴다 (조건을 기록하지 않고 넘기지 않는다).
+    -->
     <LinearLayout
+        android:id="@+id/info_panel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
@@ -53,12 +63,42 @@
             android:id="@+id/arm_spinner"
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
+    </LinearLayout>
+
+    <!--
+      컨트롤 바. 🔴 **정보 패널과 갈라서 화면 아래에 둔다** — 패널을 접었을 때도
+      정지 버튼에 반드시 닿아야 한다. 뒤로가기로 측정을 끝내면 flush 가 버려질 수 있어
+      (알려진 이슈 10) 정지 버튼이 유일한 안전한 종료 경로다.
+
+      🔴 **아래 여백은 코드가 시스템 인셋으로 넣는다** (MainActivity 의 control_bar 리스너).
+      여기에 dp 를 박으면 3버튼 내비게이션 기기에서 버튼이 **내비바 위에 겹친다** — 실제로
+      그렇게 만들었다가 정지 버튼 자리에서 홈·뒤로가 눌리는 것을 확인했다. 뒤로가가 눌리면
+      그게 곧 이슈 10 이다.
+      ⚠ 인셋을 **루트 FrameLayout 에 주면 안 된다** — GLSurfaceView 가 같이 줄어들어
+      표시 경로의 present 기하가 바뀌고 승격 베이스라인과 비교가 끊긴다.
+    -->
+    <LinearLayout
+        android:id="@+id/control_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:background="#99000000">
+
+        <Button
+            android:id="@+id/hud_button"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="@string/hud_hide" />
 
         <Button
             android:id="@+id/toggle_button"
-            android:layout_width="match_parent"
+            android:layout_width="0dp"
+            android:layout_weight="1"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
+            android:layout_marginStart="8dp"
             android:text="@string/start" />
     </LinearLayout>
 

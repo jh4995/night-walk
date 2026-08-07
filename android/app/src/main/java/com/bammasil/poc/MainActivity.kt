@@ -20,6 +20,8 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.bammasil.poc.detect.DetectContract
 import com.bammasil.poc.detect.DetectOverlayPublisher
 import com.bammasil.poc.detect.DetectParityDumper
@@ -59,6 +61,25 @@ class MainActivity : ComponentActivity() {
     private lateinit var lightingSpinner: Spinner
     private lateinit var armSpinner: Spinner
     private lateinit var frameSource: FrameSource
+
+    /**
+     * 접을 수 있는 정보 패널(상태 텍스트 + 조명·arm 스피너). ④ 강조가 실제로 어떻게 보이는지
+     * 촬영·캡처할 때 화면 절반을 가리기 때문에 [hudButton]으로 접는다.
+     *
+     * ⚠ 이 패널은 [glView]와 **별 서피스**라 접어도 GL 스레드의 계측 창
+     * (`t_render_start_ns` ~ `t_render_end_ns`, GPU query)은 달라지지 않는다. 다만 지속 런에서
+     * 컴포지션·UI 스레드 일이 줄어드는 것은 **조건 차이**이므로 [hudInfoHidden]을
+     * `session.json`에 남긴다 — 조건을 기록하지 않고 넘기지 않는다.
+     */
+    private lateinit var infoPanel: View
+    private lateinit var hudButton: Button
+
+    /**
+     * 정보 패널이 접혀 있는가. 🔴 **측정 시작 시점의 값이 아니라 현재 값이다** — 런 도중에도
+     * 접을 수 있고(촬영이 그 목적이다) 그래서 `session.json`에는 **정지 시점의 값**이 실린다.
+     * 런 내내 한 상태였는지는 이 값이 말해 주지 않는다.
+     */
+    private var hudInfoHidden = false
 
     private val recorder = FrameLogRecorder()
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -163,6 +184,37 @@ class MainActivity : ComponentActivity() {
         lightingSpinner = findViewById(R.id.lighting_spinner)
         armSpinner = findViewById(R.id.arm_spinner)
         glView = findViewById(R.id.gl_view)
+        infoPanel = findViewById(R.id.info_panel)
+        hudButton = findViewById(R.id.hud_button)
+
+        // 🔴 컨트롤 바를 시스템 내비게이션 바 **위로** 밀어 올린다.
+        //    이걸 안 하면 3버튼 내비 기기에서 정지 버튼이 홈·뒤로 버튼과 겹치고, 정지를
+        //    누르려다 뒤로가가 눌리면 **flush 가 버려진다**(알려진 이슈 10). 실기기에서
+        //    실제로 그렇게 눌리는 것을 확인하고 넣었다.
+        //    ⚠ 인셋을 루트에 주지 않는다 — GLSurfaceView 가 같이 줄어들면 present 기하가
+        //      바뀌어 승격 베이스라인과 비교가 끊긴다. 이 바 하나에만 준다.
+        //    ⚠ dp 를 박지 않는다. 내비 방식(3버튼/제스처)과 기기마다 값이 다르다.
+        val controlBar = findViewById<View>(R.id.control_bar)
+        val controlBarBasePadding = controlBar.paddingBottom
+        ViewCompat.setOnApplyWindowInsetsListener(controlBar) { view, insets ->
+            val bottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+            view.setPadding(
+                view.paddingLeft,
+                view.paddingTop,
+                view.paddingRight,
+                controlBarBasePadding + bottom,
+            )
+            insets
+        }
+
+        // 정보 패널 접기/펴기. 측정 중에도 눌릴 수 있게 잠그지 않는다 — ④ 강조가 도는 모습을
+        // 찍는 것이 이 버튼의 목적이고, 렌더 경로를 건드리지 않으므로 잠글 이유가 없다.
+        // ⚠ GONE 을 쓴다(INVISIBLE 이 아니다) — INVISIBLE 은 자리를 그대로 차지해 화면이 안 열린다.
+        hudButton.setOnClickListener {
+            hudInfoHidden = !hudInfoHidden
+            infoPanel.visibility = if (hudInfoHidden) View.GONE else View.VISIBLE
+            hudButton.setText(if (hudInfoHidden) R.string.hud_show else R.string.hud_hide)
+        }
 
         val thread = HandlerThread("frame-signal").apply { start() }
         signalThread = thread
@@ -525,6 +577,8 @@ class MainActivity : ComponentActivity() {
                     gitCommit = BuildConfig.GIT_COMMIT,
                     gitDirty = BuildConfig.GIT_DIRTY,
                     lightingCondition = lighting,
+                    // 정지 시점의 값이다. 런 내내 한 상태였다는 뜻이 아니다.
+                    hudInfoHidden = hudInfoHidden,
                     arm = arm,
                     request = FRAME_REQUEST,
                     negotiated = negotiated,
