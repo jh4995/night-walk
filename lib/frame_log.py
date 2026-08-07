@@ -704,6 +704,19 @@ RENDER_ARM_DETECT_CPU = "detect_cpu"
 RENDER_ARM_DETECT_NNAPI = "detect_nnapi"
 RENDER_ARM_DETECT_XNNPACK = "detect_xnnpack"
 
+# `_norot` 접미사 = **회전을 의도적으로 적용하지 않는 짝 arm** (v6, 2026-08-07).
+# 🔴 `detect_cpu`와 다른 것은 **전처리가 rotationDegrees를 적용하는가** 하나뿐이다
+#   (`rotation_site = "none"` — 덤프 포맷 규약 §4-1). `_1q`·`_prof`와 같은 취지로 arm을
+#   가른다: 조건이 다르면 같은 코드라도 같은 조건이 아니고, 그 사실을 담을 키가
+#   `pipeline_stages`에는 없다.
+#
+# 왜 필요한가: 회전을 붙이면 E의 **값**이 바뀐다(정의는 안 바뀐다 — E는 여전히
+#   `DetectPipeline`이 t를 찍는 위치다). 그 차이를 "E가 회귀했다"로 읽지 않으려면 **같은
+#   세션에서 회전 전 기준선**을 함께 재야 한다. 이 arm이 그 분모다.
+#   ⚠ 회전 미적용 arm의 박스는 **옆으로 누운 장면**에서 나온 것이라 탐지 품질 근거로
+#     쓰지 않는다(알려진 이슈 29와 같은 상태다 — 다만 이쪽은 **의도된** 것이다).
+RENDER_ARM_DETECT_CPU_NOROT = "detect_cpu_norot"
+
 # ── `_prof` 접미사 = **ORT 프로파일링을 켠 계측** (v6) ─────────────────────
 # 🔴 **렌더·추론 경로는 접미사 없는 짝과 글자 그대로 같다.** 모델도 EP도 전처리도 같고,
 #   다른 것은 **ORT 프로파일러가 켜져 있는가** 하나뿐이다. `_1q` 접미사와 **같은 취지**로
@@ -765,6 +778,8 @@ RENDER_ARMS = (
     RENDER_ARM_DETECT_CPU,
     RENDER_ARM_DETECT_NNAPI,
     RENDER_ARM_DETECT_XNNPACK,
+    # 회전 미적용 짝 arm(v6, 2026-08-07) — 위 블록 참고. 회전 전 E의 기준선이다.
+    RENDER_ARM_DETECT_CPU_NOROT,
     RENDER_ARM_DETECT_CPU_PROF,
     RENDER_ARM_DETECT_NNAPI_PROF,
     RENDER_ARM_DETECT_XNNPACK_PROF,

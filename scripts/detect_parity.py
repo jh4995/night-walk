@@ -11,9 +11,19 @@
 
 답한다: 폰의 E/F/G가 **같은 입력에서 PC와 같은 값을 내는가**(이식이 값을 안 바꿨는가).
 답하지 못한다: **모델이 옳은가**(mAP·누락률 — 정답 라벨이 필요하다). 이 스크립트의 결과를
-"모델이 잘 맞힌다"의 증거로 쓰면 틀린다. 게다가 앱은 `rotationDegrees`를 적용하지 않아
-(알려진 이슈 29) 모델이 **옆으로 누운 장면**을 본다 — `rotation_applied=false`면 아래
-`warnings`에 그 문장이 반드시 나간다(규약 §4).
+"모델이 잘 맞힌다"의 증거로 쓰면 틀린다.
+
+🔴 **회전을 적용해도 그 문장은 그대로다**(규약 §4-4). v1.2부터 앱이 `rotationDegrees`를
+적용하고(이슈 29를 닫는다) 모델이 바로 선 장면을 보게 되지만, **정답 라벨도 골든 샘플도
+없으므로 정확도 판정은 여전히 불가능하다.** "회전을 적용했다"는 "모델이 정확하다"가 아니다 —
+이 덤프가 답하는 것은 끝까지 **"폰과 PC가 같은 답을 내는가"**까지다.
+
+## 🔴 덤프 포맷 `/1`과 `/2`를 **둘 다 읽는다** (규약 §3-3)
+
+`/2`에서 **기존 키의 뜻이 바뀌었다** — `letterbox.*`가 센서 치수가 아니라 **회전 후 치수**에서
+계산된 값이고, `boxes`는 letterbox 역변환에 **회전 역변환까지** 거친 **센서 좌표계**다.
+그래서 PC는 **버전에 따라 기준을 바꾼다.** 08-06 덤프(`/1`, 회전 미적용, 24샘플)가 이 저장소의
+유일한 ③ 이식 실측이라, 못 읽게 되면 그 근거가 사라진다. **아는 버전이 아니면 죽는다.**
 
 ## 🔴 판정선이 없는 스크립트다
 
@@ -60,9 +70,24 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # 🔴 출처는 `docs/plans/20260806_detect_parity_dump_format.md` **하나**다. 앱이 같은 문서를
 #    보고 같은 문자열을 만든다 — 여기서 지어내면 대조가 통째로 무의미해진다.
 MANIFEST_NAME = "parity.json"
-FORMAT_ID = "bammasil-detect-parity/1"        # §3. 다르면 죽는다
+# 🔴 **아는 버전이 둘이다**(규약 §3-3). `/1`은 회전 이전 포맷(letterbox가 센서 치수 기준,
+#   boxes도 그 좌표계), `/2`는 회전 이후 포맷(letterbox가 **회전 후** 치수 기준, boxes는
+#   **센서 좌표계**로 되돌린 값). **같은 키가 다른 것을 말하므로** 읽는 법을 버전으로 가른다.
+#   목록 밖의 값이면 죽는다 — 모르는 포맷을 그럴듯하게 읽지 않는다.
+FORMAT_PREFIX = "bammasil-detect-parity/"
+FORMAT_IDS = (FORMAT_PREFIX + "1", FORMAT_PREFIX + "2")
 BYTE_ORDER_ID = "little_endian"               # §2. 다르면 죽는다(지어내지 않는다)
 F32_ITEMSIZE = 4
+
+# ── 회전 어휘 (규약 §4-1) ─────────────────────────────────────────────────
+# 🔴 여기 있는 문자열도 출처는 규약 문서 하나다. 앱이 같은 문서를 보고 같은 문자열을 낸다.
+ROTATIONS_ALLOWED = (0, 90, 180, 270)
+ROTATION_SITES_APPLIED = ("preprocess_sample_map", "preprocess_plane_copy")
+ROTATION_SITE_NONE = "none"
+# 🔴 어휘에 **없는** 값이지만 이름은 안다 — `ImageAnalysis`가 회전까지 해서 주면 변환이
+#   E 구간 **밖에서** 일어나 E가 과소로 나온다(규약 §4-1). 그 값이 나타나면 죽되, 왜 죽는지를
+#   이 이름으로 말한다.
+ROTATION_SITE_FORBIDDEN = "camerax_output_rotation"
 
 DEFAULT_MODEL = (
     _PROJECT_ROOT / "models" / "det_c4b_loli0_640" / "bammasil_det_c4b_loli0_640.onnx"
@@ -116,6 +141,10 @@ def _require_deps() -> None:
         ) from exc
     np = _np
     ort = _ort
+    # 🔴 numpy가 붙은 **직후** 규약 §5-1의 검산을 돌린다. import 시점에 두면 numpy를 강제로
+    #   끌어와 이 파일의 지연 import 격리가 깨진다(다른 스크립트는 무의존으로 남아야 한다).
+    #   여기 두면 대조를 시작하는 모든 실행이 반드시 이 불변식을 통과한다.
+    _selfcheck_frame_box()
 
 
 # ── 백분위: lib/stats.percentile의 nearest-rank 규칙을 numpy 배열에 적용한다 ──
@@ -154,15 +183,28 @@ def _np_summarize(arr) -> dict:
 # `lib/frame_log.py`의 상수 자기검사와 같은 부류다 — 데이터와 무관한 불변식이고, 깨지는
 # 순간은 개발자가 한쪽을 고친 그 편집 시점이다. 여기서 죽이지 않으면 이 스크립트의 백분위만
 # 조용히 다른 규칙을 쓰게 되고, 그 숫자는 다른 요약과 같은 표에 놓인다.
-_ref = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
-for _p in (0.50, 0.95, 0.99):
-    if percentile(_ref, _p) != _np_percentile(_ref, _p):
-        raise RuntimeError(
-            "scripts/detect_parity.py 자기검사 실패 — _np_percentile이 lib/stats.percentile과 "
-            f"다른 답을 낸다(p={_p}). 백분위 규칙이 둘로 갈리면 이 스크립트의 숫자만 "
-            "다른 뜻이 된다"
-        )
-del _ref, _p
+#
+# 🔴 **기준 벡터가 퇴화되면 안 된다.** 처음엔 `[1..7]` 하나였는데, n=7에서는 세 p 모두
+#   `ceil(p*n) == int(p*n)+1`이라 **floor+1 변형이 그대로 통과**했다(독립 검증 지적).
+#   길이를 둘 두는 이유가 그것이다 — 어느 한 길이도 모든 변형을 잡지 못한다:
+#     n=20: p*n이 정수인 자리(10, 19)가 생겨 **floor+1**과 **int(p*n)**(p=0.99)을 가른다
+#     n=21: p=0.5에서 10.5가 되어 **round**(→10)와 ceil(→11)을 가른다
+#   값 간격을 일부러 **불균등**하게 둔 것은 선형보간 변형을 가르기 위해서다(등간격이면
+#   보간값이 실측값과 같아져 그것도 통과한다).
+_REF_VECTORS = [
+    [float(i * i + (i % 3)) for i in range(1, 21)],   # n=20
+    [float(i * i + (i % 3)) for i in range(1, 22)],   # n=21
+]
+for _ref in _REF_VECTORS:
+    for _p in (0.50, 0.95, 0.99):
+        if percentile(_ref, _p) != _np_percentile(_ref, _p):
+            raise RuntimeError(
+                "scripts/detect_parity.py 자기검사 실패 — _np_percentile이 "
+                f"lib/stats.percentile과 다른 답을 낸다(n={len(_ref)}, p={_p}: "
+                f"{percentile(_ref, _p)} vs {_np_percentile(_ref, _p)}). 백분위 규칙이 둘로 "
+                "갈리면 이 스크립트의 숫자만 다른 뜻이 된다"
+            )
+del _REF_VECTORS, _ref, _p
 
 
 def sha256_file(path: Path) -> str:
@@ -171,6 +213,176 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+# ══ 회전: 좌표 사슬의 두 번째 칸 (규약 §4·§5) ═════════════════════════════
+# 🔴 **PC가 회전을 자기 힘으로 재현한다**(규약 §4-5). 덤프된 `sample_NN_src.yuv`는 **센서
+#    방향 원본 평면 그대로**이므로, PC가 같은 회전을 **같은 자리에서** 재현해야 E 대조가
+#    `YUV→회전→letterbox→RGB→/255→NCHW` **전체**를 덮는다. 앱이 회전한 결과를 덤프했다면
+#    PC는 그 회전을 검사할 수 없고 E 대조가 회전을 건너뛴다.
+#
+# 좌표 사슬(규약 §5):
+#   ① 센서 프레임 (src.width × src.height)
+#        ↓ 회전 (source.rotation_degrees, **시계 방향** — Android `rotationDegrees` 규약)
+#   ② 회전 후 프레임 (source.rotated_width × rotated_height)
+#        ↓ letterbox  ③ 640 좌표계  → 모델 → ④ 출력 텐서
+#        ↑ letterbox 역변환         ↑ 회전 역변환 → ① 로 되돌아온다
+
+
+class RotationMap:
+    """센서 프레임(①) ↔ 회전 후 프레임(②) 사이의 좌표 변환.
+
+    🔴 **`degrees`는 "실제로 적용한" 각이다.** 매니페스트의 `rotation_degrees`를 그대로
+    쓰지 않는다 — `rotation_applied=false`인 짝 arm(`detect_cpu_norot`)에서는 기기가 90°를
+    보고해도 앱이 **적용하지 않았으므로** PC도 적용하면 안 된다. 그 판단은
+    `resolve_rotation()`이 규약 §4-2의 세 경우로 내린다.
+
+    ⚠ **방향 가정(`ROTATION_DIRECTION_ASSUMPTION`).** Android `ImageProxy.imageInfo`의
+    `rotationDegrees`는 "이 버퍼를 **시계 방향으로** 이만큼 돌리면 바로 선다"는 뜻이라고
+    읽었다. 이것은 계약 문서에 적힌 값이 아니라 플랫폼 규약을 우리가 읽은 것이고, 폰이
+    반대로 돌리면 E 대조가 **크게** 어긋난다(1ulp가 아니라 화면 전체가 다르다) — 조용히
+    틀리지는 않는다.
+    """
+
+    __slots__ = ("degrees", "src_w", "src_h", "rot_w", "rot_h", "applied", "site",
+                 "box_edge_offset")
+
+    def __init__(self, degrees: int, src_w: int, src_h: int, applied: bool, site,
+                 box_edge_offset: float = 0.0):
+        if degrees not in ROTATIONS_ALLOWED:
+            raise ParityError(
+                f"회전각 {degrees!r}은 {list(ROTATIONS_ALLOWED)} 밖이다 — 90° 배수가 아닌 "
+                f"회전은 픽셀 재배치가 아니라 보간이 되고, 그 보간 규칙은 규약에 없다. "
+                f"**지어내지 않는다** (규약 §4)"
+            )
+        self.degrees = int(degrees)
+        self.src_w = int(src_w)
+        self.src_h = int(src_h)
+        self.applied = bool(applied)
+        self.site = site
+        # 🔴 **박스 반사축의 원점 규약**(아래 `invert_box` 주석). 0.0 = 연속 좌표(`W - x`),
+        #    1.0 = 픽셀 인덱스(`(W-1) - x`). 기본은 0.0이고, 1.0은 **진단용 대조**로만 쓴다 —
+        #    폰이 어느 규약을 썼는지 이름 붙이기 위한 것이지 값을 맞추려는 것이 아니다.
+        self.box_edge_offset = float(box_edge_offset)
+        swapped = self.degrees in (90, 270)
+        self.rot_w = self.src_h if swapped else self.src_w
+        self.rot_h = self.src_w if swapped else self.src_h
+
+    def as_dict(self) -> dict:
+        return {
+            "degrees_effective": self.degrees,
+            "applied": self.applied,
+            "site": self.site,
+            "sensor_width": self.src_w,
+            "sensor_height": self.src_h,
+            "rotated_width_pc": self.rot_w,
+            "rotated_height_pc": self.rot_h,
+        }
+
+    # ── ② → ① : 샘플 좌표 (전처리 샘플 맵이 쓴다) ─────────────────────────
+    def to_sensor(self, rx, ry):
+        """회전 후 프레임의 좌표 `(rx, ry)` → 센서 프레임의 좌표 `(sx, sy)`.
+
+        🔴 **90° 배수라 순수 좌표 치환이다** — 보간도 반올림도 없다. numpy 브로드캐스트
+        배열을 그대로 받는다(전처리가 행/열 축을 따로 넘긴다).
+
+        🔴 **여기는 픽셀 인덱스 규약(`-1`)이다.** 샘플 좌표는 픽셀 격자 위의 위치이고
+        `[0, W-1]`이 `[0, W-1]`로 뒤집혀야 한다. 🔴 **박스(`invert_box`)는 규약이 다르다** —
+        거긴 letterbox 역변환이 낸 **연속 좌표**라 `[0, W]`를 채운다. 같은 함수를 두 곳에
+        쓰면 한쪽이 정확히 1px 틀린다(그 갈림을 `_probe_box_convention`이 감시한다).
+
+        ⚠ 정수를 넣으면 정수가, 연속 좌표를 넣으면 연속 좌표가 나온다 — 전처리는 **연속
+        좌표**를 넣는다(`DetectPreprocessor.kt`의 `toSensorX/Y`와 같은 자리, 같은 입력).
+        """
+        d = self.degrees
+        if d == 0:
+            return rx, ry
+        if d == 90:
+            return ry, (self.src_h - 1) - rx
+        if d == 180:
+            return (self.src_w - 1) - rx, (self.src_h - 1) - ry
+        return (self.src_w - 1) - ry, rx          # 270
+
+    # ── ② → ① : 연속 좌표의 박스 (후처리 역변환이 쓴다) ───────────────────
+    def invert_box(self, x1, y1, x2, y2):
+        """회전 후 좌표계(②)의 박스 → 센서 좌표계(①)의 박스. **float32로 계산한다.**
+
+        🔴 **min/max로 정규화하지 않는다.** 축 대응으로 자리를 옮길 뿐이다:
+        회전이 뒤집는 축에서는 두 끝점의 **순서까지 함께** 옮긴다(`x1' = W - x2`). 그래서
+        - 잘 정렬된 박스는 잘 정렬된 채로 돌아오고(90°마다 전부 역전되는 일이 없다),
+        - **역전된 박스는 역전된 채로 돌아온다.** min/max를 씌우면 `x2 < x1`인 박스가 조용히
+          고쳐지는데, 규약 §5-3은 역전 박스를 **거르지도 고치지도 말고 세라**고 한다 —
+          조용히 지우면 결함이 숨는다.
+
+        ⚠ **축 대응 가정(`ROTATION_BOX_AXIS_MAPPING`).** 폰도 같은 방식으로 옮긴다고 본다.
+        폰이 두 꼭짓점을 각각 옮기고 재정렬하지 않으면 90°에서 **모든 박스가 y축 역전**으로
+        나오므로, 그 경우 `boxes_inverted`가 박스 수와 같아져 곧바로 드러난다.
+
+        🔴 **연속 좌표 규약(`ROTATION_BOX_EDGE_CONVENTION`) — 여기가 폰과 갈릴 자리다.**
+        박스 좌표는 letterbox 역변환 `(x - pad)/scale`이 낸 **연속 좌표**이고 회전 후 프레임
+        `[0, rot_w]`를 채운다(정수 인덱스 `[0, rot_w-1]`이 아니다). 그래서 반사축의 식은
+        `W - x`다. 픽셀 인덱스 쪽 식 `(W-1) - i`를 **박스에 그대로 쓰면** 프레임 전체가
+        원점 쪽으로 **정확히 1px 밀린다**(회전 후 오른쪽 끝 `rot_w`가 센서 `-1`로 간다).
+        ⚠ 샘플 맵(`sensor_index`)은 **정수 인덱스**를 다루므로 거기서는 `-1`이 맞다 —
+          같은 함수를 두 규약에 쓰면 한쪽이 1px 틀린다.
+        ⚠ `box_edge_offset=1.0`으로 만들면 인덱스 규약이 된다. **진단 대조 전용**이다
+          (`_probe_box_convention` — 폰이 어느 규약을 썼는지 이름 붙이기 위한 것이다).
+        """
+        f32 = np.float32
+        d = self.degrees
+        if d == 0:
+            return x1, y1, x2, y2
+        off = f32(self.box_edge_offset)
+        w = f32(self.rot_w) - off
+        h = f32(self.rot_h) - off
+        if d == 90:
+            # sx ← ry (순서 보존) · sy ← rot_w - rx (순서 반전)
+            return y1, w - x2, y2, w - x1
+        if d == 180:
+            return w - x2, h - y2, w - x1, h - y1
+        # 270: sx ← rot_h - ry (반전) · sy ← rx (보존)
+        return h - y2, x1, h - y1, x2
+
+
+def _selfcheck_frame_box() -> None:
+    """🔴 규약 §5-1의 **검산** — 회전 후 프레임 전체 박스 `(0, 0, rotated_w, rotated_h)`는
+    센서 프레임 전체 `(0, 0, src_w, src_h)`로 가야 한다.
+
+    **허용오차 문제가 아니라 참/거짓이다.** 인덱스 식 `(N-1) - v`를 쓰면 한 축이 `-1`로
+    나오고 프레임 전체가 원점 쪽으로 정확히 1px 밀린다 — 그 1px은 **어떤 왕복 검사로도
+    안 잡힌다**(정방향·역방향이 같은 규약이면 왕복은 통과한다). §5-1이 지목한 두 감시자 중
+    하나가 이것이고, 다른 하나가 폰↔PC 대조(`_probe_box_convention`)다.
+
+    데이터와 무관한 불변식이라 `lib/frame_log.py`의 상수 자기검사와 같은 부류다 —
+    깨지는 순간은 개발자가 반사식을 고친 그 편집 시점이고, 여기서 죽이지 않으면 그 뒤의
+    모든 박스 좌표가 조용히 1px 밀린 채로 나온다.
+    """
+    f32 = np.float32
+    for deg in ROTATIONS_ALLOWED:
+        # 정사각형이 아닌 치수 두 벌로 본다 — 정사각형은 축 스왑이 항등이라 90/270°의
+        # 축 대응 오류를 통과시킨다(퇴화된 기준 벡터를 만들지 않는다).
+        for src_w, src_h in ((1280, 720), (721, 1280)):
+            rot = RotationMap(deg, src_w, src_h, applied=True,
+                              site=ROTATION_SITES_APPLIED[0])
+            got = tuple(float(v) for v in rot.invert_box(
+                f32(0), f32(0), f32(rot.rot_w), f32(rot.rot_h)))
+            want = (0.0, 0.0, float(src_w), float(src_h))
+            if got != want:
+                raise ParityError(
+                    "scripts/detect_parity.py 자기검사 실패 — 규약 §5-1의 검산이 깨졌다. "
+                    f"회전 {deg}°, 센서 {src_w}×{src_h}(회전 후 {rot.rot_w}×{rot.rot_h}): "
+                    f"프레임 전체 박스가 {got}로 갔다(기대 {want}). "
+                    "반사식은 `N - v`여야 하고 `(N-1) - v`가 아니다 — 인덱스 식을 쓰면 한 축이 "
+                    "-1로 나오고 프레임 전체가 원점 쪽으로 정확히 1px 밀린다. "
+                    "⚠ 전처리 샘플 맵(`to_sensor`)은 반대로 `(N-1) - v`가 맞다. **한 함수를 "
+                    "두 자리에 쓰면 한쪽이 1px 틀린다**"
+                )
+
+
+def count_inverted_boxes(boxes: list[dict]) -> int:
+    """`x2 < x1` 또는 `y2 < y1`인 박스 수 (규약 §5-3). 🔴 **거른 개수가 아니라 센 개수다** —
+    해당 박스는 리스트에 그대로 들어 있다."""
+    return sum(1 for b in boxes if b["x2"] < b["x1"] or b["y2"] < b["y1"])
 
 
 # ══ E: 전처리 재구현 ══════════════════════════════════════════════════════
@@ -200,6 +412,10 @@ class Letterbox:
 
     def as_dict(self) -> dict:
         return {
+            # 🔴 `/2`가 더한 키다(규약 §3). **PC가 자기 힘으로 잡은 기준 치수**이며, 매니페스트에
+            #    그 키가 있으면 대조된다(`/1` 덤프에는 없어서 그 항목만 건너뛴다).
+            "src_w": self.src_w,
+            "src_h": self.src_h,
             "scale": float(self.scale),
             "pad_x": self.pad_x,
             "pad_y": self.pad_y,
@@ -225,14 +441,26 @@ def letterbox(src_w: int, src_h: int, dst_w: int, dst_h: int) -> Letterbox:
     )
 
 
-def preprocess(raw: bytes, src: dict, box: Letterbox, pad_value_u8: int):
-    """YUV_420_888 평면 → letterbox → BT.601 full range RGB → `/255` → NCHW float32.
+def preprocess(raw: bytes, src: dict, box: Letterbox, pad_value_u8: int, rot: RotationMap):
+    """YUV_420_888 평면 → **회전** → letterbox → BT.601 full range RGB → `/255` → NCHW float32.
 
     반환은 `(3, dst_h, dst_w)` float32 배열이며 C-order로 펴면 폰의 `input.f32`와 같은
     바이트 나열이 된다(`plane[rOff + dy*dstW + dx]` 배치).
 
+    🔴 **회전이 여기 들어 있다**(규약 §4-5). 덤프된 평면은 **센서 방향 원본**이므로 PC가
+    같은 회전을 **같은 자리에서** 재현해야 E 대조가 전 구간을 덮는다. letterbox 기하는
+    **회전 후 프레임**(`rot.rot_w × rot.rot_h`)에서 계산된 것이고, 이 함수는 목적지 픽셀 →
+    회전 후 좌표 → **회전 역함수** → 센서 픽셀을 **한 번에** 매핑한다
+    (`rotation_site = "preprocess_sample_map"`. 추가 패스도 추가 버퍼도 없다).
+
     ⚠ 휘도는 **이중선형**, 색차는 **최근접**이다. 둘 다 계약이 아니라 가정이며
       (`RESIZE_INTERPOLATION_ASSUMPTION`) 폰이 그렇게 하므로 여기서도 그렇게 한다.
+    🔴 **보간은 센서 공간에서 한다**(`ROTATION_SAMPLE_ORDER_ASSUMPTION`). 회전 역함수를
+      **연속 좌표에 먼저** 적용하고, 클램프·floor·가중치를 전부 센서 공간에서 계산한다 —
+      `DetectPreprocessor.kt`가 하는 그대로다. 회전 후 공간에서 가중치를 만들면 값은
+      대수적으로 같지만 반사축에서 `a+(b-a)t` 대신 `b+(a-b)(1-t)`가 되어 **1ulp**가 갈리고,
+      E가 비트 일치를 잃는다. 경계 클램프(`fx<0 → 0`)도 어느 공간에서 거느냐에 따라 프레임
+      가장자리 반 픽셀에서 다른 이웃을 집는다.
     """
     f32 = np.float32
     planes = {}
@@ -261,6 +489,18 @@ def preprocess(raw: bytes, src: dict, box: Letterbox, pad_value_u8: int):
 
     src_w = int(src["width"])
     src_h = int(src["height"])
+    _require(
+        src_w == rot.src_w and src_h == rot.src_h,
+        f"src {src_w}×{src_h}와 회전 맵의 센서 치수 {rot.src_w}×{rot.src_h}가 다르다 — "
+        f"회전 맵이 다른 프레임에서 만들어졌다",
+    )
+    # 🔴 letterbox는 **회전 후 프레임**에서 계산된 것이다(규약 §5). 샘플 좌표의 클램프도
+    #    그 프레임 기준이며, 센서 인덱스로 옮기는 것은 그 다음이다.
+    _require(
+        box.src_w == rot.rot_w and box.src_h == rot.rot_h,
+        f"letterbox가 {box.src_w}×{box.src_h}에서 계산됐는데 회전 후 프레임은 "
+        f"{rot.rot_w}×{rot.rot_h}다 — 기하 기준이 두 개다 (규약 §5)",
+    )
     out = np.empty((3, box.dst_h, box.dst_w), dtype=np.float32)
     # 패딩 값은 **나눗셈**이다(`DetectContract.PAD_VALUE_U8 / 255f`). 아래 RGB는 역수 곱이라
     # 둘의 반올림이 1ulp 갈릴 수 있어 그대로 옮긴다.
@@ -270,25 +510,35 @@ def preprocess(raw: bytes, src: dict, box: Letterbox, pad_value_u8: int):
 
     inv_scale = f32(1) / box.scale
 
-    # 픽셀 중심 정렬(cv2.resize 규약). 0.5를 빼고 더하지 않으면 축소 시 반 픽셀이 밀린다.
+    # ③ → ② : letterbox 역변환. 픽셀 중심 정렬(cv2.resize 규약)이라 0.5를 더했다 뺀다.
+    # 🔴 여기서 나오는 (fxr, fyr)은 **회전 후 프레임**의 연속 좌표다(아직 센서가 아니다).
     dy = np.arange(box.pad_y, box.pad_y + box.content_h, dtype=np.int32)
-    fy = ((dy - box.pad_y).astype(f32) + f32(0.5)) * inv_scale - f32(0.5)
-    fy = np.maximum(fy, f32(0))
-    y0 = np.minimum(fy.astype(np.int32), src_h - 1)
-    y1 = np.minimum(y0 + 1, src_h - 1)
-    ay = (fy - y0.astype(f32))[:, None]      # 🔴 클램프된 y0로 계산한다(폰과 같은 순서)
-
+    fyr = ((dy - box.pad_y).astype(f32) + f32(0.5)) * inv_scale - f32(0.5)
     dx = np.arange(box.pad_x, box.pad_x + box.content_w, dtype=np.int32)
-    fx = ((dx - box.pad_x).astype(f32) + f32(0.5)) * inv_scale - f32(0.5)
+    fxr = ((dx - box.pad_x).astype(f32) + f32(0.5)) * inv_scale - f32(0.5)
+
+    # ② → ① : 회전 역함수. 🔴 **여기가 `rotation_site = preprocess_sample_map`의 실체다** —
+    #   목적지 좌표에서 센서 좌표를 한 번에 잡는다. `DetectPreprocessor.kt`가 `toSensorX/Y`를
+    #   부르는 자리와 **같은 자리, 같은 입력(연속 좌표)**이다.
+    #   🔴 클램프·floor·보간 가중치를 **센서 공간에서** 계산하는 것도 폰과 같다. 회전 후
+    #   공간에서 계산하면 대수적으로는 같은 값이지만 float32 연산 순서가 갈려 E가 비트
+    #   일치를 잃는다(반사축에서 `a+(b-a)t` vs `b+(a-b)(1-t)`가 된다).
+    #   회전이 0°면 to_sensor가 항등이라 아래는 예전 코드와 같은 값을 낸다 — `/1` 덤프의
+    #   E 대조 결과가 이 변경으로 흔들리지 않는다.
+    fx, fy = rot.to_sensor(fxr[None, :], fyr[:, None])
     fx = np.maximum(fx, f32(0))
+    fy = np.maximum(fy, f32(0))
     x0 = np.minimum(fx.astype(np.int32), src_w - 1)
     x1 = np.minimum(x0 + 1, src_w - 1)
-    ax = (fx - x0.astype(f32))[None, :]
+    ax = fx - x0.astype(f32)                 # 🔴 클램프된 x0로 계산한다(폰과 같은 순서)
+    y0 = np.minimum(fy.astype(np.int32), src_h - 1)
+    y1 = np.minimum(y0 + 1, src_h - 1)
+    ay = fy - y0.astype(f32)
 
-    r0 = (y0 * y_row)[:, None]
-    r1 = (y1 * y_row)[:, None]
-    c0 = (x0 * y_pix)[None, :]
-    c1 = (x1 * y_pix)[None, :]
+    r0 = y0 * y_row
+    r1 = y1 * y_row
+    c0 = x0 * y_pix
+    c1 = x1 * y_pix
     y00 = y_buf[r0 + c0].astype(f32)
     y01 = y_buf[r0 + c1].astype(f32)
     y10 = y_buf[r1 + c0].astype(f32)
@@ -298,11 +548,11 @@ def preprocess(raw: bytes, src: dict, box: Letterbox, pad_value_u8: int):
     yy = y_top + (y_bot - y_top) * ay
 
     # 색차는 최근접. 이미 2:1로 서브샘플된 평면이라 표준 관행이다.
+    # 🔴 색차 평면은 **센서 배치**이므로 서브샘플 인덱스도 센서 좌표(x0·y0)에서 잡는다.
     cxi = (x0 >> 1)
-    cr_u = ((y0 >> 1) * u_row)[:, None]
-    cr_v = ((y0 >> 1) * v_row)[:, None]
-    uu = (u_buf[cr_u + (cxi * u_pix)[None, :]].astype(np.int32) - 128).astype(f32)
-    vv = (v_buf[cr_v + (cxi * v_pix)[None, :]].astype(np.int32) - 128).astype(f32)
+    cyi = (y0 >> 1)
+    uu = (u_buf[cyi * u_row + cxi * u_pix].astype(np.int32) - 128).astype(f32)
+    vv = (v_buf[cyi * v_row + cxi * v_pix].astype(np.int32) - 128).astype(f32)
 
     # BT.601 full range (YUV_TO_RGB_ASSUMPTION). 🔴 계약에 없는 가정이다.
     r = yy + f32(1.402) * vv
@@ -336,11 +586,12 @@ def preprocess(raw: bytes, src: dict, box: Letterbox, pad_value_u8: int):
 
 
 def postprocess(raw2d, box: Letterbox, conf_thr: float, iou_thr: float,
-                class_names: dict) -> tuple[list[dict], int, float]:
+                class_names: dict, rot: RotationMap) -> tuple[list[dict], int, float]:
     """`DetectPostprocessor.run`의 이식.
 
     :param raw2d: `(4+nc, A)` float32. 출력 텐서를 **채널 우선**으로 읽은 것.
-    :returns: (박스 리스트(원본 좌표계), boxes_pre_nms, max_conf)
+    :param rot: 회전 맵. 역변환은 letterbox 역변환 **뒤**, 즉 마지막이다(규약 §5-1).
+    :returns: (박스 리스트(**센서 좌표계** = 규약 §5의 ①), boxes_pre_nms, max_conf)
     """
     f32 = np.float32
     n_ch, n_anchors = raw2d.shape
@@ -414,13 +665,22 @@ def postprocess(raw2d, box: Letterbox, conf_thr: float, iou_thr: float,
     #    양쪽으로 `w > 0`이지만 **산술적 보장은 아니다.** 자세한 논거는
     #    `DetectPostprocessor.kt`의 같은 자리에 있다.
     #    ⚠ **한쪽만 고치면 이식 대조가 그 자리에서 어긋난다** — 두 파일은 함께 움직인다.
+    #
+    # 🔴 **5) 회전 역변환(v1.2). letterbox 역변환 뒤이고 NMS 뒤다**(규약 §5-1).
+    #    회전 역변환은 아핀이고 90° 배수라 순수 좌표 치환이지만, **그래도 NMS 앞으로 옮기지
+    #    않는다** — "아핀이니 앞에 둬도 된다"는 논거가 바로 그 클램프 사고를 낳았다. 순서를
+    #    상류와 같게 두는 것이 논거 없이도 성립하는 유일한 방식이다.
+    #    회전이 0°면 `invert_box`는 항등이라 값이 그대로 지나간다.
     inv_scale = f32(1) / box.scale
     out: list[dict] = []
     for idx in kept:
+        # ② 회전 후 좌표계
         x1 = (bx1[idx] - box.pad_x) * inv_scale
         y1 = (by1[idx] - box.pad_y) * inv_scale
         x2 = (bx2[idx] - box.pad_x) * inv_scale
         y2 = (by2[idx] - box.pad_y) * inv_scale
+        # ① 센서 좌표계 — 여기가 boxes의 좌표계다(규약 §5-2)
+        x1, y1, x2, y2 = rot.invert_box(x1, y1, x2, y2)
         ci = int(cls[idx])
         out.append({
             "cls": ci,
@@ -468,10 +728,28 @@ def _dump_label(root: Path) -> str:
 class Dump:
     """덤프 하나(= EP 하나의 `parity/` 디렉토리)."""
 
-    def __init__(self, root: Path, manifest: dict):
+    def __init__(self, root: Path, manifest: dict, format_version: int):
         self.root = root
         self.manifest = manifest
         self.label = _dump_label(root)
+        # 🔴 **읽는 법을 가르는 값이다**(규약 §3-3). `/1`은 letterbox가 센서 치수 기준이고
+        #    `/2`는 회전 후 치수 기준이다 — 같은 키가 다른 것을 말한다.
+        self.format_version = int(format_version)
+        self.format_id = str(manifest.get("format"))
+
+
+def _format_version(fmt, where: str) -> int:
+    """`format` 문자열 → 버전 정수. **아는 버전이 아니면 죽는다**(규약 §3-3).
+
+    모르는 포맷을 그럴듯하게 읽으면 결과가 '이식 결함'인지 '포맷 어긋남'인지 구분되지 않는다.
+    """
+    _require(
+        isinstance(fmt, str) and fmt in FORMAT_IDS,
+        f"{where}: format={fmt!r}이 아는 버전이 아니다(아는 것: {list(FORMAT_IDS)}). "
+        f"포맷이 갈린 채로 대조하면 결과가 '이식 결함'인지 '포맷 어긋남'인지 구분되지 "
+        f"않는다 — 읽지 않는다 (docs/plans/20260806_detect_parity_dump_format.md §3-3)",
+    )
+    return int(str(fmt)[len(FORMAT_PREFIX):])
 
 
 def load_dump(root: Path) -> Dump:
@@ -484,13 +762,7 @@ def load_dump(root: Path) -> Dump:
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ParityError(f"{mpath}를 JSON으로 읽지 못했다: {exc}") from exc
 
-    fmt = manifest.get("format")
-    _require(
-        fmt == FORMAT_ID,
-        f"{mpath}: format={fmt!r}이 규약과 다르다(기대 {FORMAT_ID!r}). "
-        f"포맷이 갈린 채로 대조하면 결과가 '이식 결함'인지 '포맷 어긋남'인지 구분되지 "
-        f"않는다 — 읽지 않는다 (docs/plans/20260806_detect_parity_dump_format.md §3)",
-    )
+    version = _format_version(manifest.get("format"), str(mpath))
     bo = manifest.get("byte_order")
     _require(
         bo == BYTE_ORDER_ID,
@@ -537,7 +809,173 @@ def load_dump(root: Path) -> Dump:
                 f"{mpath}: sample {idx}의 src({spath.name}) 해시가 매니페스트와 다르다 — "
                 f"매니페스트 {swant}, 실제 {sgot}",
             )
-    return Dump(root, manifest)
+    return Dump(root, manifest, version)
+
+
+def resolve_rotation(dump: Dump, warnings: list[str]) -> RotationMap:
+    """매니페스트의 `source` 블록 → **PC가 실제로 적용할** 회전 (규약 §4-2).
+
+    🔴 **`rotation_applied=false`의 뜻이 둘이다.** 하나로 뭉치면 의도된 대조군을 결함으로
+    읽거나(이슈 29 경고를 잘못 낸다) 진짜 모순을 놓친다:
+
+    | `rotation_applied` | `rotation_site` | 어떻게 읽는가 |
+    |---|---|---|
+    | `true`  | `preprocess_*` | 정상. PC도 같은 각을 적용한다 |
+    | `false` | `none`         | 🟢 **의도된 대조군**(`detect_cpu_norot`). PC도 적용하지 않는다. **경고를 내지 않는다** |
+    | `false` | `preprocess_*` | 🔴 모순 — **죽는다** |
+
+    `/1`(회전 이전 포맷)에는 `rotation_site`가 없다. 그건 이슈 29 그대로이므로 **예전 경고를
+    그대로** 낸다 — 그 문장이 사라지면 08-06 덤프를 지금 다시 읽는 사람이 "회전이 적용된
+    결과"로 오독한다.
+    """
+    src_info = dump.manifest.get("source") or {}
+    label = dump.label
+    deg = src_info.get("rotation_degrees")
+    _require(
+        isinstance(deg, int) and not isinstance(deg, bool),
+        f"{label}: source.rotation_degrees를 정수로 읽지 못했다({deg!r}) — 회전각을 "
+        f"**지어내지 않는다** (규약 §3·§4)",
+    )
+    applied = src_info.get("rotation_applied")
+    _require(
+        isinstance(applied, bool),
+        f"{label}: source.rotation_applied가 불리언이 아니다({applied!r}) — 회전을 적용했는지 "
+        f"모르는 채로 재현하면 E가 다른 것을 재게 된다 (규약 §4-2)",
+    )
+    site = src_info.get("rotation_site")
+
+    if dump.format_version < 2:
+        # `/1`: 회전이라는 개념 자체가 없던 포맷. `rotation_applied`는 항상 false였다.
+        _require(
+            not applied,
+            f"{label}: format={dump.format_id}인데 rotation_applied=true다 — `/1`은 회전을 "
+            f"적용하지 않던 포맷이고 letterbox·boxes가 센서 치수 기준이라, 회전을 적용한 런을 "
+            f"`/1`로 적으면 좌표계가 통째로 어긋난다. 덤프를 `/2`로 다시 뜰 것 (규약 §3-3)",
+        )
+        if site is not None:
+            warnings.append(
+                f"{label}: format={dump.format_id}인데 rotation_site={site!r}가 실려 있다 — "
+                f"`/1`에는 없던 키다. 회전은 적용되지 않은 것으로 읽었다"
+            )
+        warnings.append(
+            f"{label}: 🔴 **rotation_applied=false** (format={dump.format_id}) — 앱이 "
+            f"ImageProxy.imageInfo.rotationDegrees({deg}°)를 적용하지 않았다(알려진 이슈 29). "
+            f"모델은 **옆으로 누운 장면**을 본다. 이식 정확성 질문은 회전과 직교하므로 이 "
+            f"대조는 성립하지만, 🔴 **이 덤프로 '모델이 잘 맞힌다/못 맞힌다'를 말하면 안 된다** "
+            f"— 입력이 누워 있어 그 판단은 애초에 불가능하다 (규약 §4)"
+        )
+        src_w, src_h = _src_dims(dump)
+        # 적용각 0 = 항등. `/1` 덤프의 letterbox 기준이 센서 치수 그대로라는 뜻이기도 하다.
+        return RotationMap(0, src_w, src_h, applied=False, site=site)
+
+    # ── `/2` 이상: 규약 §4-2의 세 경우 ────────────────────────────────────
+    _require(
+        isinstance(site, str) and site,
+        f"{label}: format={dump.format_id}인데 source.rotation_site가 없다({site!r}) — "
+        f"`/2`는 **어디서 돌렸는가**를 요구한다(규약 §4-1). 그 값이 없으면 "
+        f"rotation_applied=false가 '의도된 대조군'인지 '구현 안 됨'인지 구분되지 않는다",
+    )
+    if site == ROTATION_SITE_FORBIDDEN:
+        raise ParityError(
+            f"{label}: rotation_site={site!r}는 규약 §4-1의 어휘에 **없다** — `ImageAnalysis`가 "
+            f"회전까지 해서 주면 변환이 **E 구간 밖에서** 일어나 E가 과소로 나오고, 덤프된 "
+            f"평면이 센서 방향이라는 §4-5 전제도 깨진다. 🔴 **그 런의 E는 인용할 수 없다.** "
+            f"회전을 전처리 안으로 옮겨 다시 뜰 것"
+        )
+    known_site = site in ROTATION_SITES_APPLIED or site == ROTATION_SITE_NONE
+    _require(
+        known_site,
+        f"{label}: rotation_site={site!r}는 아는 어휘가 아니다"
+        f"(아는 것: {list(ROTATION_SITES_APPLIED)} + {ROTATION_SITE_NONE!r}). "
+        f"어디서 돌렸는지 모르면 PC가 **같은 자리에서** 재현할 수 없다 (규약 §4-1)",
+    )
+    if applied and site == ROTATION_SITE_NONE:
+        raise ParityError(
+            f"{label}: 🔴 **모순이다** — rotation_applied=true인데 rotation_site='none'이다. "
+            f"적용했다면 어디서 적용했는지가 있어야 한다 (규약 §4-1·§4-2)"
+        )
+    if not applied and site in ROTATION_SITES_APPLIED:
+        raise ParityError(
+            f"{label}: 🔴 **모순이다** — rotation_applied=false인데 rotation_site={site!r}다. "
+            f"규약 §4-2의 표에 없는 조합이라 PC가 회전을 재현해야 하는지 알 수 없다. "
+            f"의도된 대조군이면 site='none'이어야 하고, 적용했다면 applied=true여야 한다"
+        )
+
+    effective = deg if applied else 0
+    if not applied:
+        # 🟢 **의도된 대조군이다. 이슈 29 경고를 내지 않는다** — 여기서 경고를 내면 짝 arm을
+        #    돌릴 때마다 결함처럼 보이고, 그러면 진짜 경고도 같이 읽히지 않게 된다.
+        #    다만 "회전 전 기준선"이라는 사실은 요약에 남는다(dump.rotation 블록).
+        if deg == 0:
+            warnings.append(
+                f"{label}: rotation_site='none'인데 기기가 보고한 rotation_degrees도 0°다 — "
+                f"이 런은 회전 유무의 **대조가 되지 않는다**(적용해도 항등이다). 짝 arm의 "
+                f"기준선으로 쓰려면 0°가 아닌 방향으로 다시 찍을 것"
+            )
+    elif deg == 0:
+        # ⚠ 규약 §4-2: `rotation_degrees: 0`과 `rotation_applied: false`는 다르다.
+        warnings.append(
+            f"{label}: rotation_applied=true인데 rotation_degrees=0°다 — 회전은 **적용됐고 "
+            f"항등**이다(규약 §4-2). 미적용과 혼동하지 말 것. 다만 이 런의 E는 회전 비용을 "
+            f"보여 주지 못한다(옮길 픽셀이 제자리다)"
+        )
+
+    if not src_info.get("rotation_locked", False):
+        warnings.append(
+            f"{label}: source.rotation_locked가 참이 아니다({src_info.get('rotation_locked')!r}) "
+            f"— 회전각을 첫 프레임에서 잠갔다는 보장이 없다. 런 도중 각이 바뀌면 letterbox "
+            f"기하가 갈려 **E와 박스 좌표가 한 런 안에서 두 뜻을 갖는다** (규약 §4-3)"
+        )
+    changed = src_info.get("rotation_changed_frames")
+    if isinstance(changed, int) and changed != 0:
+        warnings.append(
+            f"{label}: 🔴 **rotation_changed_frames={changed}** — 잠근 뒤에도 다른 "
+            f"rotationDegrees가 {changed}프레임에서 왔다. 앱은 잠근 값을 계속 썼으므로 이 "
+            f"대조 자체는 성립하지만, **이 런은 승격 대상에서 뺀다**(규약 §4-3). 기기를 "
+            f"고정하고 다시 잴 것"
+        )
+
+    src_w, src_h = _src_dims(dump)
+    rot = RotationMap(effective, src_w, src_h, applied=applied, site=site)
+
+    # 🔴 `rotated_*`도 **PC가 자기 힘으로 유도하고 대조만 한다**(letterbox와 같은 원칙).
+    #    매니페스트 값을 그대로 쓰면 회전 기하 이식이 검사 대상에서 빠진다.
+    dec_w = src_info.get("rotated_width")
+    dec_h = src_info.get("rotated_height")
+    if dec_w is None or dec_h is None:
+        warnings.append(
+            f"{label}: source.rotated_width/height가 없다(규약 §3) — PC가 유도한 "
+            f"{rot.rot_w}×{rot.rot_h}와 **대조하지 못했다**"
+        )
+    elif int(dec_w) != rot.rot_w or int(dec_h) != rot.rot_h:
+        would_be = (src_h, src_w) if deg in (90, 270) else (src_w, src_h)
+        extra = ""
+        if not applied and (int(dec_w), int(dec_h)) == would_be:
+            extra = (
+                " ⚠ 매니페스트 값은 **적용했다면 됐을** 치수와 같다 — 대조군 arm에서 "
+                "'회전 후 치수'를 적용 여부와 무관하게 적어 낸 것으로 보인다. 그렇다면 "
+                "letterbox 기준도 어느 쪽인지 확인할 것"
+            )
+        warnings.append(
+            f"{label}: 🔴 **회전 후 치수가 어긋난다** — 매니페스트 {dec_w}×{dec_h} vs PC 유도 "
+            f"{rot.rot_w}×{rot.rot_h}(센서 {src_w}×{src_h}, 적용각 {effective}°)."
+            f"{extra} 아래 letterbox·E의 차이는 전처리 이식이 아니라 **기준 프레임이 다른 "
+            f"것**일 수 있다 (규약 §5)"
+        )
+    return rot
+
+
+def _src_dims(dump: Dump) -> tuple[int, int]:
+    """샘플들의 `src.width/height`. **샘플마다 다르면 죽는다** — 한 런 안에서 센서 치수가
+    바뀌면 letterbox 기하도 회전 후 치수도 두 뜻을 갖는다."""
+    dims = {(int(s["src"]["width"]), int(s["src"]["height"]))
+            for s in dump.manifest.get("samples") or []}
+    _require(
+        len(dims) == 1,
+        f"{dump.label}: 샘플들의 src 치수가 하나가 아니다({sorted(dims)}) — 한 런 안에서 "
+        f"센서 해상도가 바뀌면 letterbox 기하와 회전 후 치수가 두 뜻을 갖는다",
+    )
+    return next(iter(dims))
 
 
 # ══ 대조 ══════════════════════════════════════════════════════════════════
@@ -913,6 +1351,75 @@ def _output_diff_by_channel(pc2d, phone2d, conf_thr: float) -> dict:
     }
 
 
+def _probe_box_convention(phone_out2d, box: Letterbox, conf_thr: float, iou_thr: float,
+                          classes: dict, rot: RotationMap, phone_boxes: list[dict],
+                          bar) -> Optional[dict]:
+    """🔴 **폰이 박스 회전 역변환에 어느 원점 규약을 썼는지 이름 붙인다.**
+
+    두 규약이 있고 **정확히 1.0px** 차이가 난다(`RotationMap.invert_box` 주석):
+
+    | 규약 | 반사축 식 | 회전 후 프레임 `[0, W]`가 가는 곳 |
+    |---|---|---|
+    | 연속(이 스크립트의 기본) | `W - x` | `[0, W]` |
+    | 픽셀 인덱스 | `(W-1) - x` | `[-1, W-1]` — 원점 쪽으로 1px 밀린다 |
+
+    🔴 **규약 §5-1이 `N − v`(연속)로 정했다.** 그러므로 `phone_matches == "pixel_index"`는
+    "팀이 정할 문제"가 아니라 **폰 쪽 규약 위반**이다 — 이 함수는 그 회귀의 **유일한 자동
+    감시자**다. (v1.2 초판에는 이 한 줄이 없었고, 그때 이 probe는 "규약 미정 진단"이었다.
+    바뀐 것은 문서이고 판정 성격이 승격됐다.)
+
+    둘 다 **왕복은 정확히 성립**하므로 어느 쪽 자기검사로도 잡히지 않는다(§5-1이 같은 말을
+    한다). 잡히는 자리는 (a) 프레임 전체 박스 검산 (b) 폰↔PC 대조 둘뿐이고, 이것이 (b)다.
+    (a)는 `_selfcheck_frame_box()`가 PC 쪽에서, `scripts/detect_parity_roundtrip.py`가
+    구조적 불변식으로 지킨다.
+
+    🔴 허용오차를 지어내지 않는다 — 두 후보의 `max_xy`를 **그대로 견주기만** 한다. 규약
+    위반이면 반사축에서 정확히 1.0px이 나오지만, 그 1.0을 문턱으로 쓰지 않는다(어느 쪽이
+    폰과 **더 맞는가**만 본다).
+
+    ⚠ **실데이터 커버리지 0이다.** 회전이 항등(0°)이면 두 규약이 같은 값을 내므로 None을
+    내는데, 이 저장소의 실기기 덤프 7개는 **전부 `/1`(적용각 0°)**이라 이 probe는 **실기기
+    덤프에서 한 번도 돈 적이 없다.** 지금까지 태운 것은 합성 `/2` 덤프뿐이다.
+    """
+    if rot.degrees == 0 or not phone_boxes:
+        return None
+    alt = RotationMap(rot.degrees, rot.src_w, rot.src_h, applied=rot.applied,
+                      site=rot.site, box_edge_offset=1.0)
+    alt_boxes, _, _ = postprocess(phone_out2d, box, conf_thr, iou_thr, classes, alt)
+    cont = _compare_boxes(phone_boxes, postprocess(
+        phone_out2d, box, conf_thr, iou_thr, classes, rot)[0], bar)
+    idx = _compare_boxes(phone_boxes, alt_boxes, bar)
+    cont_xy = cont.get("max_xy_diff_px")
+    idx_xy = idx.get("max_xy_diff_px")
+    if cont_xy is None or idx_xy is None:
+        matches = None
+    elif idx_xy < cont_xy:
+        matches = "pixel_index"
+    elif cont_xy < idx_xy:
+        matches = "continuous"
+    else:
+        matches = "tie"
+    return {
+        "continuous_max_xy_diff_px": cont_xy,
+        "pixel_index_max_xy_diff_px": idx_xy,
+        "phone_matches": matches,
+        "pc_default": "continuous",
+        "spec_compliant_convention": "continuous",
+        # 🔴 불리언으로 명시한다 — 사람이 두 숫자를 보고 판단하게 두지 않는다.
+        "phone_violates_spec_5_1": (None if matches is None else matches == "pixel_index"),
+        "note": (
+            "🔴 두 규약은 반사축에서 **정확히 1.0px** 차이가 난다. **규약 §5-1이 `N − v`"
+            "(연속 좌표)로 정했다** — 박스 좌표는 letterbox 역변환이 낸 연속 좌표라 `[0, N]`을 "
+            "가득 채우기 때문이다. 그러므로 phone_matches가 'pixel_index'면 폰이 `(N-1) - v`를 "
+            "쓴 것이고 그것은 **규약 위반**이다(전처리 샘플 맵은 반대로 `(N-1) - v`가 맞다 — "
+            "한 함수를 두 자리에 쓰면 한쪽이 정확히 1px 틀린다). "
+            "🔴 **'아직 안 정해진 문제'가 아니다** — 고칠 곳은 폰이다. "
+            "⚠ 이 probe는 적용각 0°면 None을 내므로, `/1` 덤프뿐인 지금까지 **실기기에서 한 번도 "
+            "돈 적이 없다**(합성 `/2` 덤프에서만 확인됐다)"
+        ),
+    }
+
+
 def _decode_output(arr):
     """`[1, C, A]` → `(C, A)`. 배치 축이 1이 아니면 죽는다."""
     if arr.ndim == 3:
@@ -979,16 +1486,8 @@ def _run_dump(dump: Dump, sess, model_io: dict, bar: Optional[dict],
         )
 
     src_info = m.get("source") or {}
-    if not src_info.get("rotation_applied", False):
-        # 규약 §4. **반드시 낸다.**
-        warnings.append(
-            f"{dump.label}: 🔴 **rotation_applied=false** — 앱이 "
-            f"ImageProxy.imageInfo.rotationDegrees"
-            f"({src_info.get('rotation_degrees')}°)를 적용하지 않았다(알려진 이슈 29). "
-            f"모델은 **옆으로 누운 장면**을 본다. 이식 정확성 질문은 회전과 직교하므로 이 "
-            f"대조는 성립하지만, 🔴 **이 덤프로 '모델이 잘 맞힌다/못 맞힌다'를 말하면 "
-            f"안 된다** — 입력이 누워 있어 그 판단은 애초에 불가능하다 (규약 §4)"
-        )
+    # 🔴 회전은 여기서 한 번 정한다(규약 §4-2의 세 경우). 모순이면 이 안에서 죽는다.
+    rot = resolve_rotation(dump, warnings)
 
     in_name = model_io["input_name"]
     out_name = model_io["output_name"]
@@ -1041,7 +1540,10 @@ def _run_dump(dump: Dump, sess, model_io: dict, bar: Optional[dict],
 
         # PC가 **자기 힘으로** 계산한 letterbox. 매니페스트 값을 그대로 쓰면 기하 이식
         # 결함이 숨는다 — 대신 둘이 같은지를 관측으로 낸다.
-        box = letterbox(int(src["width"]), int(src["height"]),
+        # 🔴 **기준 프레임이 버전에 따라 다르다**(규약 §3-3): `/1`은 센서 치수,
+        #    `/2`는 **회전 후** 치수. 그 치수 자체도 PC가 유도한 것이지 매니페스트의
+        #    `rotated_*`를 받아 쓴 것이 아니다(resolve_rotation이 대조만 한다).
+        box = letterbox(rot.rot_w, rot.rot_h,
                         int(phone_in.shape[-1]), int(phone_in.shape[-2]))
         declared_lb = s.get("letterbox") or {}
         lb_agrees = all(
@@ -1066,7 +1568,7 @@ def _run_dump(dump: Dump, sess, model_io: dict, bar: Optional[dict],
 
         # ── E: 원본 평면 → PC 전처리 vs 폰 input.f32 ──────────────────────
         raw_src = (dump.root / str(src["file"])).read_bytes()
-        pc_in = preprocess(raw_src, src, box, pad_u8)
+        pc_in = preprocess(raw_src, src, box, pad_u8, rot)
         e_diff = _tensor_diff(pc_in.reshape(-1), phone_in.reshape(-1), "input_tensor")
 
         # ── F(본진): 폰 input.f32 → PC ORT vs 폰 output.f32 ───────────────
@@ -1080,14 +1582,32 @@ def _run_dump(dump: Dump, sess, model_io: dict, bar: Optional[dict],
         f_diff["by_channel"] = _output_diff_by_channel(pc_out, phone_out2d, conf_thr)
         # 🔴 raw float 차이만으로는 안전을 말할 수 없다 — **같은 후처리로 디코딩한 탐지
         #    집합**이 같은지를 함께 낸다.
-        f_boxes_pc, _, _ = postprocess(pc_out, box, conf_thr, iou_thr, classes)
-        f_boxes_phone_tensor, _, _ = postprocess(phone_out2d, box, conf_thr, iou_thr, classes)
+        f_boxes_pc, _, _ = postprocess(pc_out, box, conf_thr, iou_thr, classes, rot)
+        f_boxes_phone_tensor, _, _ = postprocess(phone_out2d, box, conf_thr, iou_thr,
+                                                 classes, rot)
         f_set = _compare_boxes(f_boxes_phone_tensor, f_boxes_pc, bar)
 
         # ── G: 폰 output.f32 → PC 후처리 vs 폰 boxes ──────────────────────
-        g_boxes, g_pre, g_maxconf = postprocess(phone_out2d, box, conf_thr, iou_thr, classes)
+        g_boxes, g_pre, g_maxconf = postprocess(phone_out2d, box, conf_thr, iou_thr,
+                                                classes, rot)
         phone_boxes = _normalize_phone_boxes(s.get("boxes") or [], classes, where, warnings)
         g_cmp = _compare_boxes(phone_boxes, g_boxes, bar)
+        # 🔴 폰이 박스 회전 역변환에 어느 원점 규약을 썼는가(정확히 1.0px 차이). 규약 §5-1이
+        #    아직 정하지 않은 한 줄이라, 값을 맞추지 않고 **이름을 붙여 관측으로 낸다.**
+        conv = _probe_box_convention(phone_out2d, box, conf_thr, iou_thr, classes, rot,
+                                     phone_boxes, bar)
+        if conv and conv.get("phone_matches") == "pixel_index":
+            warnings.append(
+                f"{where}: 🔴 **폰이 규약 §5-1의 회전 역변환 식을 어겼다** — 폰은 픽셀 인덱스 "
+                f"식 `(N-1)-v`와 맞고(max_xy={conv['pixel_index_max_xy_diff_px']}px), 규약이 "
+                f"정한 연속 좌표 식 `N-v`와는 "
+                f"max_xy={conv['continuous_max_xy_diff_px']}px만큼 어긋난다. "
+                f"🔴 **이것은 '아직 안 정해진 문제'가 아니다** — §5-1이 `N-v`로 정했고 "
+                f"검산도 함께 정했다(회전 후 프레임 전체 박스가 센서 프레임 전체로 가야 한다. "
+                f"인덱스 식이면 한 축이 -1로 나온다). **고칠 곳은 폰이고 PC가 아니다.** "
+                f"반사축에서 정확히 1.0px씩 밀리며 **양쪽 다 왕복은 성립**해 폰의 자기검사로는 "
+                f"안 잡힌다 — 잡히는 자리가 여기다. ④ 강조가 이 좌표를 그대로 받는다"
+            )
         pre_declared = s.get("boxes_pre_nms")
         if pre_declared is not None and int(pre_declared) != int(g_pre):
             # conf 필터까지는 같아야 한다(같은 텐서·같은 임계). 여기서 갈리면 NMS보다 **앞**의
@@ -1102,8 +1622,31 @@ def _run_dump(dump: Dump, sess, model_io: dict, bar: Optional[dict],
         e2e_out = _decode_output(np.asarray(
             sess.run([out_name], {in_name: pc_in.reshape(1, *pc_in.shape).astype("float32")})[0]
         ))
-        e2e_boxes, _, _ = postprocess(e2e_out, box, conf_thr, iou_thr, classes)
+        e2e_boxes, _, _ = postprocess(e2e_out, box, conf_thr, iou_thr, classes, rot)
         e2e_cmp = _compare_boxes(phone_boxes, e2e_boxes, bar)
+
+        # ── 역전 박스: **세되 거르지 않는다**(규약 §5-3) ───────────────────
+        # 🔴 대조 자체는 성립한다 — 폰과 PC가 **같은 역전 박스**를 내면 이식은 맞다는 뜻이고,
+        #    그때 문제는 상류 로직이나 모델 쪽이다. 그래서 경고이지 실패가 아니다.
+        inv_pc = count_inverted_boxes(g_boxes)
+        inv_phone_counted = count_inverted_boxes(phone_boxes)
+        inv_declared = s.get("boxes_inverted")
+        if inv_declared is not None and int(inv_declared) != 0:
+            warnings.append(
+                f"{where}: 🔴 **boxes_inverted={inv_declared}** — 폰이 x2<x1 또는 y2<y1인 "
+                f"박스를 {inv_declared}개 냈다(거른 개수가 아니라 **센 개수**이며 boxes 배열에 "
+                f"그대로 있다). PC 재구현도 같은 텐서에서 {inv_pc}개를 냈다. "
+                f"⚠ **대조 자체는 성립한다** — 양쪽이 같은 역전 박스를 내면 이식은 맞고 "
+                f"원인은 상류 로직이나 모델 쪽(w·h의 부호)이다. ④ 강조가 이 박스를 그대로 "
+                f"받으면 화면 가장자리에 면적 0의 선이 남는다 (규약 §5-3)"
+            )
+        elif inv_pc or inv_phone_counted:
+            warnings.append(
+                f"{where}: 🔴 **역전 박스가 있는데 매니페스트의 boxes_inverted는 "
+                f"{inv_declared!r}이다** — 폰 박스에서 센 것 {inv_phone_counted}개, PC 재구현 "
+                f"{inv_pc}개. 세는 쪽이 어긋났거나 앱이 역전 박스를 **거르고 있다**(규약 §5-3은 "
+                f"거르지 말고 세라고 한다 — 조용히 지우면 결함이 숨는다)"
+            )
 
         results.append({
             "index": idx,
@@ -1115,7 +1658,10 @@ def _run_dump(dump: Dump, sess, model_io: dict, bar: Optional[dict],
             "letterbox_agrees": lb_agrees,
             "letterbox_note": (
                 "PC는 letterbox를 **자기 힘으로 계산**하고 매니페스트 값과 대조만 한다 — "
-                "선언값을 그대로 쓰면 기하 이식 결함이 숨는다"
+                "선언값을 그대로 쓰면 기하 이식 결함이 숨는다. "
+                f"🔴 기준 프레임은 포맷 버전이 정한다(규약 §3-3): `/1`은 센서 치수, "
+                f"`/2`는 **회전 후** 치수 — 이 덤프는 /{dump.format_version}이라 "
+                f"{box.src_w}×{box.src_h}에서 계산했다"
             ),
             "E_preprocess": e_diff,
             "F_inference": f_diff,
@@ -1127,17 +1673,38 @@ def _run_dump(dump: Dump, sess, model_io: dict, bar: Optional[dict],
                 None if pre_declared is None else int(pre_declared) == int(g_pre)
             ),
             "G_max_conf_pc": round(g_maxconf, 9),
+            # 🔴 규약 §5-3. **거른 개수가 아니라 센 개수다.**
+            "G_boxes_inverted_pc": inv_pc,
+            "G_boxes_inverted_declared": inv_declared,
+            "G_boxes_inverted_phone_counted": inv_phone_counted,
+            "G_box_convention_probe": conv,
+            "G_boxes_inverted_equal": (
+                None if inv_declared is None else int(inv_declared) == inv_pc
+            ),
             "E2E": e2e_cmp,
         })
 
     return {
         "dump_dir": str(dump.root.resolve()),
         "dump_label": dump.label,
+        "format": dump.format_id,
+        "format_version": dump.format_version,
         "ep": m.get("ep"),
         "classes": m.get("classes"),
         "thresholds": {"conf": conf_thr, "iou": iou_thr},
         "source": src_info,
         "rotation_applied": bool(src_info.get("rotation_applied", False)),
+        # 🔴 **PC가 실제로 적용한 회전**. 매니페스트의 선언값과 다를 수 있다 —
+        #    대조군 arm(applied=false)에서는 기기가 90°를 보고해도 PC는 0°를 적용한다.
+        "rotation_pc": rot.as_dict(),
+        "rotation_note": (
+            "🔴 **회전을 적용했다는 것이 모델이 정확하다는 뜻이 아니다**(규약 §4-4). 입력이 "
+            "바로 서면 boxes·max_conf를 **읽을 수는 있게** 되지만, 정답 라벨도 골든 샘플도 "
+            "없어 mAP·누락률은 여전히 말할 수 없다. 이 덤프가 답하는 것은 끝까지 "
+            "'폰과 PC가 같은 답을 내는가'까지다. "
+            "⚠ rotation_site가 E의 **정의**를 바꾸지는 않는다(E는 DetectPipeline이 t를 찍는 "
+            "위치 그대로다) — 바뀌는 것은 E의 **값**이고, 그것은 회귀가 아니라 조건 변경이다"
+        ),
         "samples": results,
         "sample_count": len(results),
         "sample_count_note": (
@@ -1338,6 +1905,17 @@ def main() -> int:
 
         per_dump = [_run_dump(d, sess, model_io, bar, warnings) for d in dumps]
         cross = _cross_ep(dumps) if len(dumps) > 1 else []
+        # 🔴 EP끼리 대조하려면 **회전 조건이 같아야** 한다. 회전이 다른 덤프끼리 비교하면
+        #    출력이 다른 것이 당연하고, 그 차이를 EP 차이(fp16 강등 등)로 오독하게 된다.
+        rots = {d["dump_label"]: (d["rotation_pc"] or {}).get("degrees_effective")
+                for d in per_dump}
+        if len(dumps) > 1 and len(set(rots.values())) > 1:
+            warnings.append(
+                f"🔴 **덤프들의 적용 회전각이 서로 다르다**({rots}) — EP 간 대조는 같은 입력을 "
+                f"전제로 하는데 회전이 다르면 입력부터 다르다. 아래 cross_ep의 차이를 "
+                f"EP 차이(fp16 강등 등)로 읽으면 틀린다(각 항목의 same_input을 볼 것). "
+                f"EP 비교는 **같은 회전 조건**으로 다시 찍어서 할 것"
+            )
         if len(dumps) == 1:
             warnings.append(
                 "덤프가 하나뿐이라 **EP 간 대조를 하지 못했다**(규약 §8). NNAPI가 GPU로 "
@@ -1367,15 +1945,26 @@ def main() -> int:
         (s["G_postprocess"].get("boxes_total") or 0) for d in per_dump for s in d["samples"]
     )
     n_samples = sum(d["sample_count"] for d in per_dump)
+    inverted_pc_total = sum(
+        (s.get("G_boxes_inverted_pc") or 0) for d in per_dump for s in d["samples"]
+    )
+    inverted_declared_total = sum(
+        (s.get("G_boxes_inverted_declared") or 0) for d in per_dump for s in d["samples"]
+    )
 
     summary = {
         "run_ts": paths.run_ts,
         "label": args.label,
-        "format": FORMAT_ID,
+        # 🔴 덤프마다 포맷 버전이 다를 수 있다(`/1`과 `/2`를 둘 다 읽는다). 하나로 뭉치면
+        #    "이 요약이 어느 규격으로 읽힌 것인가"가 사라진다.
+        "formats_read": {d["dump_label"]: d["format"] for d in per_dump},
+        "formats_known": list(FORMAT_IDS),
         "format_spec": "docs/plans/20260806_detect_parity_dump_format.md",
         "scope_note": (
             "🔴 **이것은 '모델이 옳다'의 증거가 아니다.** 이식이 값을 안 바꿨다는 증거일 "
-            "뿐이다. mAP·누락률은 정답 라벨이 필요하고 여기에 없다"
+            "뿐이다. mAP·누락률은 정답 라벨이 필요하고 여기에 없다. "
+            "🔴 **회전을 적용해도 이 문장은 그대로다**(규약 §4-4) — 입력이 바로 서면 박스를 "
+            "읽을 수 있게 될 뿐, 정답 라벨이 없는 것은 그대로다"
         ),
         "model": model_block,
         "pc_runtime": {
@@ -1450,6 +2039,16 @@ def main() -> int:
                 "찍었거나 conf 임계 아래였다는 것이고, 그 덤프로는 후처리 이식을 검증하지 "
                 "못한다. 박스가 나오는 장면으로 다시 찍을 것"
             ),
+            # 🔴 규약 §5-3. **거른 개수가 아니라 센 개수다** — 0이 아니어도 대조는 성립한다
+            #    (폰과 PC가 같은 역전 박스를 내면 이식은 맞다는 뜻이다).
+            "boxes_inverted_pc_total": inverted_pc_total,
+            "boxes_inverted_declared_total": inverted_declared_total,
+            "boxes_inverted_note": (
+                "x2<x1 또는 y2<y1인 박스 수다. **거르지 않는다** — 걸러 내면 면적 0의 선이 "
+                "화면 가장자리에 남는 결함이 조용히 숨는다. 0이 아니면 경고를 내되 **대조 "
+                "자체는 성립한다**: 폰과 PC가 같은 역전 박스를 내면 이식은 맞고 원인은 상류 "
+                "로직이나 모델 쪽(w·h의 부호)이다"
+            ),
             "G_over_borrowed_bar_any": _tri_any(g_over),
             "E2E_over_borrowed_bar_any": _tri_any(e2e_over),
             "dist_note": (
@@ -1495,10 +2094,30 @@ def _print_report(summary: dict) -> None:
     for d in summary["dumps"]:
         ep = d.get("ep") or {}
         LOG.info(
-            "  [%s] ep %s→%s · 샘플 %s개 · conf=%s iou=%s",
+            "  [%s] ep %s→%s · 샘플 %s개 · conf=%s iou=%s · format=%s",
             d["dump_label"], ep.get("requested"), ep.get("resolved"),
             d["sample_count"], d["thresholds"]["conf"], d["thresholds"]["iou"],
+            d.get("format"),
         )
+        rp = d.get("rotation_pc") or {}
+        src_rot = (d.get("source") or {}).get("rotation_degrees")
+        LOG.info(
+            "      회전: 기기 보고 %s° · 적용 %s(site=%s) · PC 적용각 %s° · "
+            "센서 %s×%s → 회전 후 %s×%s",
+            src_rot, rp.get("applied"), rp.get("site"), rp.get("degrees_effective"),
+            rp.get("sensor_width"), rp.get("sensor_height"),
+            rp.get("rotated_width_pc"), rp.get("rotated_height_pc"),
+        )
+        if rp.get("applied"):
+            LOG.info(
+                "      🔴 회전을 적용했다는 것은 **모델이 정확하다는 뜻이 아니다**(규약 §4-4) "
+                "— 정답 라벨이 없어 mAP·누락률은 여전히 말할 수 없다"
+            )
+        elif rp.get("site") == ROTATION_SITE_NONE:
+            LOG.info(
+                "      🟢 의도된 대조군이다(rotation_site='none') — 회전 전 기준선. "
+                "이슈 29(미구현)와 **다른 상태**다"
+            )
         for s in d["samples"]:
             e = s["E_preprocess"]
             f = s["F_inference"]
@@ -1531,9 +2150,11 @@ def _print_report(summary: dict) -> None:
                     tf["flipped"], tf["anchors_total"], tf["phone_pass"], tf["pc_pass"],
                 )
             LOG.info(
-                "        G 박스 폰 %s ↔ PC %s · max_xy=%s px · max_conf_diff=%s · minIoU=%s",
+                "        G 박스 폰 %s ↔ PC %s · max_xy=%s px · max_conf_diff=%s · minIoU=%s "
+                "· 역전(폰 선언 %s / PC %s)",
                 g["count_lhs"], g["count_rhs"], g["max_xy_diff_px"],
                 g["max_conf_diff"], g["min_matched_iou"],
+                s.get("G_boxes_inverted_declared"), s.get("G_boxes_inverted_pc"),
             )
             LOG.info(
                 "        E2E 박스 폰 %s ↔ PC %s · max_xy=%s px",
@@ -1568,6 +2189,11 @@ def _print_report(summary: dict) -> None:
         obs.get("F_threshold_flips_total"),
     )
     LOG.info("비교된 박스 총수: %s", obs.get("boxes_compared_total"))
+    LOG.info(
+        "역전 박스(x2<x1 또는 y2<y1) 총계: 폰 선언 %s · PC 재구현 %s "
+        "— 🔴 **거른 개수가 아니라 센 개수다**(규약 §5-3)",
+        obs.get("boxes_inverted_declared_total"), obs.get("boxes_inverted_pc_total"),
+    )
     LOG.info("F 탐지 집합: %s", _set_label(obs["F_detection_set_agrees"]))
     LOG.info("G 탐지 집합: %s", _set_label(obs["G_detection_set_agrees"]))
     if obs.get("boxes_compared_total") == 0:
