@@ -1351,6 +1351,13 @@ def overlay_condition(summary: dict) -> dict | None:
 
     오버레이 열이 없는 런(오버레이 arm이 아니거나 v7 이전 로그)은 `None`이다 —
     **그것은 "박스 0개"가 아니라 "그 런에 그 열이 없다"는 뜻이다.**
+
+    🔴 **`stage_h_n: 0`이 두 가지 다른 사실을 뭉개지 않게 한다.** "H 열이 애초에 없다"와
+    "열은 있는데 값이 전부 폐기됐다"는 다른 사실인데 둘 다 `count == 0`이 된다. 이 저장소는
+    같은 구분을 `overlay_boxes`의 폐기 가드(`>= 0`)에서 이미 한 번 닫았고(0개 그렸다 ≠
+    재지 않았다), `analyze_frames` 쪽도 열이 있을 때만 "재지 못했다" 경고를 낸다 — 그 정보가
+    여기까지 오지 않아서 이 한 자리에서만 뭉개졌다. 그래서 열의 존재 여부와 폐기 개수를
+    **함께** 싣는다(`stage_h_column_present` / `stage_h_discarded`).
     """
     ov = summary.get("overlay") or {}
     cols = ov.get("columns_present") or []
@@ -1358,7 +1365,21 @@ def overlay_condition(summary: dict) -> dict | None:
         return None
     boxes = ov.get("overlay_boxes") or {}
     # 열 하나를 전제한다 — 위 상수 검사(len != 1이면 죽는다)가 그 전제를 강제한다.
-    h = ov.get(OVERLAY_COMPARE_COLUMNS[0]) or {}
+    h_col = OVERLAY_COMPARE_COLUMNS[0]
+    h = ov.get(h_col) or {}
+    h_present = h_col in cols
+    # 폐기 개수는 `analyze_frames`의 source 블록이 시계열·사유별로 갖고 있다.
+    # 🔴 **`None`은 "그 요약이 폐기 회계를 주지 않았다"이고 `0`은 "폐기가 없었다"다.**
+    #   열이 없는 런(위 h_present=False)은 물론이고, 열은 있는데 `discarded_samples`에 그
+    #   시계열 키가 아예 없는 요약도 **None**이다 — `or {}` 뒤에 `sum()`을 걸면 그 경우가
+    #   조용히 0이 되어 "전부 폐기됐다(폐기 0개)"라는 자기모순 문장이 나간다.
+    #   이 블록이 F2에서 "열 없음"을 None으로 둔 것과 **같은 판단**이며, 이 저장소가 반복해
+    #   닫아 온 "0 vs 없음"이다(overlay_boxes의 `>= 0` 가드와 같은 논거).
+    h_discarded = None
+    if h_present:
+        reasons = ((summary.get("source") or {}).get("discarded_samples") or {}).get(h_col)
+        if isinstance(reasons, dict):
+            h_discarded = sum(reasons.values())
     fl = ov.get("flicker") or {}
     return {
         "columns_present": list(cols),
@@ -1366,11 +1387,23 @@ def overlay_condition(summary: dict) -> dict | None:
         "overlay_boxes_p95": boxes.get("p95"),
         "overlay_boxes_max": boxes.get("max"),
         "overlay_boxes_n": boxes.get("count"),
+        "stage_h_column": h_col,
+        # 🔴 `stage_h_n == 0`을 읽기 전에 이 둘을 본다. False면 "재지 않았다",
+        #    True인데 n이 0이면 "쟀는데 값이 전부 폐기됐다"(앱이 -1을 쓰거나 소수 자릿수가
+        #    모자라 0.0이 됐을 수 있다 — analyze_frames의 같은 경고와 짝이다).
+        "stage_h_column_present": h_present,
+        "stage_h_discarded": h_discarded,
         "stage_h_n": h.get("count"),
         # H 표본 수와 분석 창의 프레임 수. 둘이 다르면 H가 매 프레임 돈 것이 아니다.
         "frames_rows_used": (summary.get("source") or {}).get("rows_used"),
         # 깜빡임은 판정이 아니라 관측이다(analyze_frames의 overlay.flicker가 소유한다).
+        # 🔴 **셋을 함께 낸다.** blank_transitions 하나만 실으면 "그리다가 멈춘" 런
+        #    (끝까지 0 → 전이 0)이 "깜빡이지 않았다"로 읽힌다 — 아래 phrase가 셋을 붙여 쓴다.
         "blank_transitions": fl.get("blank_transitions"),
+        "zero_frame_fraction": fl.get("zero_frame_fraction"),
+        "zero_runs_at_edge": fl.get("zero_runs_at_edge"),
+        "ended_blank": fl.get("ended_blank"),
+        "drew_then_stopped": fl.get("drew_then_stopped"),
         "flicker_available": fl.get("available"),
         "note": (
             "🔴 stage_h_ms(H칸)를 인용할 때 **박스 개수 분포를 함께** 옮긴다 — 오버레이 비용은 "
@@ -1378,23 +1411,76 @@ def overlay_condition(summary: dict) -> dict | None:
             "⚠ stage_h_n이 frames_rows_used보다 작으면 H가 **매 프레임 돌지 않았다**는 사실이며, "
             "그렇다고 프레임당 평균으로 환산하지 않는다(탐지 주기 N이 ☐ 미정이다). "
             "⚠ stage_h_ms는 **CPU 벽시계**라 gpu_sum_ms·stage_d_total_ms 어느 합에도 들어가지 "
-            "않는다 — 같은 표에 행으로 서는 것이 합산 대상이 된다는 뜻이 아니다"
+            "않는다 — 같은 표에 행으로 서는 것이 합산 대상이 된다는 뜻이 아니다. "
+            "⚠ stage_h_n=0은 두 가지다: stage_h_column_present=false면 **재지 않았다**, "
+            "true면 **쟀는데 전부 폐기됐다**(stage_h_discarded 참고). "
+            "⚠ blank_transitions는 **혼자 인용할 수 없다** — zero_frame_fraction·"
+            "zero_runs_at_edge와 함께 읽어야 '깜빡이지 않았다'와 '그리다가 멈췄다'가 갈린다"
         ),
     }
 
 
+def stage_h_sample_phrase(cond: dict) -> str:
+    """H 표본 수를 **'열 없음'과 '전부 폐기'가 갈리게** 말한다 (F2).
+
+    🔴 `stage_h_n: 0` 하나로는 두 사실이 구분되지 않는다. 이 저장소가 `overlay_boxes`의
+    폐기 가드에서 이미 닫은 구분("0개 그렸다" ≠ "재지 않았다")이 여기서만 뭉개져 있었다.
+    """
+    n = cond.get("stage_h_n")
+    rows = cond.get("frames_rows_used")
+    col = cond.get("stage_h_column") or "stage_h_ms"
+    if not cond.get("stage_h_column_present"):
+        # 열 자체가 없다. **0이 아니라 '없음'이라고 쓴다.**
+        return f"H 열 없음({col}을 그 런이 재지 않았다 — 'H가 0'이 아니다)"
+    if not n:
+        d = cond.get("stage_h_discarded")
+        # 🔴 폐기 수가 **없는 것**과 **0인 것**을 갈라 말한다(위 overlay_condition 주석).
+        #   None인데 "폐기 0개"라고 쓰면 "전부 폐기됐다(폐기 0개)"라는 자기모순이 된다.
+        why = (
+            f"(폐기 {d}개)" if isinstance(d, int)
+            else "(폐기 회계가 그 요약에 없다 — 몇 개가 왜 빠졌는지는 이 로그로 알 수 없다)"
+        )
+        return (
+            f"H 열은 있는데 유효 표본 0/{rows}프레임 — **전부 폐기됐다**{why}. "
+            f"'H가 0ms였다'가 아니라 재지 못한 것이다"
+        )
+    return f"H 표본 {n}/{rows}프레임"
+
+
+def flicker_phrase(cond: dict) -> str:
+    """깜빡임 지표 셋을 **떼어 갈 수 없게 붙여서** 낸다 (F3).
+
+    🔴 `blank_transitions`만 복사해 가면 "그리다가 멈춘" 런(박스가 사라져 끝까지 0 →
+    전이 0, 경고도 없음)이 **"깜빡이지 않았다"로 읽힌다.** 이번 라운드는 "깜빡임을 만들지
+    않았다"가 안전 주장이고 그 유일한 기계 근거가 이 지표라서, 세 값이 항상 함께 나가야 한다.
+
+    🔴 **판정선이 아니다.** 여기 어떤 임계값도 없고(합의된 값이 없다) `verdict`·종료 코드·
+    `meets_*`를 흔들지 않는다 — `drew_then_stopped`는 "마지막 프레임이 0이었다"는 **구조적
+    사실**이지 PASS/FAIL이 아니다.
+    """
+    if not cond.get("flicker_available"):
+        return "깜빡임 검출 불가"
+    base = (
+        f"깜빡임 전이 {cond.get('blank_transitions')}회 "
+        f"(0인 프레임 비율 {cond.get('zero_frame_fraction')}, "
+        f"끝에 걸린 0 구간 {cond.get('zero_runs_at_edge')}개는 세지 않음)"
+    )
+    if cond.get("drew_then_stopped"):
+        base += (
+            " — 🔴 **그리다가 멈췄다**(끝까지 0으로 남았다): 전이 0회는 '깜빡이지 않았다'가 "
+            "아니라 '다시 그리지 않았다'는 뜻이다"
+        )
+    return base
+
+
 def overlay_condition_phrase(cond: dict | None) -> str:
-    """`박스 p50=3.0 p95=4.0 max=5.0 (n=810), H 표본 810/810프레임, 깜빡임 전이 107회`"""
+    """`박스 p50=3.0 ... (n=810), H 표본 810/810프레임, 깜빡임 전이 107회 (0인 프레임 비율 ...)`"""
     if not cond:
         return "④ 열 없음(그 런은 오버레이를 재지 않았다 — '박스 0개'가 아니다)"
-    fl = (
-        f"깜빡임 전이 {cond['blank_transitions']}회"
-        if cond.get("flicker_available") else "깜빡임 검출 불가"
-    )
     return (
         f"박스 p50={cond.get('overlay_boxes_p50')} p95={cond.get('overlay_boxes_p95')} "
         f"max={cond.get('overlay_boxes_max')} (n={cond.get('overlay_boxes_n')}), "
-        f"H 표본 {cond.get('stage_h_n')}/{cond.get('frames_rows_used')}프레임, {fl}"
+        f"{stage_h_sample_phrase(cond)}, {flicker_phrase(cond)}"
     )
 
 

@@ -374,6 +374,20 @@ def main() -> int:
     interval_ns = int(1e9 / args.camera_fps)
     n_frames = int(args.duration_sec * args.camera_fps)
 
+    # 🔴 **값을 깎지 않는다 — 알리기만 한다.** 측정자가 준 lag이 코드에서 조용히 바뀌면
+    #    로그의 params와 실제 모델이 어긋나고, 그건 미래 시각을 쓰는 것보다 나쁘다.
+    #    lag이 프레임 간격보다 크면 게시 하나가 여러 프레임에 걸쳐 hold되는 것이 정상이며
+    #    (탐지 3.4Hz / 표시 30FPS가 바로 그 상황이다) 게시 전 프레임은 **직전 게시본**을 쓴다.
+    if args.overlay_source_lag_ms > 0:
+        lag_ns = int(args.overlay_source_lag_ms * MS)
+        if lag_ns > interval_ns:
+            LOG.info(
+                "--overlay_source_lag_ms=%s는 프레임 간격(%.1fms)보다 크다 — 게시가 %.1f프레임 "
+                "뒤에 도착하므로 그 사이 프레임들은 **직전 게시본**을 hold한다(첫 게시 전이면 "
+                "-1). 값은 그대로 쓴다",
+                args.overlay_source_lag_ms, interval_ns / MS, lag_ns / interval_ns,
+            )
+
     # 열 이름 -> 기준 ms. 0이면 그 열을 쓰지 않는다.
     gpu_base = {
         "stage_b_ms": args.stage_b_ms,
@@ -424,6 +438,11 @@ def main() -> int:
     detect_recv_times: list[int] = []
     # ④ 오버레이가 쓸 수 있는 **직전에 게시된** 탐지 결과의 시각. None = 아직 게시 없음(-1).
     last_source_ns: int | None = None
+    # 🔴 **게시 예정 큐.** 탐지 워커가 게시할 시각을 예약해 두고, 각 프레임은 자기
+    #    t_render_start 이하로 **이미 도착한** 것만 꺼내 쓴다. 앱에서 탐지 워커가 게시하고
+    #    GL 스레드가 읽는 관계가 그대로 이 큐다 — 아직 게시되지 않은 결과를 프레임이 볼 수는
+    #    없다. t_recv가 단조이고 lag이 상수이므로 이 리스트는 항상 오름차순이다.
+    pending_sources: list[int] = []
     overlay_boxes_written = 0
     overlay_empty_frames = 0
 
@@ -520,8 +539,6 @@ def main() -> int:
             row["t_overlay_source_ns"] = (
                 last_source_ns if last_source_ns is not None else MISSING
             )
-            if last_source_ns is None:
-                overlay_source_pending_frames += 1
         rows.append(row)
         # 게시 **예약**. 탐지가 도는 런은 그 주기로, 안 도는 런은 매 프레임(경로 태우기용).
         # ⚠ 트리거한 프레임 자신은 이 결과를 쓸 수 없다 — 예약을 행을 쓴 뒤에 하고, 위에서
@@ -533,6 +550,31 @@ def main() -> int:
         prev_end = t_render_end
         dropped_accum = 0
         emitted += 1
+
+    # ── 🔴 **세어서 낸다 — 주장하지 않는다.** ────────────────────────────────
+    #    아래 둘은 **실제로 CSV에 쓸 행의 값**에서 센 것이다. "미래 시각을 쓴 행은 0개다"를
+    #    문장으로 박아 두면 그건 자기검증이 아니다 — FIFO 모델이 나중에 퇴행해도 같은 문장이
+    #    그대로 나간다. 이 저장소가 모델 sha256을 선언값이 아니라 **로드한 바이트에서** 계산하고
+    #    ORT 버전을 gradle 문자열이 아니라 **런타임에서** 읽는 것과 정확히 같은 논거다.
+    #
+    #    🔴 **비교 기준은 CSV에 쓰인 값이다**(`t_render_start_ns`, 즉 render_skew가 얹힌 쪽).
+    #      FIFO는 스큐 전 내부 시각으로 돌기 때문에, 음수 스큐를 준 로그에서는 실제로 미래 행이
+    #      생긴다 — 소비자(하네스)가 보는 것은 CSV 값이므로 여기서도 CSV 값으로 센다.
+    #    ⚠ `--render_clock_skew_sec`는 **일부러 깨진 로그를 만드는 플래그**다. 그 구성에서
+    #      미래 행이 나오는 것 자체는 막지 않는다(막으면 그 시험 입력을 만들 수 없다).
+    #      고칠 것은 거짓말하는 문장뿐이고, 이 블록은 그 수를 정직하게 낸다.
+    overlay_source_future_rows = 0
+    # 아직 어떤 게시본도 없어서 -1을 쓴 프레임 수(런 앞자락). **결함이 아니라 정상 상태다** —
+    # 첫 추론이 끝나기 전에는 그릴 결과가 없다. 하네스는 이 행들을 신선도 폐기로 세므로,
+    # 그 폐기 수를 되물을 때 이 값이 생성기 쪽 근거가 된다.
+    overlay_source_pending_frames = 0
+    if "t_overlay_source_ns" in overlay_cols:
+        for r in rows:
+            src = r["t_overlay_source_ns"]
+            if src == MISSING:
+                overlay_source_pending_frames += 1
+            elif src > r["t_render_start_ns"]:
+                overlay_source_future_rows += 1
 
     frames_path = paths.out_dir / "frames.csv"
     # 열 목록을 명시한다. GPU 열을 안 쓰면 헤더에 아예 넣지 않는다 —
@@ -755,6 +797,18 @@ def main() -> int:
         "overlay_columns_written": overlay_cols,
         "overlay_boxes_rows": overlay_boxes_written,
         "overlay_empty_frames": overlay_empty_frames,
+        # t_overlay_source_ns에 -1을 쓴 프레임 수 = **아직 어떤 결과도 게시되지 않은** 앞자락.
+        # 🔴 **쓴 행에서 센 값이다**(모델이 그럴 것이라는 선언이 아니다). 하네스는 이 행들을
+        #   overlay_freshness_ms의 below_min 폐기로 세므로 두 수가 맞물린다.
+        "overlay_source_pending_frames": overlay_source_pending_frames,
+        # 🔴 t_overlay_source_ns > t_render_start_ns 인 행 수 — **CSV에 쓰인 값에서 셌다.**
+        #   게시 큐 모델이 도는 한 0이다. 0이 아니면 (a) --render_clock_skew_sec로 일부러
+        #   시계를 어긋나게 한 로그이거나 (b) 그 모델이 퇴행한 것이다. 문장으로 단언하지 않고
+        #   여기 수를 남기는 이유가 (b)다 — 퇴행해도 같은 문장이 나가면 검증이 아니다.
+        "overlay_source_future_rows": overlay_source_future_rows,
+        # 런이 끝날 때까지 도착하지 않은 게시 예약. lag이 길면 마지막 추론들의 결과는
+        # 어느 프레임도 쓰지 못한 채 런이 끝난다 — 결함이 아니라 꼬리에서 정상인 상태다.
+        "overlay_source_undelivered": len(pending_sources),
         "camera_frames_offered": n_frames,
         "frames_emitted": len(rows),
         "frames_dropped": n_frames - len(rows),
@@ -804,6 +858,30 @@ def main() -> int:
             "🔴 stage_h_ms는 **CPU 벽시계**라 GPU 합에 들어가지 않는다",
             ", ".join(overlay_cols), overlay_boxes_written, overlay_empty_frames,
         )
+        if "t_overlay_source_ns" in overlay_cols:
+            LOG.info(
+                "  게시 시각: -1인 프레임 %d개(첫 게시 전 앞자락 — 정상), 런이 끝날 때까지 "
+                "배달되지 않은 게시 예약 %d건, **미래 시각을 쓴 행 %d개**(쓴 행에서 셌다: "
+                "t_overlay_source_ns > t_render_start_ns)",
+                overlay_source_pending_frames, len(pending_sources),
+                overlay_source_future_rows,
+            )
+            if overlay_source_future_rows:
+                # 🔴 세어 보니 0이 아니다. 스큐를 준 로그면 **의도한 시험 입력**이고,
+                #    안 줬으면 게시 큐 모델이 퇴행한 것이다 — 두 경우를 문장이 갈라 말한다.
+                LOG.warning(
+                    "  ⚠ 미래 시각을 쓴 행이 %d개 있다 — 하네스는 이 행들을 "
+                    "overlay_freshness_ms 폐기로 세고 '시계 순서가 뒤집혔다'고 경고한다. %s",
+                    overlay_source_future_rows,
+                    (
+                        f"--render_clock_skew_sec={args.render_clock_skew_sec}를 줬으므로 "
+                        f"**의도한 깨진 로그**다(t_render_*만 다른 시계로 찍혔고 게시 시각은 "
+                        f"참시각이다 — 그 교차검사 경로를 태우는 입력이다)"
+                        if args.render_clock_skew_sec else
+                        "🔴 스큐를 주지 않았는데 나왔다 = **게시 큐 모델이 퇴행했다.** 각 "
+                        "프레임은 자기 t_render_start 이하로 이미 도착한 게시본만 써야 한다"
+                    ),
+                )
         LOG.warning(
             "  ⚠ 이 오버레이 값들은 **인자로 만든 것이지 측정치가 아니다.** 박스 개수도 "
             "탐지 결과가 아니라 난수이므로, 여기서 나온 깜빡임 전이 수는 **검출기가 도는지를 "

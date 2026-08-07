@@ -735,6 +735,13 @@ def overlay_flicker(
           수십 프레임이면 장면에서 실제로 사라진 모양이다 — 길이가 그 둘을 가르는 단서다.
       (c) `box_count_changes_per_min` — 개수가 바뀐 횟수/분. 0을 거치지 않는 튐(2→3→2)까지
           포함하므로 (a)보다 넓다.
+      (d) `drew_then_stopped` — **박스를 그린 적이 있는데 런이 0으로 끝났는가.** (a)가 0인
+          것만으로는 "④가 계속 그려졌다"고 말할 수 없다: 박스가 중간에 사라져 끝까지 0이면
+          전이도 0이고 위 어느 값도 그것을 지목하지 않는다. 그건 "깜빡이지 않았다"가 아니라
+          **"그리다가 멈췄다"** 이고 다른 결함이다.
+          🔴 **임계값이 아니다.** "마지막 프레임이 0이었고 그 전에 그린 적이 있다"는 구조적
+          사실이라 비율 문턱을 새로 만들지 않는다(합의된 값이 없다). 0 구간을 런 끝에서 세지
+          않는 규칙 자체는 그대로다 — 고친 것은 **보고 쪽**이다.
 
     🔴 **판정선을 만들지 않는다.** "몇 회 이상이면 안 된다"는 값은 이 저장소에 없다
     (판정선은 `lib/targets.py`에만 있고 깜빡임 한계는 팀 합의 전이다). 그래서 이 블록은
@@ -789,6 +796,16 @@ def overlay_flicker(
 
     changes = sum(1 for k in range(1, n) if boxes[k] != boxes[k - 1])
     window_min = (analysis_window_sec or 0.0) / 60.0
+    # (d) 런의 앞자락/뒷자락 상태. **전이 수만으로는 보이지 않는 사실**이다.
+    drew_at_all = any(b > 0 for b in boxes)
+    started_blank = boxes[0] == 0
+    ended_blank = boxes[-1] == 0
+    # 뒷자락 0 구간의 길이(프레임). 위 zero_runs에서 끝에 걸린 마지막 구간이다.
+    tail_run = (
+        zero_runs[-1]["length_frames"]
+        if zero_runs and zero_runs[-1]["start_index"] + zero_runs[-1]["length_frames"] == n
+        else 0
+    )
     return {
         **common,
         "available": True,
@@ -807,6 +824,26 @@ def overlay_flicker(
         "zero_runs_at_edge": len(edge),
         "zero_frames": sum(1 for b in boxes if b == 0),
         "zero_frame_fraction": round(sum(1 for b in boxes if b == 0) / n, 4),
+        # 🔴 blank_transitions와 **떨어질 수 없는 짝.** 위 두 값 없이 전이 수만 인용하면
+        #    "그리다가 멈춘" 런이 "깜빡이지 않았다"로 읽힌다.
+        "companion_metrics": ["zero_frame_fraction", "zero_runs_at_edge"],
+        # (d) 런의 시작/끝 상태 — 끝에 걸린 0 구간을 세지 않기 때문에 **전이 수에는 절대
+        #     나타나지 않는** 사실이다.
+        "started_blank": started_blank,
+        "ended_blank": ended_blank,
+        "tail_zero_run_frames": tail_run,
+        "drew_then_stopped": bool(drew_at_all and ended_blank),
+        "drew_then_stopped_note": (
+            "박스를 그린 적이 있는데 런이 0으로 끝났다 — 뒷자락 0 구간 "
+            f"{tail_run}프레임({round(tail_run / n, 4)}). **'깜빡이지 않았다'가 아니라 "
+            "'다시 그리지 않았다'다.** 전이 수는 이 구간을 세지 않으므로(끝에 걸린 0 구간은 "
+            "런 종료를 깜빡임으로 오인하지 않기 위해 제외한다) blank_transitions만 보면 "
+            "이 사실이 보이지 않는다. ⚠ **판정선이 아니다** — verdict·종료 코드·meets_*를 "
+            "흔들지 않고, 임계값도 없다(합의된 값이 없다). 원인이 ④인지 ③인지 장면인지는 "
+            "이 지표가 가르지 못한다"
+            if drew_at_all and ended_blank else
+            "런이 0으로 끝나지 않았다(또는 박스를 한 번도 그리지 않았다) — 지목 없음"
+        ),
         # (c) 0을 거치지 않는 튐까지 포함한 넓은 지표.
         "box_count_changes": changes,
         "box_count_changes_per_min": (
@@ -833,13 +870,39 @@ def flicker_warning(flicker: dict) -> str:
     return (
         f"④ 오버레이에 박스가 **사라졌다 다시 나타난 구간이 {flicker['blank_transitions']}개** "
         f"있다 (0 구간 길이 프레임 수: p50={zr.get('p50')} p95={zr.get('p95')} "
-        f"max={zr.get('max')}, 0인 프레임 비율 {flicker.get('zero_frame_fraction')}). "
+        f"max={zr.get('max')}, 0인 프레임 비율 {flicker.get('zero_frame_fraction')}, "
+        f"끝에 걸린 0 구간 {flicker.get('zero_runs_at_edge')}개는 세지 않았다). "
         f"광과민 사용자에게 깜빡임으로 보이는 모양이고, 상류는 ④를 '항상 정적 윤곽'으로 못 "
         f"박았다 — H칸 평활의 목적이 튐 억제인데 이 전이는 그 반대 방향이다. "
         f"⚠ **그러나 이것이 곧 결함이라는 뜻은 아니다**: 장면에서 위험물이 실제로 사라졌다 "
         f"다시 나타났을 수도 있다. 구간이 짧으면(1~2프레임) 탐지 갱신이 끊긴 쪽에 가깝고 "
         f"길면 장면 쪽에 가깝지만, **어느 쪽인지 가르려면 정답 라벨이 필요하다**"
         f"(safety_regression 블록이 그 사유를 갖는다). "
+        f"⚠ 판정선이 아니다 — verdict·종료 코드를 흔들지 않는다"
+    )
+
+
+def drew_then_stopped_warning(flicker: dict) -> str:
+    """박스를 그린 적이 있는데 런이 0으로 끝났을 때 내는 문장 (F3).
+
+    🔴 **`flicker_warning`과 다른 사실을 말한다.** 저쪽은 "사라졌다 다시 나타났다"(깜빡임)이고
+    이쪽은 "그리다가 멈췄다"이다. 후자는 `blank_transitions`에 **절대 나타나지 않는다** —
+    끝에 걸린 0 구간은 세지 않기 때문이다(그 규칙 자체는 옳다: 런 종료를 깜빡임으로 오인하지
+    않기 위한 것이다). 그래서 전이 0회를 "④가 계속 그려졌다"의 근거로 복사해 가면 조용히
+    틀린다.
+
+    🔴 **판정선이 아니다.** 임계값이 없고 verdict·종료 코드·meets_*를 흔들지 않는다.
+    """
+    return (
+        f"④ 오버레이가 **그리다가 멈췄다**: 박스를 그린 구간이 있었는데 런이 0으로 끝났다 "
+        f"(뒷자락 0 구간 {flicker.get('tail_zero_run_frames')}프레임, 0인 프레임 비율 "
+        f"{flicker.get('zero_frame_fraction')}, 표본 {flicker.get('samples')}프레임). "
+        f"🔴 이 런의 blank_transitions={flicker.get('blank_transitions')}회를 "
+        f"'깜빡이지 않았다'의 근거로 쓰지 말 것 — 끝에 걸린 0 구간은 전이로 세지 않으므로 "
+        f"(런 종료를 깜빡임으로 오인하지 않기 위한 규칙이다) **'다시 그리지 않았다'가 전이 "
+        f"수에는 나타나지 않는다.** 깜빡임과는 다른 결함이다. "
+        f"⚠ 원인이 ④(평활·hold 만료)인지 ③(탐지가 결과를 못 냈다)인지 장면(위험물이 실제로 "
+        f"사라졌다)인지는 이 지표가 가르지 못한다 — safety_regression이 그 사유를 갖는다. "
         f"⚠ 판정선이 아니다 — verdict·종료 코드를 흔들지 않는다"
     )
 
@@ -1249,6 +1312,11 @@ def main() -> int:
     # overlay.flicker 블록과 리포트 줄에 그대로 드러난다.
     if flicker.get("blank_transitions"):
         summary["warnings"].append(flicker_warning(flicker))
+    # 🔴 **전이 0회에도 나올 수 있는 경고다** — 그게 이 경고의 존재 이유다. 박스가 사라져
+    #    끝까지 0인 런은 전이가 0이고 위 경고가 안 나오는데, 그건 "깜빡이지 않았다"가 아니라
+    #    "그리다가 멈췄다"이고 다른 결함이다(F3). 판정·종료 코드는 흔들지 않는다.
+    if flicker.get("drew_then_stopped"):
+        summary["warnings"].append(drew_then_stopped_warning(flicker))
     if lighting_warning:
         # 판정은 바꾸지 않는다. 조명은 판정선이 아니라 **비교 조건**이다.
         summary["warnings"].append(lighting_warning)
@@ -1477,19 +1545,30 @@ def _print_overlay(summary: dict) -> None:
         return
     # 🔴 0건일 때도 한 줄 남긴다 — 근거가 보이지 않으면 "0건이었다"와 "이 검사가 아예 돌지
     #    않았다"를 사람이 구별할 수 없다(입력 완전성 줄과 같은 이유).
+    # 🔴 **전이 수와 짝 지표 둘을 한 줄에 붙여 찍는다** (F3). 전이 수만 찍으면 사람이 그
+    #    한 값만 복사해 가고, "그리다가 멈춘" 런이 "깜빡이지 않았다"로 읽힌다.
     if fl.get("blank_transitions"):
         LOG.error(
-            "  🔴 깜빡임 검출: >0→0→>0 전이 %s회 (0 구간 프레임 수 p50=%s p95=%s max=%s) "
+            "  🔴 깜빡임 검출: >0→0→>0 전이 %s회 (0 구간 프레임 수 p50=%s p95=%s max=%s, "
+            "표본 %s프레임, 0인 프레임 비율 %s, 끝에 걸린 0 구간 %s개는 세지 않았다) "
             "— 아래 경고를 볼 것",
             fl["blank_transitions"], (fl.get("zero_run_frames") or {}).get("p50"),
             (fl.get("zero_run_frames") or {}).get("p95"),
             (fl.get("zero_run_frames") or {}).get("max"),
+            fl.get("samples"), fl.get("zero_frame_fraction"), fl.get("zero_runs_at_edge"),
         )
     else:
         LOG.info(
             "  깜빡임 검출: >0→0→>0 전이 0회 (표본 %s프레임, 0인 프레임 비율 %s, "
             "끝에 걸린 0 구간 %s개는 세지 않았다)",
             fl.get("samples"), fl.get("zero_frame_fraction"), fl.get("zero_runs_at_edge"),
+        )
+    # 🔴 전이 0회에도 찍힌다 — 전이 수에 **절대 나타나지 않는** 사실이기 때문이다.
+    if fl.get("drew_then_stopped"):
+        LOG.error(
+            "  🔴 그러나 **그리다가 멈췄다**: 런이 0으로 끝났다(뒷자락 0 구간 %s프레임). "
+            "전이 %s회를 '깜빡이지 않았다'의 근거로 쓰지 말 것 — 아래 경고를 볼 것",
+            fl.get("tail_zero_run_frames"), fl.get("blank_transitions"),
         )
     LOG.info(
         "  박스 개수 변화 %s회 (%s회/분) — 0을 거치지 않는 튐까지 포함한다. 관측된 개수: %s",

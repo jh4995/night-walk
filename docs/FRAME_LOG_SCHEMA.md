@@ -271,6 +271,27 @@ v5 자기검사와 같은 모양이다 — 들어가 있으면 모듈이 죽는�
 **박스가 있는 프레임 쪽으로만** 치우친다. `-1`은 **아직 어떤 결과도 게시되지 않았다**(첫 추론
 완료 전)일 때만이다. 그 행은 `overlay_freshness_ms`의 폐기로 계수되며 사유 문장이 그렇게 말한다.
 
+🔴 **어떤 프레임도 자기 `t_render_start_ns`보다 뒤에 게시된 결과를 쓸 수 없다.** 앱에서는 탐지
+워커가 게시하고 GL 스레드가 읽으므로, 아직 게시되지 않은 결과는 그 프레임에 **존재하지 않는다.**
+그래서 이 열의 값은 항상 `<= t_render_start_ns`이고, 그렇지 않은 행은 하네스가
+`overlay_freshness_ms` 폐기로 세며 **"두 시각의 순서가 뒤집혔다"**고 경고한다(실기기라면 앱의
+시계 순서 결함이다). 합성 생성기도 같은 모델로 돈다 — 게시 예정 시각을 큐에 넣고 각 프레임은
+자기 렌더 시작까지 **이미 도착한** 것만 꺼내 쓴다. 생성기는 그 사실을 **문장으로 단언하지 않고
+쓴 행에서 세어** `session.json`에 남긴다(아래 두 키).
+
+| `session.json` 키 (합성 로그) | 담는 것 |
+|---|---|
+| `overlay_source_pending_frames` | `t_overlay_source_ns == -1`인 행 수 = **첫 게시 전 앞자락.** 결함이 아니라 정상 상태이며, 하네스의 `overlay_freshness_ms` `below_min` 폐기 수와 맞물린다 |
+| `overlay_source_undelivered` | 런이 끝날 때까지 어느 프레임도 쓰지 못한 게시 예약 수(꼬리). lag이 길면 정상이다 |
+| `overlay_source_future_rows` | 🔴 `t_overlay_source_ns > t_render_start_ns`인 행 수를 **쓴 행에서 센 값.** 게시 큐 모델이 도는 한 0이다. 0이 아니면 (a) `--render_clock_skew_sec`로 일부러 시계를 어긋나게 한 로그이거나 (b) 그 모델이 퇴행한 것이며, 생성기 로그가 두 경우를 갈라 말한다 |
+
+> **왜 세는가:** "미래 시각을 쓴 행은 0개다"를 **문장으로 박아 두면 자기검증이 아니다** — 모델이
+> 퇴행해도 같은 문장이 그대로 나간다. 모델 sha256을 선언값이 아니라 **로드한 바이트에서**
+> 계산하고 ORT 버전을 gradle 문자열이 아니라 **런타임에서** 읽는 것과 같은 논거다.
+> 비교 기준은 **CSV에 쓰인 값**이다(스큐가 얹힌 `t_render_start_ns`) — 소비자가 보는 것이 그것이고,
+> `--render_clock_skew_sec`가 음수인 로그에서는 실제로 미래 행이 생긴다(그건 **의도한 시험 입력**이라
+> 막지 않는다).
+
 #### 오버레이 파생 시계열 (CSV 열이 아니다)
 
 | 이름 | 계산 | 버짓 칸 | 하한/상한 |
@@ -560,15 +581,32 @@ render_start → render_end 제출               (render_latency_ms)
 
 | 키 | 무엇 |
 |---|---|
-| `blank_transitions` | 🔴 **`>0 → 0 → >0` 전이 횟수.** 양쪽이 모두 양수인 0 구간의 개수 |
+| `blank_transitions` | 🔴 **`>0 → 0 → >0` 전이 횟수.** 양쪽이 모두 양수인 0 구간의 개수. **혼자 인용할 수 없다** — 아래 `companion_metrics` |
+| `companion_metrics` | 🔴 `blank_transitions`와 **떨어질 수 없는 짝**의 이름 목록(`zero_frame_fraction` · `zero_runs_at_edge`). 하네스는 콘솔·경고·`run_session`의 조건 문장 **어디서도** 전이 수를 이 둘 없이 내지 않는다 |
 | `zero_run_frames` | 0 구간 **길이 분포(프레임 수 — ms가 아니다)**. 1~2프레임이면 탐지 갱신이 끊긴 모양, 수십이면 장면에서 사라진 모양 |
+| `zero_frames` / `zero_frame_fraction` | 박스가 0개인 프레임 수 / 그 비율. **전이 수와 함께 읽어야 하는 값이다** — 전이 0회인데 이 비율이 크면 "깜빡이지 않았다"가 아니라 아래 `drew_then_stopped`다 |
 | `box_count_changes` / `_per_min` | 개수가 바뀐 횟수(0을 거치지 않는 튐 포함) / 분당 |
 | `zero_runs_at_edge` | 시계열 **앞자락·뒷자락**에 걸린 0 구간 수. **전이로 세지 않는다** — 그건 "사라진" 것이 아니라 아직/이미 없는 상태이며, 세면 모든 런에 최소 1이 붙어 지표가 죽는다 |
+| `started_blank` / `ended_blank` | 첫 프레임 / 마지막 프레임이 0이었는가 |
+| `tail_zero_run_frames` | 뒷자락 0 구간의 길이(프레임). 0이면 런이 박스를 그린 채 끝났다 |
+| `drew_then_stopped` | 🔴 **"박스를 그린 적이 있는데 런이 0으로 끝났다".** `ended_blank`이고 그 전에 `>0`이 있었으면 true. **`blank_transitions`에는 절대 나타나지 않는 사실**이다(끝에 걸린 0 구간은 전이로 세지 않으므로) — 그건 "깜빡이지 않았다"가 아니라 **"다시 그리지 않았다"** 이고 다른 결함이다 |
+| `drew_then_stopped_note` | 위 값이 true일 때의 사유 문장(뒷자락 길이·비율 포함). false면 "지목 없음"이라고 적힌다 |
 | `sampling_note` | 이 수열은 **폐기되지 않은 행만** 이은 것이다. 폐기가 있으면 전이가 감춰지거나 없던 전이가 붙어 보일 수 있다 |
 
-- 🔴 **판정선을 만들지 않는다.** "몇 회 이상이면 안 된다"는 값은 이 저장소에 없다(판정선은
-  `lib/targets.py`에만 있고 깜빡임 한계는 팀 합의 전이다). `threshold: null`이며
-  **`verdict`·종료 코드를 흔들지 않는다.**
+- 🔴 **`blank_transitions`를 혼자 옮기지 않는다.** 이번 라운드의 안전 주장은 "깜빡임을 만들지
+  않았다"이고 그 유일한 기계 근거가 이 지표인데, 전이 수만 복사해 가면 **박스가 사라져 끝까지
+  0인 런**(전이 0회, 경고 없음)이 "깜빡이지 않았다"로 읽힌다. 그래서 하네스는 전이 수를 낼 때
+  `zero_frame_fraction`·`zero_runs_at_edge`를 **항상 같은 줄에 붙여** 내고,
+  `drew_then_stopped`인 런은 **따로 지목**한다(전이 0회여도 경고가 나간다).
+  ⚠ 지목은 **사실 서술이지 PASS/FAIL이 아니다.**
+- 🔴 **판정선을 만들지 않는다.** "몇 회 이상이면 안 된다"는 값도 "0 비율이 얼마 이상이면
+  안 된다"는 값도 이 저장소에 없다(판정선은 `lib/targets.py`에만 있고 깜빡임 한계는 팀 합의
+  전이다). `threshold: null`이며 **`verdict`·종료 코드·`meets_*`를 흔들지 않는다.**
+  `drew_then_stopped`도 임계값이 아니라 **구조적 사실**("마지막 프레임이 0이었고 그 전에 그린
+  적이 있다")이라 새 숫자를 만들지 않는다.
+- ⚠ `drew_then_stopped`의 **원인은 이 지표가 가르지 못한다** — ④(평활·hold 만료)인지
+  ③(탐지가 결과를 못 냈다)인지 장면(위험물이 실제로 사라졌다)인지. 그 사유는
+  `safety_regression`이 갖는다.
 - 🔴 **전이가 있다는 것이 곧 결함이라는 뜻도 아니다.** 장면에서 위험물이 실제로 사라졌다 다시
   나타났을 수 있고, **어느 쪽인지 가르려면 정답 라벨이 필요하다**(→ `safety_regression`).
   전이가 1건 이상일 때만 경고가 붙는다(0건 런에 매번 뜨면 곧 아무도 안 본다).
@@ -1070,7 +1108,7 @@ F(그리고 그것을 포함하는 모든 값)에 **자기 비용을 얹는다.*
 | `stage2_bilateral` | ② 노이즈 억제(bilateral). `+bf` arm이 ② 자리에서 한 번 더 도는 패스 → `stage_d_denoise_ms` | 앱 (`+bf` arm) / 생성기 `--stage_d_denoise_ms` |
 | `detect` | ③ 탐지. 계측은 **별 파일 `detect.csv`**로 받는다(→ §2-D). GPU 열이 아니라 CPU 벽시계 E·F·G다 | 앱 (③ arm) / 생성기 `--detect_every_n` |
 | `stage4_highlight` | ④ 강조 오버레이 패스(② 출력 위에 스트로크 박스를 덧그린다) → `stage_i_ms` | 앱 `RenderArm.HIGHLIGHT_BOXES` · `HIGHLIGHT_BOXES_STRESS`(둘 다 `["blit_2pass","stage4_highlight"]`) / 생성기 `--stage_i_ms` |
-| `stage4_smoothing` | ④ **좌표 평활·hold**(H칸) → `stage_h_ms`. 🔴 **렌더 패스가 아니라 GL 스레드의 CPU 구간이다** — 그래서 비용이 GPU query가 아니라 CPU 벽시계 열로 온다. 토큰을 두는 이유는 "박스를 그리되 평활하지 않는 arm"과 구조적 조건이 다르기 때문이다. ⚠️ **앱이 아직 내지 않는 예약 토큰이며 팀원2 쪽 명명이다**(`stage2_bilateral`과 같은 취급 — 앱이 다른 문자열을 쓰면 앱이 정답이고 여기를 고친다) | 생성기 `--stage_h_ms` / 앱 생산 예정 |
+| `stage4_smoothing` | ④ **좌표 평활·hold**(H칸) → `stage_h_ms`. 🔴 **렌더 패스가 아니라 GL 스레드의 CPU 구간이다** — 그래서 비용이 GPU query가 아니라 CPU 벽시계 열로 온다. 토큰을 두는 이유는 "박스를 그리되 평활하지 않는 arm"과 구조적 조건이 다르기 때문이다. ✅ **앱이 낸다**(2026-08-07, `SessionWriter` `schema_version=7`) — `detect_cpu_highlight` / `detect_cpu_highlight_1q`의 `pipeline_stages`에 `blit_2pass,detect,stage4_highlight,stage4_smoothing`으로 실린다. 앱이 실제로 쓰는 문자열이 정답이며(`stage2_bilateral`과 같은 취급) 어긋나면 여기를 고친다 | 앱(`RenderArm`) / 생성기 `--stage_h_ms` |
 
 > **조합 arm에는 새 토큰을 만들지 않는다** (v4). ② 자리에서 스테이지를 두 번 도는 arm은
 > 실제로 위 토큰을 **두 개 나열**한다(예: `["blit_2pass","stage2_drago","stage2_clahe"]`) —
@@ -1415,6 +1453,13 @@ python scripts/gen_synthetic_frames.py --overlay_boxes 2 --overlay_empty_frac 0.
 # 개수 없이 H만 주면 "조건 없는 숫자" 경고 경로 / 게시 시각 없이 개수만 주면 신선도 없음 경고
 python scripts/gen_synthetic_frames.py --stage_h_ms 0.3 --pipeline_stages "blit_2pass,stage4_smoothing"
 python scripts/gen_synthetic_frames.py --overlay_boxes 2 --pipeline_stages "blit_2pass,stage4_highlight"
+# lag이 프레임 간격보다 커도 **인자를 깎지 않는다** — 게시가 여러 프레임에 걸쳐 hold될 뿐이고
+# (탐지 3.4Hz / 표시 30FPS가 바로 그 상황), 생성기는 그 사실을 알리기만 한다.
+python scripts/gen_synthetic_frames.py --detect_every_n 9 --overlay_source_lag_ms 120 --overlay_boxes 3
+# 게시 시각 열 + 음수 렌더 스큐 = **미래 시각을 쓴 행이 실제로 생기는** 로그(의도한 시험 입력).
+# 생성기가 그 행 수를 세어 로그와 session.overlay_source_future_rows에 남긴다.
+python scripts/gen_synthetic_frames.py --detect_every_n 9 --overlay_source_lag_ms 120 \
+  --overlay_boxes 3 --render_clock_skew_sec -0.5
 ```
 
 > ⚠️ **합성 detect.csv의 E·F·G는 인자로 만든 값이지 측정치가 아니다.** 목적은 소비자 경로
