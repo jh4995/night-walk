@@ -423,9 +423,10 @@ t≈60~100초에 평탄화한다. **교차 배치(②③④⑤)로 재서** EP �
 | 자료 | 위치 |
 |---|---|
 | 아이디어 기획서 (공식 제출본, 7/29) | `docs/아이디어기획서_밤마실_20260729.pdf` (**gitignore**) |
-| 모델링 담당 레포 | `kty2001/KDT_Hackathon` — **2차 대조 HEAD `c77e1d6`** (8/3) |
-| **2차 대조 (최신)** | [RESEARCH_20260803_UPSTREAM.md](research/RESEARCH_20260803_UPSTREAM.md) — ③ `C4b` · `C7` 경로 분리 · ④ 명세 · 조합 arm |
-| 1차 대조 (충돌 U-1~U-9) | [RESEARCH_20260731_UPSTREAM.md](research/RESEARCH_20260731_UPSTREAM.md) — 해소 현황은 2차 문서 §8 |
+| 모델링 담당 레포 | `kty2001/KDT_Hackathon` — **3차 대조 HEAD `30dbaef`** (8/23 02:42) |
+| **3차 대조 (최신)** | [RESEARCH_20260823_UPSTREAM.md](research/RESEARCH_20260823_UPSTREAM.md) — 🔴 **`26n_640` 기각**(8/23 야간 게이트) · 🔴 **`conf 0.35`는 argparse 기본값**(최신 결정 0.25) · 주간→야간 순위 역전 · 새 충돌 **U-10~U-19** |
+| 2차 대조 | [RESEARCH_20260803_UPSTREAM.md](research/RESEARCH_20260803_UPSTREAM.md) — ③ `C4b` · `C7` 경로 분리 · ④ 명세 · 조합 arm. 미해소 현황은 3차 문서 §8 |
+| 1차 대조 (충돌 U-1~U-9) | [RESEARCH_20260731_UPSTREAM.md](research/RESEARCH_20260731_UPSTREAM.md) — 해소 현황은 2차 문서 §8 · 3차 문서 §8 |
 
 ## 알려진 이슈
 
