@@ -10,6 +10,10 @@ outputs/
 # 대조 결과는 docs/research/RESEARCH_20260731_UPSTREAM.md 에 텍스트로 남는다
 docs/*.pdf
 
+# 눈으로 보는 용도의 임시 산출물. 🔴 **측정이 아니다** — init_run() 스탬프가 없으므로
+# 여기 있는 숫자·이미지는 나중에 비교할 수 없다. 근거로 남길 것은 docs/ 로 옮겨 적는다.
+scratch/
+
 # 파이썬
 __pycache__/
 *.pyc
