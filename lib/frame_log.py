@@ -960,6 +960,49 @@ RENDER_ARM_DETECT_CPU_HIGHLIGHT = "detect_cpu_highlight"
 RENDER_ARM_DETECT_CPU_HIGHLIGHT_1Q = "detect_cpu_highlight_1q"
 RENDER_ARM_DETECT_CPU_1Q = "detect_cpu_1q"
 
+# ── ②+③+④ 통합 arm (v7) ──────────────────────────────────────────────────
+# ⚠ **생산자는 앱이다.** 위 예약어 블록들과 같은 취급 — 팀원2 쪽 명명이 아니라 앱이 확정한
+#   id를 뒤이어 등록한 것이고(어휘 등록의 정상 순서다), 등록은 "이 문자열을 안다"는 뜻일
+#   뿐이다. 하네스는 여기서도 arm의 의미를 해석하지 않는다.
+#
+# **무엇인가:** ② 조합(Drago→CLAHE 체인) 출력 **위에** ③ 탐지 결과를 ④ 오버레이로 덧그리는
+#   9패스 arm이다. 패스 순서는
+#     1 OES→FBO_A / 2 drago analyze / 3 drago build / 4 drago apply(A→B) /
+#     5 clahe analyze / 6 clahe build / 7 clahe apply(B→**A**) /
+#     8 ④ 오버레이 → **A**(clear 없이 덧그림) / 9 present(A→화면)
+#   이고, GPU 열도 그 순서로 9개다(stage_b / d_analyze / d_build / d_apply /
+#   d_analyze2 / d_build2 / d_apply2 / stage_i / gpu_present) + CSV 오버레이 열 3개
+#   (stage_h_ms · overlay_boxes · t_overlay_source_ns).
+#   🔴 **새 토큰도 새 열도 만들지 않는다.** `pipeline_stages`는 기존 토큰 6개를 **나열**하고
+#     (["blit_2pass","stage2_drago","stage2_clahe","detect","stage4_highlight",
+#       "stage4_smoothing"])
+#     열은 위 12개가 이미 v7까지 다 등록돼 있다 — 조합 arm에 합성 토큰을 만들지 않는 규칙과
+#     **같은 이유**다(같은 구조가 두 이름으로 갈리면 모든 비교가 "조건 다름"이 된다).
+#     그래서 이 라운드는 **CSV 열이 하나도 늘지 않고 `SCHEMA_VERSION`도 7 그대로다.**
+#
+# 🔴 **이 저장소 최초로 `stage2_*`와 `stage4_*`를 동시에 갖는 arm이다.** 전수 확인 결과
+#   기존 arm 중 `stage2_*` 보유 12개 · `stage4_*` 보유 5개인데 **교집합이 0**이었다
+#   (앱 `RenderArm.kt`의 `pipelineStages` 전수). 측정 arm을 "한 번에 하나만 바꾼다"는
+#   원칙으로 만든 결과이고 그 격리 덕에 D칸·I칸이 각각 나왔지만, **제품은 저조도 개선된
+#   화면 위에 박스가 얹혀야 한다** — 그 구성을 한 번도 재지 않았다는 사실이 이 arm의 이유다.
+#
+# 🔴 **`_1q` 짝이 없다 → 이 arm에서 I칸·H칸의 하한을 낼 수 없다.** 하한은 "같은 계측 방식의
+#   두 arm 차"로만 나오는데(위 `_1q` 블록) 이 arm에는 프레임 단일 query 판도, 오버레이만 뺀
+#   9패스 분모도 없다. **알려진 이슈 36과 같은 부류**이며(분모를 잘못 골라 I 하한이 0으로
+#   나온 그 실패), 다른 arm의 부풀림 비율을 옮겨 보정할 수도 없다 — 중복 계상량은 패스
+#   구성마다 다르다. **다음 세션 작업 항목이다.**
+#
+# ⚠ **패스7과 패스8의 타깃이 같은 FBO_A다.** clahe apply가 A에 쓰고 오버레이가 clear 없이
+#   같은 A에 덧그리므로, 드라이버가 두 렌더패스를 병합하면 `stage_d_apply2_ms`와
+#   `stage_i_ms`의 **경계가 흐려진다.** 알려진 이슈 3(개별 D 열이 한 패스 밀려 있다)과 같은
+#   부류의 귀속 문제이며, 하네스가 갈라낼 수단은 없다 — 두 열을 따로 인용하기 전에 이 사실을
+#   함께 옮긴다.
+#
+# ⚠ **측정용 추가이며 제품 구성 확정이 아니다.** 팀 결정 4건(② 융합 채택 여부 · bf 여부 ·
+#   §B-4 ts · 탐지 주기 N)이 미결이라 이 arm은 상류 잠정 1위와 **같은 구성이 아니다.**
+#   이 arm의 숫자를 "제품 성능"으로 인용하지 않는다.
+RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT = "detect_cpu_chain_highlight"
+
 RENDER_ARMS = (
     RENDER_ARM_PASSTHROUGH,
     RENDER_ARM_BLIT_2PASS,
@@ -1003,6 +1046,9 @@ RENDER_ARMS = (
     RENDER_ARM_DETECT_CPU_HIGHLIGHT,
     RENDER_ARM_DETECT_CPU_HIGHLIGHT_1Q,
     RENDER_ARM_DETECT_CPU_1Q,
+    # ②+③+④ 통합(v7). **stage2_*와 stage4_*를 동시에 갖는 첫 arm**이고 `_1q` 짝이
+    # 아직 없다(I·H 하한 불가) — 위 블록 참고.
+    RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT,
     RENDER_ARM_SYNTHETIC,
 )
 

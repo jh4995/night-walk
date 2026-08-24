@@ -863,6 +863,41 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 실패한다. 나머지 키(`model.sha256` · `period_n` · `padding_pixel_fraction`)는 해석하지 않고
 그대로 싣는다.
 
+#### `detect.postprocess` (v7 신설) — 🔴 **"이 런이 어느 임계로 돌았나"를 로그가 답하게 한다**
+
+**왜 이 블록이 생겼는가.** 지금까지 `session.json`에는 conf·iou가 **아예 없었다.** 두 값이
+기록된 곳은 파리티 arm이 남기는 `parity.json` 하나뿐이었고, 그 arm은 **시간 인용 금지**여서
+성능·오버레이 런에는 임계 기록이 전혀 없었다. 그래서 `boxes_out`·`overlay_boxes`·G·H·I를
+놓고 *"이 런은 어느 임계였나"* 를 물으면 **로그가 답하지 못했다** — 알려진 이슈 38이 그
+질문이고(*"지금까지의 박스 관련 측정이 전부 근거 없는 0.35 위에 있다"*), 답을 못 하는 상태로는
+그 이슈를 로그로 닫을 수 없다. **임계는 박스 관련 모든 숫자의 조건이므로 조건 기록에 있어야 한다.**
+
+| 키 | 예 | 담는 것 |
+|---|---|---|
+| `conf_used` | `0.25` | 🔴 **그 런이 실제로 쓴 conf.** 상류 `detection.md`가 **운영값으로 확정**한 값이다 |
+| `iou_used` | `0.7` | 그 런이 실제로 쓴 NMS IoU |
+| `conf_declared_in_metadata` | `0.35` | `models/**/metadata.json`이 싣고 있는 값. 같은 상류 문서가 **"내보내기 검증용 기본값"**이라고 명시한 값이다(상류 `export_onnx.py`의 argparse 기본값) |
+| `iou_declared_in_metadata` | `0.7` | 〃 의 iou. 지금은 `iou_used`와 같다 — **같다는 사실도 기록한다**(다음에 갈리는 날 무엇이 움직였는지 알 수 있다) |
+| `conf_override_active` | `true` | metadata 선언값을 앱이 **덮어썼는가**. `conf_used != conf_declared_in_metadata`인 상태를 불리언으로 못 박는다 — 사람이 두 숫자를 비교해 판단하게 두지 않는다 |
+| `conf_source` | 상류 문서의 확정 지점 | `conf_used`가 어디서 왔는지 |
+| `declared_source` | metadata 파일 경로 | `conf_declared_in_metadata`가 어디서 왔는지. **출처가 둘이라는 사실 자체를 로그에 남긴다** |
+| `metadata_not_edited_reason` | 문장 | 🔴 **우리가 `metadata.json`을 고치지 않은 이유**(아래) |
+| `class_wise_conf` | `null` | 클래스별 임계는 **쓰지 않는다.** `null`이 정상이다 — 값을 지어내지 않는다(`detect.period_n`이 `null`인 것과 같은 취급). 🔴 **사유는 이 값에 들어 있지 않다** — 아래 `class_wise_conf_reason`이 **별 키**다 |
+| `class_wise_conf_reason` | 문장 | 🆕 위 `null`의 사유. **적용하지 않았고 코드에 경로도 만들지 않았다** — 상류가 클래스별 conf(bollard 하향 · stairs 유지)를 1순위 카드로 적었지만 **그 임계값이 어느 계약 문서에도 없고** `metadata.json`에 클래스별 임계 항목 자체가 없다(지어내지 않는다). 🔴 그러므로 **이 표는 11키다** — 예전에 이 사유를 `class_wise_conf` 칸에 접어 두어 10키로 보였고, 접힌 키는 로그를 받은 사람이 grep할 이름이 없다 |
+| `thresholds_note` | 문장 | 이 숫자들을 읽을 때의 조건. 🔴 **conf를 낮추면 `boxes_out`·G·H·I가 전부 커진다** — 임계가 다른 런의 그 값들을 나란히 놓지 않는다 |
+
+🔴 **왜 `metadata.json`을 고치지 않았는가.** 고치면 **계약값의 출처가 둘로 갈린다** — 모델
+패키지(팀 산출물)와 우리 저장소가 서로 다른 `conf`를 선언하게 되고, 그 뒤로는 "계약값이
+무엇인가"를 물을 때 어느 쪽을 봐야 하는지 알 수 없다. 이건 `nightwalk-conventions` §3
+(미확정 계약값을 지어내지 않는다)이 막는 것과 같은 부류이며, `models/**`는 **인수분 원본
+배치 그대로** 두는 것이 이 저장소의 규약이다. **재발행 요청은 알려진 이슈 44로 유효하다** —
+블록은 그 요청이 처리될 때까지 *"기계가 싣는 값"과 "우리가 쓴 값"이 다르다*는 사실을 매 런
+로그에 남기는 자리다.
+
+⚠️ **하네스는 이 블록을 해석하지 않는다.** 위 `detect` 표의 키들(`enabled`·`ep.*`)과 달리
+`postprocess`는 판정·회수·계획 대조에 쓰이지 않는다 — `summary.json`의 `session`에 그대로
+실려 나가고, 사람이 박스 관련 숫자를 인용할 때 함께 옮기는 조건이다.
+
 #### `gpu_timer.supported` 모순 검사
 
 `gpu_timer.supported == true`라고 **선언**했는데 단계 시계열의 유효 표본이 0이면
@@ -891,7 +926,11 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 | `upstream_deviation` | 🔴 상류 스펙 문구와 기하가 어긋나는 지점의 전문. 스트로크가 경계선 **가운데 맞춤**이라 경계 밖 일부를 덮는데, 스펙 문구는 "경계선 밖은 일절 안 건드림"이다. 픽셀 대조(`INTERFACES.md` §B-6의 골든 이미지)를 하는 날 이 문장이 없으면 막힌다 — 그 골든 이미지가 아직 없어 **어느 쪽이 맞는지는 미확인**이다 |
 | `stroke_px_at_720p` · `underline_margin_px_at_720p` · `stroke_formula` | 두께와 그 계산식 |
 | `process_resolution` · `short_side_px` | 실제로 두께를 계산한 처리 해상도. 없으면 `process_resolution=null` + `resolution_note`(값을 지어내지 않는다) |
-| `colors` (`stairs`·`person`·`underline`) · `class_note` · `no_red_reason` | 색 세 개와 클래스 2종(`stairs`·`person`)의 범위, **빨강을 쓰지 않는 이유**(야간 배경에 묻히고 적록색약에서 무너진다). `class_note`는 `INTERFACES.md` §A-4의 클래스 2번이 아직 `☐`라 3번째 색을 지어내지 않았다는 사실을 담는다 |
+| `colors` (`stairs`·`person`·`bollard`·`underline`) · `class_note` · `no_red_reason` | 색 **네 개**(어휘 3종 + 밑선)와 그 범위, **빨강을 쓰지 않는 이유**(야간 배경에 묻히고 적록색약에서 무너진다). ⚠️ **v7에서 어휘가 둘에서 셋으로 늘었다** — `class_note`(앱 `RenderArm.HIGHLIGHT_CLASS_NOTE`)는 이제 *"색은 클래스 **이름**으로 고른다(인덱스가 아니다). 어휘는 `stairs`·`person`·`bollard` **셋**이고 이름의 출처는 모델 임베드 메타의 `names` 하나뿐"* 이라고 말한다. 🔴 **"3번째 색을 지어내지 않았다"는 예전 서술은 거짓이 됐다** — 3번째 색은 선언됐고(→ `colors.bollard`), 그것이 지어낸 값이 아니라 **우리 선언**이라는 사실은 `bollard_color_provenance`에 있다. `no_red_reason`은 이제 **중립색 후보에만** 적용된다(→ 아래 ④ 클래스 색 절) |
+| `colors.bollard` (v7) | 🆕 **초록 `(0, 1, 0)`.** 3클래스 모델(`person`·`stairs`·`bollard`)이 들어오면서 세 번째 클래스 색이 실제로 필요해졌다 — 위 `class_note`가 말하던 `☐`가 값으로 채워진 자리다. **상류 팔레트에 `bollard`가 없다**(→ `bollard_color_provenance`) |
+| `class_color_mapping.table.bollard` (v7) | 🆕 클래스 이름 → 색 매핑 표의 `bollard` 항. 🔴 **값의 출처는 상수 하나이고(`OverlayClassColors.BOLLARD_COLOR_TEXT`) `session.json`에는 두 자리로 실린다** — `overlay.colors.bollard`와 이 칸이 그 **같은 상수**를 각각 읽는다(`person_color_deviation`과 같은 구조다. `RenderArm.HIGHLIGHT_COLOR_BOLLARD`는 그 상수의 **별칭**이다). 앱이 규약을 명시한다: *"색 문장의 출처는 `OverlayClassColors` 하나다 — 여기에 사본을 두면 두 블록이 서로 다른 말을 한다"*(`RenderArm.kt`). 그러므로 **색을 고칠 자리는 그 상수 하나**이고, `session.json`의 두 자리는 함께 따라온다 — 두 번째 자리를 찾아 고칠 필요가 없다. 지금까지 `bollard`는 어휘 밖 이름이라 **중립색(흰색)으로 그려졌다** |
+| `person_color_deviation` (v7) | 🔴 **상류 명세 이탈의 기록.** 아래 절 |
+| `bollard_color_provenance` (v7) | 🆕 `bollard` 초록의 출처. 🔴 **이것은 이탈이 아니다** — 아래 절 |
 | `no_blink_reason` · `blink_not_a_perf_claim` | 깜빡이지 않는 이유(광과민 — 상류가 '항상 정적 윤곽'으로 못 박았다)와, 🔴 **그 사실을 성능·안전 근거로 쓰지 말라는** 명시(이 런은 깜빡임을 시험하지 않았다) |
 | `geometry` | 스트로크 quad 정점 수·드로우콜 수, 전체화면 SDF로 그리지 않은 이유(그러면 I칸이 다른 물리량이 된다) |
 | `tile_reload_note` | ⚠ 이 패스는 `glClear`를 부르지 않아 **컬러 어태치먼트 재-load 비용이 `stage_i_ms`에 섞여 있다**. 빼낼 수단이 없다 |
@@ -918,6 +957,74 @@ id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통
 
 ⚠ **하네스는 이 블록을 해석하지 않는다** — 개수를 검증하지도, 개수로 arm을 묶지도 않는다
 (`render_arm` 표의 규약과 같다). `summary.json`의 `session`에 그대로 실려 나간다.
+
+##### ④ 클래스 색 — **이탈 1건과 이탈이 아닌 것 1건을 갈라 적는다** (v7)
+
+3클래스 모델(`person`·`stairs`·`bollard`)이 들어오면서 색이 셋 필요해졌다. 그중 **하나는
+상류 명세 이탈이고 하나는 아니다.** 두 사실을 한 문장으로 묶으면 이탈이 출처 설명에 섞여
+묻히므로 키를 가른다.
+
+**🔴 `person_color_deviation` — 이탈이다 (기록하고 넘어간다, 숨기지 않는다)**
+
+`person` = **빨강**은 상류 `emphasize.py` 명세와 **어긋난다.** 그 명세는 `person` = **시안**이고
+**빨강을 명시적으로 금지**한다(*"휘도가 낮아 야간 배경에 묻히고 적록색약에서 무너진다"*).
+**사용자가 재확인해 결정한 사항이므로 그대로 구현하되, 위험 둘을 로그에 박아 둔다:**
+
+| 위험 | 내용 |
+|---|---|
+| (a) 야간 가시성 | `person`이 **가장 흔한 위험물**인데 야간 배경에서 **가장 안 보이는 색**이 된다 |
+| (b) 적록색약 | **빨강 + 초록이 정확히 적록색약 조합**이라 `person`과 `bollard`가 구분되지 않는다 — **대상이 저시력자다** |
+
+알려진 이슈 42가 이 항목이고, 이 키는 그 이슈를 **매 런 로그에** 남기는 자리다.
+값은 `session.json`에 **두 자리**로 나간다 — `overlay.person_color_deviation`과
+`overlay.class_color_mapping.person_color_deviation`(색 표를 떼어 읽는 소비자에게도 이탈이
+보여야 한다. `render_arm`을 `stages` 블록에 한 번 더 싣는 것과 같은 이유다).
+
+⚠️ **이 블록에는 `no_red_reason`(빨강을 쓰지 않는 이유)이 v4부터 이미 있다.** `person`=빨강과
+정면으로 어긋나 보이지만, 앱은 두 문장의 **적용 범위를 갈라** 정합을 맞췄다:
+`no_red_reason`은 이제 **어휘 밖 이름의 중립색 후보에 대해서만** 참이고(중립색은 여전히
+빨강이 아니다) **어휘색에는 적용되지 않는다.** 🔴 **범위를 떼고 인용하면 두 키가 서로를
+부정하는 것처럼 읽힌다** — 한쪽만 옮기지 않는다.
+
+**🟢 `bollard_color_provenance` — 이탈이 아니다**
+
+**상류 팔레트에 `bollard`가 없다.** 상류가 정한 것은 `stairs`·`person` 둘뿐이고 어휘 밖
+이름은 말하지 않았다 — 그래서 지금까지 `bollard`는 **어휘 밖 이름의 중립색(흰색)** 으로
+그려졌다(앱 `OverlayClassColors.UNKNOWN_COLOR`). 초록은 **비어 있던 자리를 우리가 선언한
+값**이며 사용자 지시다. 그러므로 이 키가 담는 것은 두 사실이고, **그 둘을 한 문장으로 뭉치지
+않는다**:
+
+1. 상류에 `bollard` 색이 **없었다**(어긋난 것이 아니라 비어 있었다 — `class_note`의 `☐`가
+   가리키던 자리다).
+2. 초록은 **우리 선언 + 사용자 지시**다(상류 인용이 아니다 — `UNKNOWN_COLOR` 흰색을 "우리가
+   선언한 값"으로 적어 둔 것과 같은 취급).
+
+⚠️ **위 (b) 위험은 이 키에 적지 않는다.** 적록색약 충돌은 `person`=빨강이 만든 것이고,
+`bollard`=초록 단독으로는 발생하지 않는다 — 위험을 두 키에 나눠 적으면 이탈의 소재가 흐려진다.
+
+**이 키도 `session.json`에 두 자리로 나간다** — `overlay.bollard_color_provenance`와
+`overlay.class_color_mapping.bollard_color_provenance`. `person_color_deviation`과 **같은
+배치이고 같은 이유**다(색 표를 떼어 읽는 소비자에게도 출처가 보여야 한다). 값의 출처는
+상수 하나(`OverlayClassColors.BOLLARD_COLOR_PROVENANCE`, 앱은
+`RenderArm.HIGHLIGHT_BOLLARD_COLOR_PROVENANCE`로 가리킨다)이므로 **고칠 자리는 하나**다.
+
+### v7 신설 키 — **산문이 사실만 말하고 이름을 대지 않던 것들** (실제 경로)
+
+위 절들의 산문은 아래 사실들을 이미 말한다. 그런데 **키 이름이 없으면 로그를 받은 사람이
+무엇을 grep할지 모른다** — 사실은 문서에 있고 키는 앱에만 있는 상태가 된다. 아래 경로는
+앱 `log/SessionWriter.kt`를 읽어 확인한 것이다(추측이 아니다).
+
+| 키 경로 | 실리는 조건 | 담는 것 |
+|---|---|---|
+| `stage2_params.not_a_product_decision` · `overlay.not_a_product_decision` | 통합 arm(`detect_cpu_chain_highlight`) | **측정용 추가이며 제품 구성 확정이 아니다**(팀 결정 4건 미결)의 기계 기록. **두 자리**에 실린다 — ② 서술만 떼 읽는 소비자와 ④ 블록만 떼 읽는 소비자 양쪽에 보여야 한다. 값의 출처는 상수 하나(`RenderArm.CHAIN_HIGHLIGHT_NOT_A_PRODUCT_DECISION`) |
+| `stage2_params.detect_input_note` | 〃 | 🔴 **이 arm에서도 ③ 탐지 입력은 ② 개선을 거치지 않은 원본 프레임이다.** 결함이 아니라 상류 요구다 — ②를 탐지 앞단에 붙이면 `stairs` 야간 오탐이 크게 늘어난다(모델 패키지가 같은 경고를 `metadata.json`의 `warning`에 싣는다). 그러므로 이 arm의 `boxes_out`·`overlay_boxes`로 "②가 탐지 품질에 준 영향"을 말할 수 없다 |
+| `stage2_params.no_lower_bound_note` · `overlay.no_lower_bound_note` | 〃 | 🔴 **I칸·H칸의 하한을 낼 수 없다(상한만 나온다)** — `_1q` 짝이 없어 차분 분모가 이 런에 없다. 위 통합 arm 절의 산문이 가리키는 키가 이것이다. **두 자리**에 실린다 |
+| `stage2_params.color_transform_sites_note` | 〃 | 같은 블록의 `color_transform_sites`·`color_transform_declared` 계수가 **어느 arm 기준인지**. 그 계수는 체인 arm(8패스) 기준이고 이 arm은 9패스다 — 범위를 떼고 읽으면 "9패스 arm을 8패스로 셌다"가 된다 |
+| `render.pass_column_count_mismatch` | ⚠️ **어긋났을 때만** (패스별 계측 arm에서 서술 패스 수 ≠ CSV 열 수) | 🔴 **정상이면 이 키가 아예 없다** — 그러므로 **키의 존재 자체가 신호**다(값을 읽기 전에 키가 있는지를 본다). 앱이 일부러 그렇게 만들었다: *"일치하면 키가 없다 — '확인했다'와 '어긋났다'를 섞지 않는다."* 있으면 같은 블록 `render.passes[].gpu_column` 매핑을 신뢰할 수 없고, 앱 쪽에서는 `beginPass` 수와 열 수가 어긋나 프레임이 통째로 버려진다. ⚠️ 경로가 `render.gpu_timer.*`가 **아니다** — `render.passes`의 형제다 |
+| `detect.postprocess.class_wise_conf_reason` | ③ 런 | `class_wise_conf = null`의 사유. **별 키다** → 위 `detect.postprocess` 표 |
+
+⚠️ **하네스는 이 키들을 해석하지 않는다** — `summary.json`의 `session`에 그대로 실려 나가고,
+사람이 그 런의 숫자를 인용할 때 함께 옮기는 조건이다. 앱이 키를 늘리면 이 표를 고친다.
 
 ### `lighting_condition` — 어휘를 고정한다
 
@@ -1044,6 +1151,67 @@ id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통
 하나의 GPU 시간"이 아닌 채로 하한 계산에 들어간다 — **로그만 보면 그럴듯하다.**
 기존 `_1q` arm 6개가 어떻게 등록돼 있는지 확인하고 같은 모양으로 넣는다.
 
+
+##### ②+③+④ 통합 arm (v7) — **`stage2_*`와 `stage4_*`를 동시에 갖는 첫 arm**
+
+| 값 | 렌더 | 계측 | 무엇을 재는가 |
+|---|---|---|---|
+| `detect_cpu_chain_highlight` | **9패스** (② Drago→CLAHE 체인 + ④ 오버레이) | 패스별 GPU query 9열 + `stage_h_ms` + `overlay_boxes` + `t_overlay_source_ns` | ② 개선된 화면 **위에** 박스를 얹은 구성의 D·I·H (상한만) |
+
+`pipeline_stages` = `["blit_2pass", "stage2_drago", "stage2_clahe", "detect", "stage4_highlight", "stage4_smoothing"]`
+— **기존 토큰 6개를 나열한다. 새 토큰을 만들지 않는다**(조합 arm 규칙과 같은 이유 → 아래
+`pipeline_stages` 절). 여섯 토큰은 v7까지 전부 이미 등록돼 있다.
+
+**패스 순서와 GPU 열 (9개. 표의 순서가 패스 순서다)**
+
+| 패스 | 무엇 | 타깃 | 열 |
+|---|---|---|---|
+| 1 | OES→FBO_A | FBO_A | `stage_b_ms` |
+| 2 | Drago analyze (리덕션) | — | `stage_d_analyze_ms` |
+| 3 | Drago build (계수) | — | `stage_d_build_ms` |
+| 4 | Drago apply | FBO_A→FBO_B | `stage_d_apply_ms` |
+| 5 | CLAHE analyze (히스토그램) | — | `stage_d_analyze2_ms` |
+| 6 | CLAHE build (클립+CDF) | — | `stage_d_build2_ms` |
+| 7 | CLAHE apply | FBO_B→**FBO_A** | `stage_d_apply2_ms` |
+| 8 | ④ 오버레이 (clear 없이 덧그림) | **FBO_A** | `stage_i_ms` |
+| 9 | present | 화면 | `gpu_present_ms` |
+
+`frames.csv` 오버레이 열 3개(`stage_h_ms` · `overlay_boxes` · `t_overlay_source_ns`)는
+`detect_cpu_highlight`와 같다 → §2 "④ 오버레이 열".
+
+🔴 **이 저장소 최초로 `stage2_*`와 `stage4_*`를 동시에 갖는 arm이다.** 전수 확인 결과 기존
+arm 중 `stage2_*` 보유 **12개** · `stage4_*` 보유 **5개**인데 **교집합이 0**이었다
+(앱 `RenderArm.kt`의 `pipelineStages` 전수). 측정 arm을 **"한 번에 하나만 바꾼다"** 원칙으로
+만든 결과이고, 그 격리 덕에 D칸과 I칸이 각각 나왔다. 그러나 **제품은 저조도 개선된 화면 위에
+박스가 얹힌 화면**이고 그 구성은 한 번도 측정된 적이 없다 — 그것이 이 arm의 이유다.
+
+🔴 **`_1q` 짝이 없다 → 이 arm에서 I칸·H칸의 하한을 낼 수 없다.** 하한은 "같은 계측 방식의 두
+arm 차"로만 나오는데(위 `_1q` 절) 이 arm에는 프레임 단일 query 판도, 오버레이만 뺀 9패스
+분모도 없다. **알려진 이슈 36과 같은 부류**다 — 분모를 잘못 골라(`blit_2pass_1q`) I 하한이
+`0`으로 나왔고 그 `0`은 "④가 공짜"가 아니라 "분모가 상한을 통째로 중복 계상했다"였다.
+⚠️ 다른 arm의 부풀림 비율을 옮겨 보정할 수 없다(패스 구성마다 다르다: ④ 오버레이 arm 39.9%
+vs 9패스 arm 43.3%, 알려진 이슈 21). **하한 arm 추가는 다음 세션 항목이다.**
+
+⚠️ **패스7과 패스8의 타깃이 같은 FBO_A다.** CLAHE apply가 A에 쓰고 오버레이가 `glClear` 없이
+같은 A에 덧그리므로, 드라이버가 두 렌더패스를 병합하면 **`stage_d_apply2_ms`와 `stage_i_ms`의
+경계가 흐려진다.** 알려진 이슈 3(개별 D 열이 한 패스 밀려 있다)과 같은 부류의 귀속 문제이며
+하네스가 갈라낼 수단은 없다 — **두 열을 따로 인용할 때 이 사실을 함께 옮긴다.**
+
+⚠️ **측정용 추가이며 제품 구성 확정이 아니다.** 팀 결정 4건(② 융합 채택 여부 · `bf` 여부 ·
+`INTERFACES.md` §B-4 `ts` · 탐지 주기 `N`)이 미결이라 이 arm은 **상류 잠정 1위와 같은 구성이
+아니다.** 이 arm의 숫자를 "제품 성능"으로 인용하지 않는다.
+
+🔴 **`SCHEMA_VERSION`을 올리지 않았다 — v7 그대로다.** 근거는 코드로 확인했다:
+- **`frames.csv`·`detect.csv` 열이 하나도 늘지 않았다.** GPU 열 9개는 v2~v4에, 오버레이 열
+  3개는 v7에 이미 들어와 있다(`COLUMN_ADDED_IN`). 열이 늘지 않으면 `check_schema_version`이
+  낼 문장도 없다.
+- **`session.json` 키 추가는 additive다.** 하네스에는 세션 키 화이트리스트가 없고(미지 키
+  경고 경로 자체가 없다) 위 `detect.postprocess`·`overlay.*` 신설 키는 **하네스가 읽지
+  않는다** — `summary.json`의 `session`에 그대로 실려 나갈 뿐이다.
+- **올리면 오히려 거짓 경고가 난다.** v8로 올리면 기존·현행 앱이 내는 `schema_version=7`
+  로그가 전부 *"앱이 하네스보다 뒤처졌다"* 경고를 받는데, 그 경고가 나열할 **"늘어난 열"은
+  '없음'**이다. 근거 없는 경고는 곧 아무도 안 보게 된다.
+
 ##### `detect_parity_*` = **이식 정확성 대조 전용 arm** (v6)
 
 | 값 | 무엇을 하는가 |
@@ -1115,6 +1283,11 @@ F(그리고 그것을 포함하는 모든 값)에 **자기 비용을 얹는다.*
 > 도는 것이 그 두 스테이지이므로 그게 정확한 선언이고, 조합 전용 토큰을 새로 지으면 같은
 > 구조가 두 이름으로 갈려 단독 런과의 비교가 "조건 다름"이 된다. 조합인지 단독인지는
 > `render_arm`이 구분한다(그쪽이 비교 조건이다).
+
+> **②+③+④ 통합 arm도 같다** (v7). `detect_cpu_chain_highlight`는 위 토큰을 **여섯 개
+> 나열한다**(`blit_2pass` · `stage2_drago` · `stage2_clahe` · `detect` · `stage4_highlight` ·
+> `stage4_smoothing`) — 4단계를 한 화면에 띄운다고 새 합성 토큰을 만들지 않는다. 실제로 도는
+> 것이 그 여섯이므로 그것이 정확한 선언이고, 통합인지 단독인지는 `render_arm`이 구분한다.
 
 - 어휘 밖 토큰이 오면 `analyze_frames.py`가 **경고**하고
   `source.pipeline_stages_vocab_ok = false` / `source.pipeline_stages_unknown_tokens`에 남긴다.
@@ -1279,6 +1452,35 @@ gpu_present_ms                                        ← 버짓 칸이 없는 �
   비워 두면 그 런은 나중에 아무것과도 정직하게 비교할 수 없다
 
 ## 8. 사용법
+
+### 🔴 판정 전에 사람이 확인할 것 — **열이 없으면 경고가 나오지 않는다**
+
+`analyze_frames.py`는 **아는 열이 사라진 것을 경고하지 않는다.** 스키마가 정의한 열이
+`frames.csv`에 없으면 그 칸은 조용히 비고, 판정(`verdict.meets_*`)도 종료 코드도 움직이지
+않는다. 그래서 스모크·측정 판정 절차에 **사람이 하는 확인 항목**이 하나 필요하다:
+
+> 🔴 **판정 전에 `summary.json`의 `stages.columns_present`에 그 arm의 열이 *다* 있는지 사람이
+> 확인한다**(arm별 패스→열 표는 §5). 열이 없으면 **경고 없이 그 칸만 조용히 비고**, ④가
+> 측정된 것처럼 읽힐 수 있다.
+
+기계가 남기는 흔적은 둘뿐이고 **어느 쪽도 "없다"고 말해 주지 않는다**: `stages.<열>`이
+`{"count": 0, "p50": null, …}`이 되는 것과, `stages.columns_present`에서 그 이름이 빠지는 것.
+🔴 **`count == 0`은 "0이었다"가 아니라 "그 열이 없었다"이고**, 그 구분은 `columns_present`를
+함께 봐야 나온다(§3의 `overlay` 블록이 같은 이유로 두 값을 함께 낸다).
+
+⚠️ **`source.pipeline_stages_contradicted`는 이 경우를 잡지 못한다** — 그 검사는 *"선언은
+비었는데 실측은 있다"*의 **한 방향만** 본다. 그래서 `pipeline_stages`가 `stage4_highlight`를
+선언하고 `stage_i_ms` 열은 **없는** 반대 방향의 모순은 `false`로 남는다.
+
+📌 **합성 로그로 실증(2026-08-24 — 로직 확인이며 실측이 아니다).** `render_arm=highlight_boxes`
+로그에서 `stage_i_ms` 열만 뺐더니 관련 **경고 0건 · exit 0**이고,
+`stages.stage_i_ms = {"count": 0, "p50": null, …}` · `columns_present = ["stage_b_ms"]` ·
+`source.pipeline_stages_contradicted = false`였다.
+
+🚫 **이것은 코드로 고칠 항목이 아니다(이 라운드 범위 밖).** "열이 없다 ≠ `-1`"은 프레임 로그
+전체에 걸친 기존 설계이고(§2 "선택 열" · §4 "열 단위 방어선"), 없는 열을 경고로 만들려면
+**arm별 기대 열 목록을 하네스가 갖고 판정에 쓰는** 설계 변경이 된다 — 열의 생산자가 앱이라는
+규약(§5)과 함께 결정할 사안이다.
 
 ### 런이 여러 개인 세션은 `run_session.py`로 (아래 ①②를 대신 돌려 준다)
 
