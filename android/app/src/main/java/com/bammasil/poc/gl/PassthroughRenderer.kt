@@ -87,6 +87,19 @@ import javax.microedition.khronos.opengles.GL10
  *   `stage_h_ms`(CPU 벽시계) 열로 나가고, GPU 패스를 **열기 전에** 닫힌다
  *   ([RenderArm.OVERLAY_STAGE_H_SCOPE]). 박스는 [DetectOverlayPublisher]가 게시한 ③ 결과이고
  *   개수가 프레임마다 다르므로 `overlay_boxes` 열이 그 프레임의 개수를 말한다.
+ * - **②③④ 통합 arm**([RenderArm.usesChainedHighlight] — `detect_cpu_chain_highlight`) —
+ *   ② 체인 7패스 **뒤에 오버레이 패스를 끼운** 9패스([drawChainedHighlight]):
+ *   ```
+ *   패스1   OES   → FBO_A                 → stage_b_ms
+ *   패스2~4 drago 3단  FBO_A → FBO_B      → stage_d_analyze/build/apply_ms
+ *   패스5~7 clahe 3단  FBO_B → FBO_A      → stage_d_analyze2/build2/apply2_ms
+ *   패스8   **FBO_A**에 스트로크 quad 덧그림 → stage_i_ms
+ *   패스9   FBO_A → 화면                   → gpu_present_ms
+ *   ```
+ *   🔴 **패스8의 타깃이 FBO_A다** — 4패스 오버레이 arm은 FBO_B에 그린다(그 arm의 ② 자리가
+ *   거기 썼다). 체인은 마지막 처리 패스가 FBO_A에 쓰고 present가 FBO_A를 읽으므로, 그 함수를
+ *   그대로 복사해 오면 **박스가 화면에 안 뜨는데 `overlay_boxes`·`stage_i_ms`는 정상값이
+ *   나온다.** H칸도 4패스 arm과 같은 자리(GPU 패스 앞)에서 돈다.
  *
  * 패스스루가 아닌 arm은 [GpuTimerRing]으로 패스별 GPU 시간을 잰다. **패스스루 arm에는
  * query를 하나도 걸지 않는다** — query 자체가 GPU 동작과 드라이버 스케줄링을 바꾸므로,
@@ -182,6 +195,25 @@ class PassthroughRenderer(
     /** ② 자리 자원의 현재 상태(사람이 읽는 문장). `session.json`의 `stage2_params`로 나간다. */
     val stage2Status: String
         get() {
+            // 🔴 **usesHighlightOverlay 분기보다 앞에 있어야 한다.** 통합 arm도 그 술어가
+            //    true이므로 뒤에 두면 "② 자리는 단순 복사다"라고 **거짓 선언**한다 —
+            //    그 arm의 ② 자리는 체인 6패스다. (아래 분기의 조건을 좁히지 않고 앞에서
+            //    돌려주는 쪽을 택했다: 기존 arm이 타는 문장을 한 글자도 건드리지 않는다.)
+            if (arm.usesChainedHighlight) {
+                // 적용 프래그먼트가 **둘**이라 한쪽만 없어도 이 arm은 그릴 수 없다
+                // (usesChainedComputeStage2 분기와 같은 논거·같은 라벨).
+                if (chainDragoApplyProgram == null || chainClaheApplyProgram == null) {
+                    return applyProgramFailureStatus(
+                        chainStage.ready, chainStage.status,
+                        listOf(
+                            PROGRAM_LABEL_CHAIN_DRAGO_APPLY, PROGRAM_LABEL_CHAIN_CLAHE_APPLY
+                        )
+                    )
+                }
+                // ④ 자원 상태를 여기에 이어 붙이지 않는다 — overlayStatus가 따로 낸다.
+                return chainStage.status +
+                    " ── ④ 오버레이 자원 상태는 overlay 블록(overlay.gpu_status)에 있다"
+            }
             if (arm.usesHighlightOverlay) {
                 // ② 자리가 단순 복사인 arm이다. ④ 자원 상태는 overlayStatus가 따로 낸다 —
                 // 여기에 이어 붙이면 오버레이 컴파일 실패가 ② 문장 뒤에 묻힌다.
@@ -280,6 +312,12 @@ class PassthroughRenderer(
     @Volatile
     var colorTransformSites: Map<String, List<Pair<String, Map<String, Int>>>> = emptyMap()
         private set
+
+    /**
+     * 통합 arm의 폴백 사유를 logcat에 이미 냈는가. **GL 스레드 전용**이라 volatile이 아니다.
+     * 리셋하지 않는다 — 런 안에서 한 번만 내는 것이 목적이다.
+     */
+    private var chainHighlightFallbackLogged = false
 
     @Volatile
     private var arm: RenderArm = RenderArm.DEFAULT
@@ -790,6 +828,28 @@ class PassthroughRenderer(
             return
         }
         val present = blitProgram
+        // 🔴 **usesHighlightOverlay 분기보다 앞에 있어야 한다.** 통합 arm도
+        //    usesHighlightOverlay가 true이므로(overlay 블록·overlayStatus의 게이트다) 뒤에
+        //    두면 9패스 arm이 4패스 단순 복사 경로로 떨어진다 — ② 체인이 조용히 사라지고
+        //    로그만 보면 그럴듯하다.
+        if (arm.usesChainedHighlight) {
+            val dragoApply = chainDragoApplyProgram
+            val claheApply = chainClaheApplyProgram
+            if (dragoApply == null || claheApply == null || present == null ||
+                !chainStage.ready || !highlightOverlay.ready || !ensureOffscreen()
+            ) {
+                offscreenFallbackDraws++
+                // 🔴 야간 실외 스모크에서 처음 도는 경로다 — 실패하면 그 자리에서 원인을
+                //    갈라야 하므로 **어느 준비가 실패했는지**를 logcat에 한 번 남긴다.
+                //    (session.json에는 stage2_status / overlay.gpu_status /
+                //     offscreen_status 셋이 같은 사실을 문장으로 낸다.)
+                logChainHighlightFallbackOnce(present, dragoApply, claheApply)
+                drawPassthrough(oes)
+                return
+            }
+            drawChainedHighlight(oes, dragoApply, claheApply, present, instrument)
+            return
+        }
         if (arm.usesHighlightOverlay) {
             // ② 자리는 단순 복사이므로 blit 프로그램 하나를 복사·표시에 함께 쓴다
             // (3패스 골격의 blit_2pass arm과 같다).
@@ -1180,6 +1240,170 @@ class PassthroughRenderer(
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[0])
         if (timing) gpuTimer.endPass()
+    }
+
+    /**
+     * ②③④ **통합** arm(`detect_cpu_chain_highlight`)의 9패스. [drawChainedComputeStage2]의
+     * 8패스에서 present 앞에 **오버레이 패스 하나를 끼운** 것이다:
+     * ```
+     * 패스1  OES   → FBO_A                     stage_b_ms
+     * 패스2  drago analyze (FBO_A)             stage_d_analyze_ms
+     * 패스3  drago build                       stage_d_build_ms
+     * 패스4  drago apply   FBO_A → FBO_B       stage_d_apply_ms
+     * 패스5  clahe analyze (FBO_B)             stage_d_analyze2_ms
+     * 패스6  clahe build                       stage_d_build2_ms
+     * 패스7  clahe apply   FBO_B → FBO_A       stage_d_apply2_ms
+     * 패스8  FBO_A에 ④ 오버레이 덧그림          stage_i_ms
+     * 패스9  present       FBO_A → 화면        gpu_present_ms
+     * ```
+     *
+     * ### 왜 [drawChainedComputeStage2]를 고쳐 쓰지 않고 함수를 따로 만드는가
+     * 그 함수는 **이미 승격된 `drago_clahe_chain` 숫자의 재현 경로**이고, 그 KDoc이 그것을
+     * 못 박고 있다. 여기에 분기를 넣으면 그 arm의 GL 호출 시퀀스가 바뀌어 `docs/baselines/`의
+     * 기존 숫자와 비교할 근거가 사라진다. **중복은 알면서 감수한 비용이다** — 앞 7패스는
+     * 그 함수와 **글자 그대로 같아야** 두 arm의 차분이 ④의 비용이 된다.
+     *
+     * ### 🔴 패스8의 타깃이 `fbos[0]`(FBO_A)인 이유 — 이 함수 최대의 무음 실패 지점
+     * 체인의 패스7이 clahe 출력을 **FBO_A**에 쓰고 패스9(present)가 **`fboTextures[0]`**을
+     * 읽는다. 그런데 4패스 오버레이 arm([drawHighlightOverlay])의 오버레이 패스는 **FBO_B**에
+     * 그린다(그 arm의 ② 자리가 거기 썼기 때문이다). 그 코드를 그대로 복사해 오면 박스가
+     * **화면에 뜨지 않는데** `overlay_boxes`와 `stage_i_ms`는 정상값이 나온다 — 로그만 보면
+     * 성공으로 읽히는 실패다. 그래서 여기서는 FBO_A를 바인드한다.
+     *
+     * ⚠ 그리고 **패스8에 `glClear`가 없다.** 오버레이는 ② 체인의 출력 **위에** 얹는 것이라
+     * 지우면 그 프레임의 ② 결과가 통째로 사라진다(화면이 박스만 남은 검은 화면이 된다).
+     * 그 대가로 타일 GPU가 컬러 어태치먼트를 다시 load하고 `stage_i_ms`에 그 비용이 섞인다 —
+     * 게다가 패스7과 패스8의 타깃이 같은 FBO라 두 열의 경계도 흐려진다
+     * ([RenderArm.CHAIN_HIGHLIGHT_TILE_RELOAD_NOTE]가 그 사실을 `session.json`에 낸다).
+     *
+     * ### 패스 수는 정확히 9여야 한다
+     * [GpuTimerRing.beginPass]/[GpuTimerRing.endPass] 호출 수가 [RenderArm.gpuColumns]의
+     * 개수(9)와 다르면 `commitFrame`이 그 프레임을 **통째로 버린다**(`malformedFrames`).
+     * [GpuTimerRing.MAX_PASS_COUNT]는 12라 여유가 있다.
+     *
+     * H칸(좌표 평활·hold)은 [drawHighlightOverlay]와 **같은 자리**(GPU 패스를 열기 전)에서
+     * 돈다 — 이유는 [RenderArm.OVERLAY_STAGE_H_SCOPE].
+     */
+    private fun drawChainedHighlight(
+        oes: QuadProgram,
+        dragoApply: QuadProgram,
+        claheApply: QuadProgram,
+        present: QuadProgram,
+        instrument: Boolean,
+    ) {
+        // ── ④ H칸(좌표 평활·hold) — 🔴 **GPU 패스를 열기 전에 끝낸다** ────────────
+        // [drawHighlightOverlay]의 같은 블록과 **같은 자리·같은 값**이다(사본이지만 두 함수가
+        // 서로 다른 패스 구성을 가지므로 함수를 합치지 않는다 — 위 KDoc의 판단 그대로다).
+        // stage_h_ms는 CPU 벽시계이며 GPU query 안에 넣으면 어디에도 계상되지 않는다.
+        val hStart = SystemClock.elapsedRealtimeNanos()
+        val drawn = overlaySmoother.update(frameOverlaySnapshot, fboWidth, fboHeight)
+        // 정점 재기록도 H 안이다 — 이 CPU 비용을 stage_i_ms(GPU 시계) 쪽에 두면 사라진다.
+        highlightOverlay.setDynamicGeometry(overlaySmoother)
+        frameStageHNs = SystemClock.elapsedRealtimeNanos() - hStart
+        frameOverlayBoxes = drawn
+
+        val timing = instrument && gpuTimer.beginFrame()
+
+        // 패스1: OES → FBO_A (처리 해상도). stage_b_ms.
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[0])
+        GLES20.glViewport(0, 0, fboWidth, fboHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(oes, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+        if (timing) gpuTimer.endPass()
+
+        // 패스2: drago 전역 통계. stage_d_analyze_ms.
+        // ⚠ FBO_A를 어태치먼트에서 떼고 나서 텍스처로 읽는다(피드백 루프 방지).
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        chainStage.dragoAnalyze(fboTextures[0], fboWidth, fboHeight)
+        if (timing) gpuTimer.endPass()
+
+        // 패스3: drago 통계 → 톤커브 계수. stage_d_build_ms.
+        if (timing) gpuTimer.beginPass()
+        chainStage.dragoBuild()
+        if (timing) gpuTimer.endPass()
+
+        // 패스4: FBO_A → FBO_B. drago 톤맵 적용. stage_d_apply_ms.
+        if (timing) gpuTimer.beginPass()
+        chainStage.beforeDragoApply()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[1])
+        GLES20.glViewport(0, 0, fboWidth, fboHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(dragoApply, GLES20.GL_TEXTURE_2D, fboTextures[0])
+        if (timing) gpuTimer.endPass()
+
+        // 패스5: clahe 타일 히스토그램. 입력은 **drago 출력(FBO_B)**이다. stage_d_analyze2_ms.
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        chainStage.claheAnalyze(fboTextures[1], fboWidth, fboHeight)
+        if (timing) gpuTimer.endPass()
+
+        // 패스6: clahe 클립 + 재분배 + CDF → 타일 LUT. stage_d_build2_ms.
+        if (timing) gpuTimer.beginPass()
+        chainStage.claheBuild()
+        if (timing) gpuTimer.endPass()
+
+        // 패스7: FBO_B → FBO_A. clahe 적용(핑퐁으로 되돌아온다). stage_d_apply2_ms.
+        if (timing) gpuTimer.beginPass()
+        chainStage.beforeClaheApply()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[0])
+        GLES20.glViewport(0, 0, fboWidth, fboHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(claheApply, GLES20.GL_TEXTURE_2D, fboTextures[1])
+        if (timing) gpuTimer.endPass()
+
+        // 패스8: **FBO_A**에 ④ 오버레이. stage_i_ms.
+        // 🔴 **fbos[0]이다** — 패스7이 여기 썼고 패스9가 fboTextures[0]을 읽는다. 4패스
+        //    오버레이 arm을 그대로 복사해 fbos[1]에 그리면 박스가 화면에 안 뜨는데
+        //    overlay_boxes·stage_i_ms는 정상값이 나온다(위 KDoc).
+        // 🔴 **glClear를 부르지 않는다** — 지우면 이 프레임의 ② 체인 결과가 통째로 사라진다.
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbos[0])
+        GLES20.glViewport(0, 0, fboWidth, fboHeight)
+        // 정점은 위 H 구간에서 이미 다 썼다 — 여기서는 드로우콜만 낸다.
+        highlightOverlay.drawPrepared()
+        if (timing) gpuTimer.endPass()
+
+        // 패스9: FBO_A → 화면 (surface 크기). gpu_present_ms.
+        if (timing) gpuTimer.beginPass()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[0])
+        if (timing) gpuTimer.endPass()
+    }
+
+    /**
+     * 통합 arm이 폴백했을 때 **어느 준비가 실패했는지**를 logcat에 **한 번만** 남긴다.
+     *
+     * 🔴 야간 실외 스모크에서 이 경로가 처음 돈다 — 실패하면 현장에서 원인을 갈라야 한다.
+     * 프레임마다 찍으면 로그가 쓸려 나가므로 첫 프레임에만 낸다(문자열 할당도 그때 한 번뿐이다).
+     * ⚠ **성공 서술을 붙이지 않는다**([applyProgramFailureStatus]의 교훈) — 실패한 항목만 적는다.
+     */
+    private fun logChainHighlightFallbackOnce(
+        present: QuadProgram?,
+        dragoApply: QuadProgram?,
+        claheApply: QuadProgram?,
+    ) {
+        if (chainHighlightFallbackLogged) return
+        chainHighlightFallbackLogged = true
+        val missing = buildList {
+            if (present == null) add("present(blit) 프로그램")
+            if (dragoApply == null) add("체인 drago 적용 프래그먼트")
+            if (claheApply == null) add("체인 clahe 적용 프래그먼트")
+            if (!chainStage.ready) add("chainStage(컴퓨트·SSBO) — ${chainStage.status}")
+            if (!highlightOverlay.ready) add("highlightOverlay — ${highlightOverlay.status}")
+            if (fbos[0] == 0) add("오프스크린 FBO — $offscreenStatus")
+        }
+        Log.e(
+            TAG,
+            "🔴 ${RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT.id}: 준비 실패로 전 프레임이 " +
+                "패스스루로 폴백한다(② 체인도 ④ 오버레이도 화면에 없다). 실패 항목 = " +
+                missing.joinToString(" / ") +
+                ". session.json의 render.processing.frames_fell_back_to_passthrough가 그 수다"
+        )
     }
 
     /**

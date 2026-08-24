@@ -567,6 +567,67 @@ enum class RenderArm(
         "detect_cpu_1q",
         listOf("blit_2pass", "detect"),
         listOf("gpu_frame_ms"),
+    ),
+
+    // ── ②③④ 통합 arm (스키마 v7) ─────────────────────────────────────
+    // ⚠ 목록 **맨 뒤**에 붙인다. 스피너는 entries 순서라 중간에 끼우면 측정자가 손으로
+    //   고르던 기존 arm의 위치가 전부 밀린다(`_1q` 셋·회전 대조군·③→④ 세트를 뒤에 붙인
+    //   것과 같은 이유다).
+
+    /**
+     * 🔴 **② 체인 + ③ 탐지 + ④ 오버레이가 한 프레임에서 다 도는 첫 arm.** 9패스다:
+     * ```
+     * 패스1  OES   → FBO_A                     stage_b_ms
+     * 패스2  drago analyze (FBO_A)             stage_d_analyze_ms
+     * 패스3  drago build                       stage_d_build_ms
+     * 패스4  drago apply   FBO_A → FBO_B       stage_d_apply_ms
+     * 패스5  clahe analyze (FBO_B)             stage_d_analyze2_ms
+     * 패스6  clahe build                       stage_d_build2_ms
+     * 패스7  clahe apply   FBO_B → FBO_A       stage_d_apply2_ms
+     * 패스8  FBO_A에 ④ 오버레이 덧그림          stage_i_ms
+     * 패스9  present       FBO_A → 화면        gpu_present_ms
+     * ```
+     * 앞 7패스는 [DRAGO_CLAHE_CHAIN]과 **글자 그대로 같은 GL 호출**이고(같은 프로그램·같은
+     * SSBO) 패스8은 [DETECT_CPU_HIGHLIGHT]의 오버레이 패스와 같은 프로그램이다 — 그래야
+     * 이 arm과 그 둘의 차분이 뜻을 갖는다.
+     *
+     * 🔴 **패스8의 타깃이 `fbos[0]`(FBO_A)다.** 체인의 마지막 처리 패스가 FBO_A에 쓰고
+     * present가 FBO_A를 읽기 때문이다 — [DETECT_CPU_HIGHLIGHT]의 오버레이는 FBO_B에 그린다
+     * (그 arm의 ② 자리가 거기 썼다). 그 함수를 그대로 복사해 오면 **박스가 화면에 안 뜨는데
+     * `overlay_boxes`·`stage_i_ms`는 정상값이 나온다** — 이 arm 최대의 무음 실패 지점이고,
+     * `PassthroughRenderer.drawChainedHighlight`가 그것을 주석으로 못 박고 있다.
+     *
+     * 🔴 **이 arm에는 `_1q` 짝이 없다** → [singleFrameQueryPeer]에 넣지 않았고, 그래서
+     * **I칸·H칸의 하한을 이 arm에서 낼 수 없다**(상한만 나온다). 하한은 "같은 계측 방식의 두
+     * arm 차"로만 낼 수 있는데 그 분모(`..._1q`)를 이 세션에 만들지 않았다 — 스모크 범위
+     * 밖이다(알려진 이슈 36의 교훈은 그대로 유효하다).
+     *
+     * 🔴 **제품 구성 확정이 아니다** → [CHAIN_HIGHLIGHT_NOT_A_PRODUCT_DECISION].
+     * ⚠ 탐지 입력은 이 arm에서도 **원본 프레임**이다 → [CHAIN_HIGHLIGHT_DETECT_INPUT_NOTE].
+     *
+     * 토큰 6개·열 9개는 **전부 이미 있는 것**이다 — 통합이라고 새 토큰·새 열을 만들지 않는다.
+     */
+    DETECT_CPU_CHAIN_HIGHLIGHT(
+        "detect_cpu_chain_highlight",
+        listOf(
+            "blit_2pass",
+            "stage2_drago",
+            "stage2_clahe",
+            "detect",
+            "stage4_highlight",
+            "stage4_smoothing",
+        ),
+        listOf(
+            "stage_b_ms",
+            "stage_d_analyze_ms",
+            "stage_d_build_ms",
+            "stage_d_apply_ms",
+            "stage_d_analyze2_ms",
+            "stage_d_build2_ms",
+            "stage_d_apply2_ms",
+            "stage_i_ms",
+            "gpu_present_ms",
+        ),
     );
 
     /**
@@ -579,7 +640,7 @@ enum class RenderArm(
      */
     val usesComputeStage2: Boolean
         get() = usesSingleComputeStage2 || usesChainedComputeStage2 || usesFusedComputeStage2 ||
-            usesChainedBilateral || usesFusedBilateral
+            usesChainedBilateral || usesFusedBilateral || usesChainedHighlight
 
     /**
      * ② 자리가 **컴퓨트 3단 한 벌**(analyze → build → apply)인 arm인가.
@@ -598,6 +659,17 @@ enum class RenderArm(
      */
     val usesChainedComputeStage2: Boolean
         get() = this == DRAGO_CLAHE_CHAIN || this == DRAGO_CLAHE_CHAIN_1Q
+
+    /**
+     * ② 자리가 **체인이고 그 뒤에 ④ 오버레이 패스가 하나 더 붙는** arm인가(9패스).
+     * **`PassthroughRenderer.drawChainedHighlight` 경로 선택 전용**이다.
+     *
+     * 🔴 [usesChainedComputeStage2]와 **겹치지 않는다.** 겹치면 `dispatchDraw`가 8패스 경로로
+     * 떨어뜨려 **④가 조용히 사라진다**(그 프로퍼티가 경고한 겸업 함정과 같은 부류이고,
+     * [usesChainedBilateral]이 같은 이유로 갈라져 있다).
+     */
+    val usesChainedHighlight: Boolean
+        get() = this == DETECT_CPU_CHAIN_HIGHLIGHT
 
     /**
      * ② 자리가 **융합**(통계 두 벌 + 적용 한 벌)인 arm인가.
@@ -645,7 +717,8 @@ enum class RenderArm(
      * ⚠ 이 값이 true인 arm은 [highlightBoxCount]를 **쓰지 않는다**(개수가 프레임마다 다르다).
      */
     val usesDynamicHighlightBoxes: Boolean
-        get() = this == DETECT_CPU_HIGHLIGHT || this == DETECT_CPU_HIGHLIGHT_1Q
+        get() = this == DETECT_CPU_HIGHLIGHT || this == DETECT_CPU_HIGHLIGHT_1Q ||
+            this == DETECT_CPU_CHAIN_HIGHLIGHT
 
     /** ② 자리에 bilateral 한 패스가 붙는 arm인가(체인이든 융합이든). */
     val usesBilateral: Boolean
@@ -747,7 +820,8 @@ enum class RenderArm(
     val detectEpRequested: String?
         get() = when (this) {
             DETECT_CPU, DETECT_CPU_PROF, DETECT_PARITY_CPU, DETECT_CPU_NOROT,
-            DETECT_CPU_HIGHLIGHT, DETECT_CPU_HIGHLIGHT_1Q, DETECT_CPU_1Q -> "cpu"
+            DETECT_CPU_HIGHLIGHT, DETECT_CPU_HIGHLIGHT_1Q, DETECT_CPU_1Q,
+            DETECT_CPU_CHAIN_HIGHLIGHT -> "cpu"
             DETECT_NNAPI, DETECT_NNAPI_PROF, DETECT_PARITY_NNAPI -> "nnapi"
             DETECT_XNNPACK, DETECT_XNNPACK_PROF, DETECT_PARITY_XNNPACK -> "xnnpack"
             else -> null
@@ -763,7 +837,8 @@ enum class RenderArm(
      * **서술용이며 경로 선택에 쓰지 않는다.**
      */
     val isCompositionArm: Boolean
-        get() = usesChainedComputeStage2 || usesFusedComputeStage2 || usesBilateral
+        get() = usesChainedComputeStage2 || usesFusedComputeStage2 || usesBilateral ||
+            usesChainedHighlight
 
     /**
      * 이 arm이 그리는 ④ 박스 수. 오버레이 arm이 아니면 0이다.
@@ -781,7 +856,8 @@ enum class RenderArm(
             //    짝과 달라지고, 그러면 두 계측의 차분이 아무 뜻이 없어진다.
             HIGHLIGHT_BOXES, HIGHLIGHT_BOXES_1Q -> HIGHLIGHT_BOX_COUNT
             HIGHLIGHT_BOXES_STRESS -> HIGHLIGHT_BOX_COUNT_STRESS
-            DETECT_CPU_HIGHLIGHT, DETECT_CPU_HIGHLIGHT_1Q -> HIGHLIGHT_BOX_COUNT_DYNAMIC
+            DETECT_CPU_HIGHLIGHT, DETECT_CPU_HIGHLIGHT_1Q, DETECT_CPU_CHAIN_HIGHLIGHT ->
+                HIGHLIGHT_BOX_COUNT_DYNAMIC
             else -> 0
         }
 
@@ -1706,12 +1782,35 @@ enum class RenderArm(
         //    `overlay.class_color_mapping.table`)이 서로 다른 말을 한다.
         const val HIGHLIGHT_COLOR_STAIRS = OverlayClassColors.STAIRS_COLOR_TEXT
         const val HIGHLIGHT_COLOR_PERSON = OverlayClassColors.PERSON_COLOR_TEXT
+        const val HIGHLIGHT_COLOR_BOLLARD = OverlayClassColors.BOLLARD_COLOR_TEXT
         const val HIGHLIGHT_COLOR_UNDERLINE = OverlayClassColors.UNDERLINE_COLOR_TEXT
 
+        /**
+         * 🔴 `person`이 **상류 명세를 벗어나 빨강**이라는 사실과 그 위험. 사본을 만들지 않고
+         * [OverlayClassColors]의 문장을 그대로 가리킨다(색 문장 규약과 같은 이유).
+         */
+        const val HIGHLIGHT_PERSON_COLOR_DEVIATION =
+            OverlayClassColors.PERSON_COLOR_DEVIATION
+
+        /** `bollard` 색의 출처. 🔴 **이탈이 아니다** — 상류 팔레트에 항목이 없었다. */
+        const val HIGHLIGHT_BOLLARD_COLOR_PROVENANCE =
+            OverlayClassColors.BOLLARD_COLOR_PROVENANCE
+
+        /**
+         * 🔴 **명세 원문(빨강 금지 이유)은 이 키에 그대로 남긴다** — 상류가 무엇을 왜
+         * 금지했는지가 사라지면 이탈의 뜻도 사라진다.
+         *
+         * ⚠ **2026-08-24 갱신** — 예전 마지막 절("그래서 이 오버레이의 색은 노랑·시안·검정
+         * 셋뿐이고 빨강 단색 스트로크는 코드에 존재하지 않는다")이 **거짓이 됐다**: `person`이
+         * 사용자 지시로 빨강이 됐다. 그 절만 이탈 참조로 교체했고 금지 사유와 출처는 손대지
+         * 않았다. 이 문장은 `session.json`에 **두 자리로** 실린다.
+         */
         const val HIGHLIGHT_NO_RED_REASON =
-            "🔴 **빨강 금지.** 빨강은 휘도가 낮아 야간 배경에 묻히고 적록색약에서 무너진다 " +
-                "(RESEARCH_20260803_UPSTREAM.md §5). 그래서 이 오버레이의 색은 노랑·시안·검정 " +
-                "셋뿐이고 빨강 단색 스트로크는 코드에 존재하지 않는다"
+            "🔴 **상류 명세: 빨강 금지.** 빨강은 휘도가 낮아 야간 배경에 묻히고 적록색약에서 " +
+                "무너진다 (RESEARCH_20260803_UPSTREAM.md §5). " +
+                "🔴 **그런데 이 런의 어휘색은 그 금지를 지키지 않는다** — `person`이 사용자 " +
+                "지시로 빨강이 됐다(person_color_deviation에 이탈 사유와 위험 두 가지가 있다). " +
+                "위 금지는 **중립색(unknown=흰색) 후보에 대해서는 여전히 유효하다**"
 
         const val HIGHLIGHT_NO_BLINK_REASON =
             "🔴 **깜빡임 금지 — 안전 이슈다.** 대상 사용자가 광과민이므로 상류가 '항상 정적 " +
@@ -1746,15 +1845,19 @@ enum class RenderArm(
          */
         const val HIGHLIGHT_CLASS_NOTE =
             "🔴 **색은 클래스 이름으로 고른다 — 인덱스로 고르지 않는다**" +
-                "(OverlayClassColors). 어휘는 `stairs`·`person` 둘이고 이름의 출처는 " +
-                "**모델 임베드 메타의 names 하나뿐**이다(계약 문서의 순서를 쓰지 않는다). " +
-                "그래서 INTERFACES.md §A-4와 모델의 순서가 반대인 채로도(contract_a4_conflict) " +
-                "이 코드는 옳게 그리고, 팀이 어느 쪽으로 확정해도 **바뀌지 않는다** — 그것이 " +
-                "이 설계의 목적이다. " +
-                "🔴 어휘 밖 이름·범위 밖 cls는 **지우지 않고 중립색(흰색)으로** 그린다" +
-                "(unknown_policy) — 3번째 클래스의 색을 지어내지 않았다는 뜻이며, 클래스가 " +
-                "늘면 그 자체가 렌더 규약 변경이라(§A-4 불변 규칙) 오버레이 어휘를 팀과 함께 " +
-                "갱신해야 한다. 색은 픽셀 비용에 영향이 없다(어느 색이든 같은 면적을 채운다)"
+                "(OverlayClassColors). 어휘는 `stairs`·`person`·`bollard` **셋**이고 이름의 " +
+                "출처는 **모델 임베드 메타의 names 하나뿐**이다(계약 문서의 순서를 쓰지 " +
+                "않는다). 그래서 INTERFACES.md §A-4와 모델의 순서가 반대인 채로도" +
+                "(contract_a4_conflict) 이 코드는 옳게 그리고, 팀이 어느 쪽으로 확정해도 " +
+                "**바뀌지 않는다** — 그것이 이 설계의 목적이다. " +
+                "⚠ **어휘가 둘에서 셋으로 늘었다**: `bollard`는 모델이 새로 가진 클래스이고 " +
+                "**상류 팔레트에 항목이 없어** 예전에는 중립색(흰색) fallback이었다 — 색을 " +
+                "지어낸 것이 아니라 우리가 선언했다는 사실은 bollard_color_provenance에 있다. " +
+                "그리고 `person`의 색은 **상류 명세를 벗어났다**(person_color_deviation). " +
+                "🔴 어휘 밖 이름·범위 밖 cls는 여전히 **지우지 않고 중립색(흰색)으로** " +
+                "그린다(unknown_policy) — 클래스가 또 늘면 그 자체가 렌더 규약 변경이라" +
+                "(§A-4 불변 규칙) 오버레이 어휘를 팀과 함께 갱신해야 한다. " +
+                "색은 픽셀 비용에 영향이 없다(어느 색이든 같은 면적을 채운다)"
 
         // ── ④ H칸: 좌표 평활·hold (스키마 v7) ─────────────────────────────
         // 🔴 **계약에 이 항목 자체가 없다.** `INTERFACES.md`의 계약은 A(모델)·B(①②)·C(녹화)
@@ -1898,6 +2001,59 @@ enum class RenderArm(
                 "🔴 **GL 스레드에는 프레임당 할당이 없다**: latest()는 참조 읽기 하나이고, " +
                 "평활 트랙·그릴 목록·정점 버퍼는 전부 상한 크기로 **한 번** 잡아 두고 " +
                 "in-place로 재기록한다. GL 스레드에서 GC가 돌면 그것이 곧 프레임타임 꼬리다"
+
+        // ── 통합 arm(`detect_cpu_chain_highlight`) ────────────────────────
+        // 🔴 이 arm은 **측정용 추가**이고 제품 구성 결정이 아니다. 아래 네 문장이 그 사실과
+        //   읽는 법·계측 한계를 담고 `session.json`으로 나간다.
+
+        /** 🔴 이 문장이 빠지면 "제품 구성이 정해졌다"로 읽힌다. `session.json`으로 나간다. */
+        const val CHAIN_HIGHLIGHT_NOT_A_PRODUCT_DECISION =
+            "🔴 **이 arm은 ②③④를 한 프레임에서 돌려 보기 위한 측정용 추가이며 제품 구성 " +
+                "확정이 아니다.** 팀 결정 4건이 아직 미결이다: (1) 융합 채택 여부" +
+                "(drago_clahe_fused는 알고리즘 변경이라 팀장 판단이다 — fused_deviation), " +
+                "(2) bf 포함 여부, (3) INTERFACES.md §B-4의 시간축(ts)이 ☐, " +
+                "(4) 탐지 주기 N이 ☐(FRAME_BUDGET.md §7 질문 3). " +
+                "그러므로 이 arm은 **상류 잠정 1위(D1A1+bf+ts)와 같은 구성이 아니다** — " +
+                "② 자리는 D1A1까지이고 bf도 ts도 없다. 이 런의 숫자를 '제품 구성의 " +
+                "프레임타임'으로 옮겨 적지 말 것"
+
+        /**
+         * ⚠ 탐지 입력이 ②를 거치지 않는다는 사실. 🔴 **결함이 아니라 상류 요구다.**
+         * 모델 패키지가 같은 경고를 `metadata.json`의 `warning`에 싣고 있다.
+         */
+        const val CHAIN_HIGHLIGHT_DETECT_INPUT_NOTE =
+            "🔴 **이 arm에서도 ③ 탐지 입력은 ② 개선을 거치지 않은 원본 프레임이다.** 표시 " +
+                "경로(OES → GL 9패스)와 탐지 경로(ImageAnalysis YUV → 전처리 → ORT)가 애초에 " +
+                "분리돼 있어 ②가 탐지 입력에 닿지 않는다. 우연이 아니라 상류 요구다: ②를 탐지 " +
+                "앞단에 붙이면 stairs 야간 오탐이 **0.1% → 5.7%(57배)**가 된다" +
+                "(models/0824/readme_c4e_640.md §6-4 · 같은 경고가 metadata.json의 warning). " +
+                "⚠ 그러므로 이 arm의 boxes_out·overlay_boxes는 **② 적용 전 프레임의 탐지 " +
+                "결과**이고, ②가 탐지 품질에 준 영향을 이 런으로 말할 수 없다(그 실험이 아니다)"
+
+        /**
+         * 🔴 패스7과 패스8의 **타깃이 같은 FBO_A**라 두 열의 경계가 흐려진다.
+         * `PassthroughRenderer.drawHighlightOverlay`가 패스2·3에 대해 적은 것과 **같은 자리**다.
+         */
+        const val CHAIN_HIGHLIGHT_TILE_RELOAD_NOTE =
+            "⚠ 오버레이 패스(패스8)는 **glClear를 부르지 않는다** — ② 체인의 출력 위에 얹기 " +
+                "때문이다(지우면 ② 결과가 사라진다). 그래서 타일 GPU가 컬러 어태치먼트를 다시 " +
+                "load하고 **stage_i_ms에는 그 비용이 섞여 있다.** 오버레이 패스의 실제 비용이며 " +
+                "빼낼 수단이 없다. " +
+                "🔴 게다가 **패스7(clahe apply)과 패스8의 타깃이 같은 FBO_A**라 드라이버가 두 " +
+                "렌더패스를 병합하면 stage_d_apply2_ms와 stage_i_ms의 경계가 흐려진다 — " +
+                "4패스 오버레이 arm에서 패스2·3(둘 다 FBO_B)에 대해 적은 것과 **같은 자리**이고 " +
+                "일반 주의사항은 gpu_timer.attribution_note와 같다. 패스 사이에 바인드·뷰포트를 " +
+                "다시 명시해 쪼갤 기회를 주는 것까지가 우리가 할 수 있는 일이다"
+
+        /** 🔴 이 arm에 `_1q` 짝이 없어 **하한을 낼 수 없다**는 사실. `session.json`으로 나간다. */
+        const val CHAIN_HIGHLIGHT_NO_LOWER_BOUND =
+            "🔴 **이 arm에서는 I칸·H칸의 하한을 낼 수 없다 — 상한만 나온다.** 하한은 '같은 " +
+                "계측 방식의 두 arm 차'로만 낼 수 있는데 이 arm의 프레임 단일 query 짝" +
+                "(detect_cpu_chain_highlight_1q)을 만들지 않았다(스모크 범위 밖이다). " +
+                "알려진 이슈 36이 그 부류다: 분모를 잘못 고르면 하한이 0으로 나오고 그 0은 " +
+                "'공짜'가 아니라 **분모가 상한을 중복 계상했다**는 뜻이었다. 그러므로 이 런에서 " +
+                "인용할 수 있는 것은 stage_i_ms(I 상한) · stage_h_ms(H, CPU 벽시계) · 패스별 " +
+                "D 열이고, **차분으로 만든 하한은 이 런에 없다**"
 
         // ── 프레임 단일 query arm(`*_1q`) ─────────────────────────────────
         // 🔴 **이 arm들은 알고리즘이 아니라 계측 방식이 다르다.** 아래 네 문장이 그 사실과

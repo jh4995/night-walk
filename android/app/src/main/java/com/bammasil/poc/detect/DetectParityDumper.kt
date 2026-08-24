@@ -521,8 +521,23 @@ class DetectParityDumper(
             "thresholds",
             JSONObject()
                 // 못 읽었으면 애초에 런이 시작되지 않는다(DetectContract.thresholdFailure).
+                // 🔴 `conf`는 후처리가 **실제로 쓴 값**이다(오버라이드가 걸리면 metadata의
+                //    선언값이 아니다) — 그래서 선언값과 오버라이드 여부를 옆에 함께 싣는다.
+                //    다음 세션이 이 덤프를 상류 결과와 대조할 때 임계가 같은지 먼저 봐야 한다.
                 .put("conf", DetectContract.confThreshold?.toDouble() ?: JSONObject.NULL)
                 .put("iou", DetectContract.iouThreshold?.toDouble() ?: JSONObject.NULL)
+                .put(
+                    "conf_declared_in_metadata",
+                    DetectContract.confDeclaredInMetadata?.toDouble() ?: JSONObject.NULL
+                )
+                .put("conf_override_active", DetectContract.confOverrideActive)
+                .put(
+                    "note",
+                    "🔴 `conf`는 후처리가 실제로 쓴 값이다. conf_override_active가 true면 " +
+                        "conf_declared_in_metadata와 다르며, 사유 전문은 session.json의 " +
+                        "detect.postprocess.conf_source에 있다. **임계가 다른 덤프끼리 박스를 " +
+                        "대조하지 말 것** — 통과 박스 집합 자체가 달라진다"
+                )
         )
 
         val first = records[0].capture

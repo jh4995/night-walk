@@ -140,7 +140,11 @@ class DetectRuntime(
                 arm,
                 "빌드 시점에 ${DetectContract.declaredSource}를 읽지 못해 선언값이 없다 — " +
                     "sha256·클래스·shape을 대조할 기준이 없으므로 런을 시작하지 않는다. " +
-                    "리포지토리 루트에 models/det_c4b_loli0_640/metadata.json이 있는 상태로 " +
+                    // 🔴 경로를 문자열로 박지 않는다 — 모델이 바뀌는 날 **틀린 경로를
+                    //    고치라고 안내**하게 된다(실제로 c4b → c4e 교체에서 그랬다).
+                    //    declaredSource는 못 읽으면 "unavailable"이라 안내에 쓸 수 없으므로
+                    //    기대 경로를 내보내는 BuildConfig 필드를 쓴다.
+                    "리포지토리 루트에 ${DetectContract.expectedMetadataPath}이 있는 상태로 " +
                     "다시 빌드할 것",
             )
         }
@@ -153,7 +157,9 @@ class DetectRuntime(
             return failed(
                 arm,
                 "모델 파일이 없다: ${modelFile.absolutePath}\n" +
-                    "adb push models/det_c4b_loli0_640/${DetectContract.declaredFileName} " +
+                    // 위와 같은 이유로 디렉토리도 BuildConfig에서 온다(사본을 만들지 않는다).
+                    "adb push ${DetectContract.expectedModelDir}/" +
+                    "${DetectContract.declaredFileName} " +
                     "<외부 파일 디렉토리>/${DetectContract.MODELS_SUBDIR}/ 를 먼저 할 것",
             )
         }

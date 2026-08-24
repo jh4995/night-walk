@@ -292,6 +292,29 @@ object SessionWriter {
     )
 
     /**
+     * 통합 arm(`detect_cpu_chain_highlight`)의 ④ 오버레이 패스 서술.
+     *
+     * 🔴 **타깃이 FBO_A다** — 4패스 오버레이 arm은 FBO_B에 그린다(그 arm의 ② 자리가 거기
+     * 썼다). 체인은 마지막 처리 패스가 FBO_A에 쓰므로 여기 그려야 present가 그것을 읽는다.
+     * 그 사실이 이 서술에서 빠지면 "박스가 안 보이는데 로그는 정상"인 상태를 되짚을 수 없다.
+     */
+    private fun chainHighlightOverlayPass(): Triple<String, String, String> = Triple(
+        "stage4_highlight",
+        "FBO_A (처리 해상도. **clear하지 않고 ② 결과 위에 덧그린다**)",
+        "④ 이중 스트로크 박스 **프레임마다 다른 개수**(frames.csv의 overlay_boxes)" +
+            "(검정 밑선 + 대비색 본선, 비채움). ${HighlightOverlay.GL_PRIMITIVE_NAME} " +
+            "**드로우콜 최대 1회**이며 박스가 0개인 프레임에서는 드로우콜을 내지 않는다. " +
+            "두께는 처리 해상도의 짧은 변에서 계산한다" +
+            "(720p 기준 ${RenderArm.HIGHLIGHT_STROKE_PX_AT_720P}px). " +
+            "🔴 **타깃이 FBO_A이고 glClear를 부르지 않는다** — 패스7(clahe apply)이 FBO_A에 " +
+            "썼고 패스9(present)가 그것을 읽으므로, FBO_B에 그리면 박스가 화면에 뜨지 않는데 " +
+            "overlay_boxes·stage_i_ms는 정상값이 나온다. clear하면 이 프레임의 ② 체인 결과가 " +
+            "통째로 사라진다. 계측 한계는 tile_reload_note. " +
+            "🔴 박스는 **③ 탐지 결과**를 H칸(좌표 평활·hold)에 태운 것이며 정적 더미가 " +
+            "아니다 — 평활 정책과 좌표 사슬은 session.json의 overlay 블록",
+    )
+
+    /**
      * `lib/frame_log.py`의 `SCHEMA_VERSION`. 열이 늘면 양쪽을 함께 올린다.
      *
      * v3에서 D 계열 하위 열(`stage_d_analyze_ms` / `stage_d_build_ms` / `stage_d_apply_ms` /
@@ -683,11 +706,16 @@ object SessionWriter {
 
         if (facts.arm.usesComputeStage2) {
             val computePasses = when {
+                // 🔴 통합 arm을 **먼저** 본다. usesComputeStage2에는 이 arm도 들어 있으므로
+                //    빠뜨리면 "패스2·패스3"이라는 틀린 위치가 나간다(컴퓨트가 4개인 arm이다).
+                //    ④ 오버레이는 패스8이라 컴퓨트 패스 위치는 체인과 **같다.**
+                facts.arm.usesChainedHighlight -> "패스2·3·5·6"
                 facts.arm.usesChainedComputeStage2 -> "패스2·3·5·6"
                 facts.arm.usesFusedComputeStage2 -> "패스2·3·4·5"
                 else -> "패스2·패스3"
             }
             val consumers = when {
+                facts.arm.usesChainedHighlight -> "패스3·4·6·7"
                 facts.arm.usesChainedComputeStage2 -> "패스3·4·6·7"
                 facts.arm.usesFusedComputeStage2 -> "패스3·4·5·6"
                 else -> "패스3·패스4"
@@ -970,6 +998,42 @@ object SessionWriter {
                 putHighlightCopy(json, facts)
                 json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
                 putSingleFrameQueryNotes(json, RenderArm.DETECT_CPU_HIGHLIGHT_1Q)
+            }
+            // ── ②③④ 통합 arm ────────────────────────────────────────────
+            // ② 자리는 **체인 6패스**다(단순 복사가 아니다) → putChain을 그대로 재사용한다.
+            // 🔴 putHighlightCopy를 부르면 "② 자리는 단순 복사다"라고 거짓 선언한다.
+            RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT -> {
+                putChain(json, facts)
+                json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
+                // 🔴 putChain의 note는 "전체 8패스"라고 말한다 — 이 arm은 9패스다.
+                json.put(
+                    "note",
+                    "② 자리가 **6패스**(3단 × 2벌)이고 그 뒤에 ④ 오버레이 패스가 하나 더 " +
+                        "붙어 **전체 9패스**다(체인 arm은 8패스다). 하위 패스를 합치지 않고 " +
+                        "D 계열 슬롯 6개에 그대로 낸다(docs/FRAME_LOG_SCHEMA.md §2). " +
+                        "④의 서술은 session.json의 overlay 블록에 있다. " +
+                        "🔴 이 arm은 **측정용 추가이며 제품 구성 확정이 아니다** — " +
+                        "not_a_product_decision을 함께 읽을 것"
+                )
+                json.put(
+                    "not_a_product_decision",
+                    RenderArm.CHAIN_HIGHLIGHT_NOT_A_PRODUCT_DECISION
+                )
+                json.put("detect_input_note", RenderArm.CHAIN_HIGHLIGHT_DETECT_INPUT_NOTE)
+                json.put("no_lower_bound_note", RenderArm.CHAIN_HIGHLIGHT_NO_LOWER_BOUND)
+                // 🔴 putChain이 넣은 계수는 **체인 arm 기준**이다(색공간 변환 계수는 ② 6패스가
+                //    글자 그대로 같으므로 그대로 성립한다). 그 범위를 문장으로 못 박는다 —
+                //    적지 않으면 "9패스 arm을 8패스로 셌다"로 읽힌다.
+                json.put(
+                    "color_transform_sites_note",
+                    "🔴 **위 color_transform_sites의 arm은 drago_clahe_chain이다**(이 arm의 " +
+                        "id가 아니다). ② 6패스의 셰이더가 체인과 **글자 그대로 같으므로** 그 " +
+                        "계수가 이 arm에도 그대로 성립하고, 이 arm에만 있는 패스8(④ 오버레이)의 " +
+                        "색공간 변환은 **0**이다(오버레이 셰이더는 LabGlsl을 부르지 않는다 — " +
+                        "정적 오버레이 arm에서 기계로 세어 확증돼 있다). 즉 합은 같다. " +
+                        "declared 표(color_transform_declared)의 passes_total은 **체인의 8**이며 " +
+                        "이 arm은 9다 — 그 칸만 이 arm에서 성립하지 않는다"
+                )
             }
             // 오버레이가 없는 3패스 골격 + 탐지. 짝은 detect_cpu다.
             RenderArm.DETECT_CPU_1Q -> {
@@ -1280,10 +1344,19 @@ object SessionWriter {
             JSONObject()
                 .put("stairs", RenderArm.HIGHLIGHT_COLOR_STAIRS)
                 .put("person", RenderArm.HIGHLIGHT_COLOR_PERSON)
+                .put("bollard", RenderArm.HIGHLIGHT_COLOR_BOLLARD)
                 .put("underline", RenderArm.HIGHLIGHT_COLOR_UNDERLINE)
         )
         json.put("class_note", RenderArm.HIGHLIGHT_CLASS_NOTE)
         json.put("no_red_reason", RenderArm.HIGHLIGHT_NO_RED_REASON)
+        // 🔴 no_red_reason **옆자리**다. 그 문장만 읽으면 "빨강은 코드에 없다"로 오독하므로
+        //    이탈을 바로 옆에 둔다. class_color_mapping 쪽과 **같은 상수를 참조**한다
+        //    (사본을 만들면 색을 고치는 날 두 블록이 서로 다른 말을 한다).
+        json.put("person_color_deviation", RenderArm.HIGHLIGHT_PERSON_COLOR_DEVIATION)
+        json.put(
+            "bollard_color_provenance",
+            RenderArm.HIGHLIGHT_BOLLARD_COLOR_PROVENANCE
+        )
         json.put("no_blink_reason", RenderArm.HIGHLIGHT_NO_BLINK_REASON)
         // 🔴 이 문장이 빠지면 "깜빡임 없음"이 성능·안전 근거처럼 읽힌다.
         json.put("blink_not_a_perf_claim", RenderArm.HIGHLIGHT_BLINK_NOT_A_PERF_CLAIM)
@@ -1296,21 +1369,44 @@ object SessionWriter {
                 "돌아 오버레이 비용이 화면 전체 비용으로 부풀고 I칸이 **다른 물리량**이 된다" +
                 "(FRAME_BUDGET.md §5가 I칸을 GL 드로우콜 계측으로 못 박았다)"
         )
-        json.put(
-            "tile_reload_note",
-            "⚠ 이 패스는 **glClear를 부르지 않는다** — ② 출력 위에 얹기 때문이다. 그래서 타일 " +
-                "GPU가 컬러 어태치먼트를 다시 load하고, **${iCostPhrase}에는 그 비용이 섞여 " +
-                "있다.** " +
-                "오버레이 패스의 실제 비용이며 빼낼 수단이 없다. 게다가 패스2(복사)와 패스3의 " +
-                "타깃이 같은 FBO_B라 드라이버가 두 렌더패스를 병합하면 두 열의 경계가 흐려진다 " +
-                "— 일반 주의사항은 gpu_timer.attribution_note와 같다"
-        )
+        // 🔴 통합 arm은 패스 번호도 타깃 FBO도 다르다(패스8/FBO_A) — 4패스 arm의 문장을
+        //    그대로 내면 "패스2와 패스3" 같은 **없는 패스**를 가리킨다.
+        if (facts.arm.usesChainedHighlight) {
+            json.put("tile_reload_note", RenderArm.CHAIN_HIGHLIGHT_TILE_RELOAD_NOTE)
+            json.put("no_lower_bound_note", RenderArm.CHAIN_HIGHLIGHT_NO_LOWER_BOUND)
+            json.put(
+                "not_a_product_decision",
+                RenderArm.CHAIN_HIGHLIGHT_NOT_A_PRODUCT_DECISION
+            )
+        } else {
+            json.put(
+                "tile_reload_note",
+                "⚠ 이 패스는 **glClear를 부르지 않는다** — ② 출력 위에 얹기 때문이다. 그래서 타일 " +
+                    "GPU가 컬러 어태치먼트를 다시 load하고, **${iCostPhrase}에는 그 비용이 섞여 " +
+                    "있다.** " +
+                    "오버레이 패스의 실제 비용이며 빼낼 수단이 없다. 게다가 패스2(복사)와 패스3의 " +
+                    "타깃이 같은 FBO_B라 드라이버가 두 렌더패스를 병합하면 두 열의 경계가 흐려진다 " +
+                    "— 일반 주의사항은 gpu_timer.attribution_note와 같다"
+            )
+        }
         // 🔴 짝 arm의 문장을 그대로 쓰면 **없는 열로 개당 기울기를 구하라**고 말하게 된다.
         //    게다가 이 arm에는 stress 짝(`highlight_boxes_stress_1q`)이 아예 없어서 그 방법
         //    자체가 성립하지 않는다 — 없는 절차를 안내하지 않는다.
         json.put(
             "how_to_compare",
-            if (singleQuery) {
+            if (facts.arm.usesChainedHighlight) {
+                // 🔴 이 arm의 stage_i_ms를 정적 arm의 개당 기울기로 나눠 검산하지 않는다
+                //    (박스 크기가 장면이 정한다). 그리고 하한을 낼 분모가 없다.
+                "🔴 **이 arm의 stage_i_ms는 ④의 상한이고 하한은 이 런에 없다**" +
+                    "(no_lower_bound_note). 뜻이 있는 비교는 둘이다: " +
+                    "(1) **drago_clahe_chain과의 차분** — 앞 7패스가 글자 그대로 같은 GL " +
+                    "호출이므로 그 차가 ④ 오버레이 + 그 arm에 없는 present 번짐이다. " +
+                    "(2) **detect_cpu_highlight와의 차분** — ④와 ③이 같고 ② 자리만 다르므로 " +
+                    "그 차가 ② 체인의 증분이다. " +
+                    "⚠ 어느 쪽도 **개당 비용으로 나누지 말 것**: 박스 개수·크기를 장면이 " +
+                    "정하므로(box_count_note) 정적 arm의 개당 기울기와 물리량이 다르다. " +
+                    "⚠ 그리고 gpu_sum은 하한이다(gpu_timer.attribution_note)"
+            } else if (singleQuery) {
                 "🔴 **이 arm으로 ④의 개당 비용을 구할 수 없다.** 열이 gpu_frame_ms 하나뿐이라 " +
                     "오버레이 패스가 분리되지 않고, 개수만 다른 짝(highlight_boxes_stress)의 " +
                     "**단일 query 판이 없어** 차분을 낼 상대도 없다. 개당 기울기는 짝 arm " +
@@ -1407,11 +1503,18 @@ object SessionWriter {
             JSONObject()
                 .put(OverlayClassColors.CLASS_STAIRS, OverlayClassColors.STAIRS_COLOR_TEXT)
                 .put(OverlayClassColors.CLASS_PERSON, OverlayClassColors.PERSON_COLOR_TEXT)
+                .put(OverlayClassColors.CLASS_BOLLARD, OverlayClassColors.BOLLARD_COLOR_TEXT)
                 .put("underline", OverlayClassColors.UNDERLINE_COLOR_TEXT)
                 .put("<unknown>", OverlayClassColors.UNKNOWN_NAME_COLOR_TEXT)
         )
         json.put("unknown_policy", OverlayClassColors.UNKNOWN_POLICY)
         json.put("no_red_reason", RenderArm.HIGHLIGHT_NO_RED_REASON)
+        // 🔴 overlay 블록의 같은 두 키와 **같은 상수**다(사본 금지 — 색 상수 규약과 같은 이유).
+        json.put("person_color_deviation", RenderArm.HIGHLIGHT_PERSON_COLOR_DEVIATION)
+        json.put(
+            "bollard_color_provenance",
+            RenderArm.HIGHLIGHT_BOLLARD_COLOR_PROVENANCE
+        )
         // 🔴 이 런에서 **실제로 색의 출처가 된** 이름 목록. 선언이 아니라 관측이다.
         json.put(
             "class_names_used",
@@ -1725,6 +1828,7 @@ object SessionWriter {
         json.put("classes", buildDetectClasses(report))
         json.put("runtime", buildDetectRuntime(report))
         json.put("preprocess_assumptions", buildDetectPreprocess(facts.detectRotation))
+        json.put("postprocess", buildDetectPostprocess())
         json.put("padding_pixel_fraction", detectPaddingFraction(facts, report))
         json.put("padding_pixel_fraction_note", detectPaddingNote(facts, report))
         json.put("prepare_timing", buildDetectPrepareTiming(report))
@@ -1733,6 +1837,62 @@ object SessionWriter {
             for (w in report.warnings) warnings.put(w)
             json.put("warnings", warnings)
         }
+        return json
+    }
+
+    /**
+     * ③ **후처리 임계**. 🔴 **`session.json`에 이 블록이 없으면 그 런의 boxes_out·G·H·I가
+     * 어느 임계 위의 숫자인지 말할 수 없다** — v7까지 conf/iou가 아예 실리지 않았다.
+     *
+     * 🔴 **쓴 값과 선언값을 갈라 싣는다.** 오버라이드가 걸린 런에서 둘이 다르고, 한 칸에
+     * 담으면 "metadata를 고쳤나 / 앱이 다른 값을 썼나"를 되물을 수 없다.
+     */
+    private fun buildDetectPostprocess(): JSONObject {
+        val json = JSONObject()
+        json.put("conf_used", DetectContract.confThreshold?.toDouble() ?: JSONObject.NULL)
+        json.put("iou_used", DetectContract.iouThreshold?.toDouble() ?: JSONObject.NULL)
+        json.put(
+            "conf_declared_in_metadata",
+            DetectContract.confDeclaredInMetadata?.toDouble() ?: JSONObject.NULL
+        )
+        // iou는 오버라이드가 없다 → 쓴 값과 선언값이 같다. **그래도 두 키를 낸다**:
+        // 한쪽만 있으면 나중에 "iou도 오버라이드였나"를 되물을 수 없다.
+        json.put(
+            "iou_declared_in_metadata",
+            DetectContract.iouThreshold?.toDouble() ?: JSONObject.NULL
+        )
+        json.put("conf_override_active", DetectContract.confOverrideActive)
+        json.put("conf_source", DetectContract.confOverrideSource)
+        json.put(
+            "metadata_not_edited_reason",
+            "🔴 **metadata.json을 고치지 않았다.** 고치면 계약값의 출처가 둘로 갈리고" +
+                "(CLAUDE.md 규칙 3 · INTERFACES.md 공통원칙) 그 뒤로는 어느 쪽이 상류가 준 " +
+                "값인지 말할 수 없다. 그래서 선언값은 선언값대로 남기고 앱이 쓰는 값만 " +
+                "빌드 설정에서 따로 선언했다. **conf 0.25로 metadata 재발행 요청은 알려진 " +
+                "이슈 44로 유효하다** — 재발행이 오면 이 오버라이드를 지우고 선언값을 그대로 " +
+                "쓰는 상태로 되돌린다(build.gradle.kts의 detectConfOverride를 빈 문자열로)"
+        )
+        // 🔴 클래스별 임계 경로를 **코드에 만들지 않았다.** null이 그 사실이고 사유를 함께 낸다.
+        json.put("class_wise_conf", JSONObject.NULL)
+        json.put(
+            "class_wise_conf_reason",
+            "🔴 **적용하지 않았고 코드에 경로도 만들지 않았다.** 상류가 클래스별 conf" +
+                "(bollard 하향 · stairs 유지)를 1순위 카드로 적었지만" +
+                "(RESEARCH_20260823_UPSTREAM.md §4-3 · U-18) **그 임계값이 어느 계약 문서에도 " +
+                "없고** metadata.json에 클래스별 임계 항목 자체가 없다 — 지어내지 않는다" +
+                "(INTERFACES.md 규칙 3). 그리고 이 모델은 11n 계열이라 야간 볼라드 사진에서 " +
+                "conf 0.759~0.804로 나와 **0.25에서 이미 잡힌다**" +
+                "(models/0824/readme_c4e_640.md §6-2). 채택되면 그때 metadata가 클래스별 " +
+                "임계를 실어야 하고, 그것은 이 세션의 범위가 아니다"
+        )
+        json.put("declared_source", DetectContract.declaredSource)
+        json.put(
+            "thresholds_note",
+            "🔴 **이 런의 boxes_out·G·H·I·깜빡임 지표는 전부 conf_used 위에 있다.** 과거 런과 " +
+                "직접 비교하지 말 것 — 알려진 이슈 38이다(임계가 다르면 통과 박스 수가 " +
+                "달라지고, 그러면 G의 NMS 비용·④의 정점 수·overlay_boxes 분포가 함께 " +
+                "움직인다). 비교하려면 conf_used가 같은 런끼리만 놓는다"
+        )
         return json
     }
 
@@ -3040,6 +3200,19 @@ object SessionWriter {
         json.put(
             "draw_call",
             when {
+                // 🔴 통합 arm을 **맨 먼저** 본다. 이 arm은 usesComputeStage2와
+                //   usesHighlightOverlay가 **둘 다** true라 어느 쪽 분기에 걸려도 틀린
+                //   서술이 나간다(통계 패스 2개 / 패스3이 오버레이).
+                facts.arm.usesChainedHighlight ->
+                    "그리기 패스는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), " +
+                        "통계 패스 4개(3단 × 2벌)는 glDispatchCompute. " +
+                        "패스8(④ 오버레이)은 glDrawArrays(" +
+                        "${HighlightOverlay.GL_PRIMITIVE_NAME}) **최대 1회**다 — 정점 수가 " +
+                        "**프레임마다 다르다**(그 프레임에 그린 박스 수 × 박스당 " +
+                        "${HighlightOverlay.VERTS_PER_BOX}정점, 상한 " +
+                        "${HighlightOverlay.MAX_BOX_COUNT * HighlightOverlay.VERTS_PER_BOX}). " +
+                        "🔴 **박스가 0개인 프레임에서는 드로우콜을 내지 않는다**(0은 정상값이다) " +
+                        "— 그때 패스8은 바인드·뷰포트뿐이다. 개수는 frames.csv의 overlay_boxes"
                 // ⚠ bf arm을 **먼저** 본다. usesComputeStage2에는 bf arm도 들어 있으므로
                 //   순서가 뒤집히면 "통계 패스 2개"라는 틀린 서술이 나간다.
                 facts.arm.usesChainedBilateral ->
@@ -3081,6 +3254,15 @@ object SessionWriter {
         json.put(
             "shader_language",
             when {
+                // 🔴 통합 arm을 먼저 본다 — 안 그러면 else로 떨어져 "전 패스 공통 1.00"이라는
+                //   틀린 서술이 나간다(컴퓨트 4개·적용 2개가 3.10이다).
+                facts.arm.usesChainedHighlight ->
+                    "GLSL ES 1.00 (패스1·패스8 오버레이·패스9) + GLSL ES 3.10 " +
+                        "(패스2·3·5·6 컴퓨트, 패스4·7 적용). 적용 패스가 SSBO를 읽어야 해서 " +
+                        "310으로 올렸고, ESSL은 한 프로그램 안에서 버전을 섞지 못하므로 그 " +
+                        "패스의 정점 셰이더도 310이다. ④ 오버레이는 SSBO도 텍스처도 읽지 " +
+                        "않으므로(색이 정점 속성이다) 1.00 그대로이며 정적 오버레이 arm과 " +
+                        "**같은 셰이더 문자열**이다"
                 facts.arm.usesChainedBilateral ->
                     "GLSL ES 1.00 (패스1·패스9) + GLSL ES 3.10 (패스2·3·5·6 컴퓨트, " +
                         "패스4·7 적용, 패스8 bf). 적용 패스가 SSBO를 읽어야 해서 310으로 " +
@@ -3150,7 +3332,24 @@ object SessionWriter {
             )
         } else {
             val names: List<Triple<String, String, String>> =
-                if (facts.arm.usesHighlightOverlay) {
+                if (facts.arm.usesChainedHighlight) {
+                    // 🔴 **usesHighlightOverlay 분기(4패스)보다 앞에 있어야 한다.** 이 arm도
+                    //    그 술어가 true이므로 뒤에 두면 **패스 5개가 서술에서 사라지고**
+                    //    columns[i] 매핑이 통째로 어긋난다(아래 자기검사가 그것을 잡는다).
+                    //    ② 6패스는 체인의 목록을 **그대로 재사용**한다(사본을 만들지 않는다).
+                    listOf(
+                        Triple(
+                            "oes_to_fbo_a", "FBO_A (처리 해상도)", "OES 패스스루 + uTexMatrix"
+                        ),
+                    ) + CHAIN_STAGE2_PASSES + listOf(
+                        chainHighlightOverlayPass(),
+                        Triple(
+                            "present",
+                            "default framebuffer (surface 크기). **FBO_A**를 읽는다",
+                            "단순 복사",
+                        ),
+                    )
+                } else if (facts.arm.usesHighlightOverlay) {
                     // ④ arm. ② 자리는 단순 복사이고 그 뒤에 오버레이 패스가 하나 붙는다.
                     // 🔴 아래 else(3패스 골격)로 떨어뜨리면 **패스 하나가 서술에서 사라진다.**
                     listOf(
@@ -3307,6 +3506,18 @@ object SessionWriter {
                             }
                         }
                         .put("instrumented", instrumented)
+                )
+            }
+            // 🔴 **자기검사: 패스별 계측 arm에서는 서술 패스 수 = 열 수여야 한다.**
+            //    어긋나면 위 gpu_column 매핑이 밀린 채로 나가고(열이 남으면 서술에서 패스가
+            //    사라진 것이다) 앱 쪽에서는 beginPass 수와 열 수가 어긋나 프레임이 통째로
+            //    버려진다(GpuTimerRing.commitFrame의 malformedFrames). 일치하면 키가 없다 —
+            //    "확인했다"와 "어긋났다"를 섞지 않는다.
+            if (!singleFrameQuery && names.size != columns.size) {
+                json.put(
+                    "pass_column_count_mismatch",
+                    "🔴 서술한 렌더 패스 ${names.size}개와 CSV 열 ${columns.size}개가 다르다 " +
+                        "(arm=${facts.arm.id}) — passes[]의 gpu_column 매핑을 신뢰할 수 없다"
                 )
             }
         }

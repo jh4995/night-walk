@@ -1,6 +1,7 @@
 package com.bammasil.poc.detect
 
 import com.bammasil.poc.BuildConfig
+import com.bammasil.poc.gl.OverlayClassColors
 
 /**
  * ③ 탐지의 **계약값·가정·어휘**를 한 곳에 모은다.
@@ -21,8 +22,25 @@ object DetectContract {
     //    실측하고, 이 값들은 "그 실측이 계약과 맞는가"를 묻는 데만 쓴다. 베껴 쓰면 그건
     //    사실이 아니라 주장이다.
 
-    /** `"models/det_c4b_loli0_640/metadata.json"` 또는 빌드 시점에 못 읽었으면 `"unavailable"`. */
+    /**
+     * `"models/0824/bammasil_det_c4e_s3_11n_640/metadata.json"` 또는 빌드 시점에 못 읽었으면
+     * `"unavailable"`.
+     *
+     * 🔴 **못 읽은 경우 이 값으로 "어디에 파일을 두라"고 안내할 수 없다** — 그때는
+     * [expectedMetadataPath] / [expectedModelDir]를 쓴다(읽기 성공과 무관하게 기대 경로다).
+     */
     val declaredSource: String get() = BuildConfig.DETECT_DECLARED_SOURCE
+
+    /**
+     * 모델 패키지 디렉토리(저장소 루트 기준 상대). **adb push 안내가 쓰는 값**이고
+     * [declaredSource]와 달리 metadata를 못 읽어도 비지 않는다.
+     *
+     * 🔴 사본을 만들지 않는다 — 생산자는 `build.gradle.kts`의 `detectModelDir` 하나다.
+     */
+    val expectedModelDir: String get() = BuildConfig.DETECT_MODEL_DIR
+
+    /** 기대 metadata 경로. 생산자는 `build.gradle.kts`의 `detectMetadataRelPath` 하나다. */
+    val expectedMetadataPath: String get() = BuildConfig.DETECT_METADATA_PATH
 
     val declaredFileName: String get() = BuildConfig.DETECT_MODEL_FILE
     val declaredSha256: String get() = BuildConfig.DETECT_MODEL_SHA256
@@ -41,9 +59,32 @@ object DetectContract {
     // 🔴 **파싱 실패를 0.0으로 뭉개지 않는다.** conf가 0.0이면 전 앵커가 통과해 NMS가
     //    8400개를 물고, 그 런의 G는 "그럴듯하지만 다른 것을 잰 숫자"가 된다.
 
-    /** `metadata.json`의 `inference.conf`. 못 읽었거나 파싱 실패면 **null**. */
+    /**
+     * 후처리가 **실제로 쓰는** conf. 못 읽었거나 파싱 실패면 **null**.
+     *
+     * 🔴 **`metadata.json`의 선언값이 아닐 수 있다.** 오버라이드가 걸려 있으면 그 값이고
+     * ([confOverrideActive]) 선언값은 [confDeclaredInMetadata]에 따로 있다 — 두 값을 한 곳에
+     * 담으면 "어느 임계로 잰 숫자인가"에 답할 수 없다. 오버라이드의 근거 문장은
+     * [confOverrideSource]다.
+     */
     val confThreshold: Float?
         get() = BuildConfig.DETECT_CONF_THRESHOLD.toFloatOrNull()
+
+    /**
+     * `metadata.json`이 **선언한** conf. 후처리가 쓰는 값이 아니다([confThreshold]와 비교용).
+     * 못 읽었거나 파싱 실패면 null.
+     */
+    val confDeclaredInMetadata: Float?
+        get() = BuildConfig.DETECT_CONF_DECLARED.toFloatOrNull()
+
+    /** 오버라이드 원문. **빈 문자열이면 오버라이드가 없다**는 뜻이다. */
+    val confOverrideRaw: String get() = BuildConfig.DETECT_CONF_OVERRIDE
+
+    /** conf 오버라이드가 걸린 런인가. `session.json`의 `detect.postprocess`로 나간다. */
+    val confOverrideActive: Boolean get() = confOverrideRaw.isNotEmpty()
+
+    /** 오버라이드를 왜 걸었는가(사람이 읽는 문장). 생산자는 `build.gradle.kts` 하나다. */
+    val confOverrideSource: String get() = BuildConfig.DETECT_CONF_OVERRIDE_SOURCE
 
     /** `metadata.json`의 `inference.iou`. 못 읽었거나 파싱 실패면 **null**. */
     val iouThreshold: Float?
@@ -52,6 +93,15 @@ object DetectContract {
     /** 임계를 못 읽었으면 그 사유(사람이 읽는 문장), 읽었으면 null. */
     val thresholdFailure: String?
         get() {
+            // 🔴 **오버라이드가 걸렸는데 파싱이 안 되면 런을 거부한다.** 조용히 선언값으로
+            //    되돌아가면 session.json이 "0.25로 쟀다"고 말하는데 실제로는 0.35로 잰 런이
+            //    되고, 그 거짓은 나중에 되짚을 수 없다(위 conf=0.0 함정과 같은 취지다).
+            if (confOverrideActive && confOverrideRaw.toFloatOrNull() == null) {
+                return "🔴 conf 오버라이드를 숫자로 읽지 못했다 — override=\"$confOverrideRaw\" " +
+                    "(출처: build.gradle.kts의 detectConfOverride). 선언값 " +
+                    "\"${BuildConfig.DETECT_CONF_DECLARED}\"으로 되돌아가지 않는다: 그러면 " +
+                    "이 런의 임계가 로그와 달라지므로 후처리를 시작하지 않는다"
+            }
             if (confThreshold != null && iouThreshold != null) return null
             return "🔴 후처리 임계를 숫자로 읽지 못했다 — conf=\"${BuildConfig.DETECT_CONF_THRESHOLD}\" " +
                 "iou=\"${BuildConfig.DETECT_IOU_THRESHOLD}\" (출처 ${declaredSource}의 inference 블록). " +
@@ -299,24 +349,105 @@ object DetectContract {
     /**
      * 위 충돌을 사람이 읽는 문장으로. 실제 값은 [DetectRuntime]이 실측한 것을 끼워 넣는다 —
      * 여기에 모델 쪽 순서를 상수로 적으면 그것도 하드코딩이고, 모델이 바뀌는 날 어긋난다.
+     *
+     * 🔴 **문장 자체를 데이터에서 만든다.** 클래스 이름도 개수도 어휘도 이 함수에 열거하지
+     * 않고, [INTERFACES_A4_CLASS_ORDER]와 [modelOrder]를 **인덱스로 대조**해서 "몇 개가 몇
+     * 개로 늘었나 / ☐였던 자리가 무엇으로 채워졌나 / 어느 인덱스가 어긋나나"를 만들고,
+     * 어휘 판정은 [OverlayClassColors.isKnown] 하나에 묻는다.
+     *
+     * ⚠ **이 함수가 낡은 자리가 정확히 그것이었다.** 2026-08-24에 모델이 2클래스 → 3클래스가
+     * 됐는데 본문에 하드코딩돼 있던 "어휘(stairs/person)"와 "person=시안" 두 절이 그대로
+     * 남아, **같은 `session.json` 안에서** `overlay.class_note`
+     * (gl/RenderArm.HIGHLIGHT_CLASS_NOTE, "어휘는 셋")를 부정했다. 런은 죽지 않고 로그만
+     * 그럴듯하게 거짓말했다 — 이 저장소가 가장 경계하는 부류다.
      */
-    fun contractConflictText(modelOrder: List<String>): String =
-        "🔴 **INTERFACES.md 계약 A-4와 모델의 클래스 순서가 반대다.** " +
-            "계약 A-4 = ${INTERFACES_A4_CLASS_ORDER.mapIndexed { i, n -> "$i=$n" }} , " +
+    fun contractConflictText(modelOrder: List<String>): String {
+        val contract = INTERFACES_A4_CLASS_ORDER
+        // 계약이 ☐로 비워 둔 자리(계약 목록의 길이를 넘는 인덱스)를 모델이 무엇으로 채웠는가.
+        val filled = modelOrder.indices.filter { it >= contract.size }
+        // 양쪽에 다 있는 인덱스 중 이름이 어긋난 자리.
+        val mismatched = modelOrder.indices.filter { it < contract.size && modelOrder[it] != contract[it] }
+        // 반대 방향의 어긋남 — 계약에는 있는데 모델에 없는 인덱스(클래스가 줄면 여기가 찬다).
+        val dropped = contract.indices.filter { it >= modelOrder.size }
+        val a4First = contract.firstOrNull() ?: "?"
+        // 🔴 어휘 목록을 여기 적지 않는다. 판정자는 OverlayClassColors 하나다.
+        val inVocab = modelOrder.filter { OverlayClassColors.isKnown(OverlayClassColors.normalize(it)) }
+        val outVocab = modelOrder.filter { !OverlayClassColors.isKnown(OverlayClassColors.normalize(it)) }
+
+        val countClause = if (contract.size != modelOrder.size) {
+            "🔴 **클래스 수가 계약 ${contract.size}개 → 모델 ${modelOrder.size}개로 바뀌었다.** " +
+                "이것이 INTERFACES.md §A-4의 불변 규칙이 **런타임에 통보 필수**라고 못 박은 " +
+                "바로 그 사건이다: '클래스가 늘면 출력 shape의 `4+nc`가 바뀐다' · " +
+                "'클래스 추가 = **렌더 규약 변경**'. 실제로 이 런의 출력 shape은 " +
+                "${declaredOutputShape}이며, 오버레이 어휘도 함께 움직였다(아래 어휘 대조). "
+        } else {
+            "클래스 **수**는 계약과 같다(${contract.size}개). "
+        }
+
+        val filledClause = if (filled.isEmpty()) {
+            "계약이 비워 둔 자리를 모델이 채운 것은 없다. "
+        } else {
+            "🔴 **계약이 ☐로 비워 둔 자리가 채워졌다**: " +
+                "${filled.joinToString(", ") { "index $it = ${modelOrder[it]}" }}. " +
+                "그 자리에는 계약 문서에 이름이 **아예 없으므로 대조할 선언값이 없다** — " +
+                "틀렸다고 말하는 것이 아니라 **확정된 적이 없다**는 뜻이고, 팀이 A-4를 " +
+                "확정할 때 함께 적어야 하는 칸이다. "
+        }
+
+        val orderClause = if (mismatched.isEmpty() && dropped.isEmpty()) {
+            "양쪽에 다 있는 인덱스의 이름은 전부 일치한다. "
+        } else {
+            "🔴 **양쪽에 다 있는 인덱스의 이름이 어긋난다**: " +
+                "${mismatched.joinToString(", ") { "index $it (계약 ${contract[it]} ↔ 모델 ${modelOrder[it]})" }}" +
+                (if (dropped.isEmpty()) "" else
+                    " · 계약에는 있는데 모델에 없는 인덱스 = " +
+                        dropped.joinToString(", ") { "index $it (계약 ${contract[it]})" }) +
+                ". 🔴 **그래서 인덱스로 색을 고르면 안 된다** — 인덱스를 계약 이름으로 읽는 " +
+                "순간 " +
+                mismatched.joinToString(", ") {
+                    "**모델의 ${modelOrder[it]}에 ${contract[it]}의 색이** 칠해진다(index $it)"
+                } +
+                ". 예전에 HighlightOverlay에 있던 'index 0 = ${a4First}'라는 A-4 기반 " +
+                "가정은 **지웠다** — 그 줄이 남아 있었다면 ③→④를 연결하는 순간 위 뒤바뀜이 " +
+                "그대로 화면에 나갔다. 이것은 취향이 아니라 **안전 문제**다. "
+        }
+
+        val vocabClause = "**이 런의 이름을 어휘와 대조한 결과**(판정자는 " +
+            "OverlayClassColors.isKnown 하나이고 🔴 **어휘 목록을 이 문장에 열거하지 " +
+            "않는다** — 열거했다가 클래스가 늘던 날 이 문장이 거짓이 됐다): 어휘 **안** = " +
+            (if (inVocab.isEmpty()) "없다" else inVocab.toString()) +
+            ", 어휘 **밖** = " +
+            (if (outVocab.isEmpty()) {
+                "**없다 — 이 런은 모델 이름 전부가 어휘 안이고, 따라서 중립색으로 떨어지는 " +
+                    "이름이 하나도 없어야 한다**"
+            } else {
+                outVocab.toString() + " (중립색으로 그려진다)"
+            }) +
+            ". 어휘 밖 이름이나 범위 밖 cls는 지우지 않고 **중립색으로** 그리고 그 사실을 " +
+            "session.json의 overlay.class_color_mapping에 남긴다 — 정책 원문은 그 블록의 " +
+            "unknown_policy이며 색 값은 그 블록의 table이 말한다. "
+
+        return "🔴 **INTERFACES.md 계약 A-4와 모델의 클래스 목록이 어긋난다.** " +
+            "계약 A-4 = ${contract.mapIndexed { i, n -> "$i=$n" }} , " +
             "모델 임베드 메타(names) = ${modelOrder.mapIndexed { i, n -> "$i=$n" }}. " +
+            "🔴 **어긋난 방식이 하나가 아니라 셋이므로 갈라 적는다** — '순서가 반대다' " +
+            "하나로 뭉치면 개수 변화가 문장에서 사라지고, 실제로 그렇게 사라진 적이 있다: " +
+            "**(a) 개수** — $countClause" +
+            "**(b) ☐ 자리** — $filledClause" +
+            "**(c) 순서** — $orderClause" +
             "**고치지 않았다** — 계약 문서는 팀 합의 기록이라 런타임이 임의로 못 바꾸고, " +
             "모델은 가중치의 사실이라 코드로 뒤집으면 그게 곧 무음 버그다. " +
-            "🔴 **③→④는 2026-08-07에 연결됐고, 그래서 이 충돌이 무해해졌다** — 이전 문장" +
-            "('그래서 이번 라운드는 ③→④를 연결하지 않았다')은 **더 이상 사실이 아니다.** " +
-            "④ 오버레이의 색은 이제 **클래스 이름**으로 고른다(gl/OverlayClassColors) — " +
-            "이름의 출처는 이 블록의 classes(모델 임베드 메타의 names) **하나뿐**이고 " +
-            "계약 A-4의 순서를 쓰지 않는다. 예전에 HighlightOverlay에 있던 " +
-            "'index 0 = stairs'라는 A-4 기반 가정은 **지웠다** — 그 줄이 남아 있으면 연결하는 " +
-            "순간 사람과 계단의 색이 뒤바뀌었다(person=시안이어야 할 것이 노랑으로 나간다). " +
+            "🔴 **③→④는 2026-08-07에 연결됐고, 그래서 이 충돌이 무해해졌다** — ④ 오버레이의 " +
+            "색은 **클래스 이름**으로 고른다(gl/OverlayClassColors). 이름의 출처는 이 블록의 " +
+            "classes(모델 임베드 메타의 names) **하나뿐**이고 계약 A-4의 순서를 쓰지 않는다. " +
             "🔴 그러므로 팀이 A-4를 어느 쪽으로 확정해도 **오버레이 코드는 바뀌지 않는다** — " +
-            "그것이 이름으로 거는 설계의 목적이다. 어휘(stairs/person) 밖 이름이나 범위 밖 " +
-            "cls는 지우지 않고 **중립색(흰색)으로** 그리고 그 사실을 session.json의 " +
-            "overlay.class_color_mapping에 남긴다"
+            "그것이 이름으로 거는 설계의 목적이다. " +
+            vocabClause +
+            "⚠ **색 값과 상류 명세 이탈은 이 문장이 말하지 않는다**(여기에 색을 베껴 쓰면 " +
+            "색이 바뀌는 날 또 거짓이 된다) — overlay.class_color_mapping의 " +
+            "person_color_deviation(OverlayClassColors.PERSON_COLOR_DEVIATION)과 " +
+            "bollard_color_provenance가 그 기록이다"
+    }
 
     /**
      * letterbox 패딩이 입력 텐서에서 차지하는 **픽셀 비율**.
