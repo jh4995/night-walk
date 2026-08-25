@@ -51,8 +51,11 @@ import javax.microedition.khronos.opengles.GL10
  *   시퀀스**([drawComputeStage2])를 타는 것도 같은 이유다 — 시퀀스가 arm마다 다르면 패스
  *   비용을 arm끼리 비교하는 근거가 흔들린다. 각 arm의 내용은 [DragoStage] · [ClaheStage] ·
  *   [AgcwdStage].
- * - **② 조합 arm**([RenderArm.usesChainedComputeStage2] — `drago_clahe_chain`) — 위 3단이
- *   **두 벌 직렬로** 벌어진 8패스([drawChainedComputeStage2], [DragoClaheChainStage]):
+ * - **② 조합 arm**([RenderArm.usesChainedComputeStage2] — `drago_clahe_chain` ·
+ *   `detect_cpu_chain` · 각각의 `_1q` 판) — 위 3단이
+ *   **두 벌 직렬로** 벌어진 8패스([drawChainedComputeStage2], [DragoClaheChainStage]).
+ *   `detect_cpu_chain` 계열은 **렌더가 이것과 글자 그대로 같고 ③ 탐지만 함께 돈다**
+ *   (탐지는 별 스레드라 GL 패스를 하나도 더하지 않는다):
  *   ```
  *   패스1  OES   → FBO_A                  → stage_b_ms
  *   패스2~4 drago 3단  FBO_A → FBO_B      → stage_d_analyze/build/apply_ms
@@ -81,14 +84,18 @@ import javax.microedition.khronos.opengles.GL10
  *   ⚠ **패스3은 `glClear`를 부르지 않는다** — ② 출력 위에 얹는 패스라 지우면 그림이 사라진다.
  *   패스마다 clear를 명시한다는 아래 규약의 **의도된 예외**이며, 그래서 이 패스에는 타일
  *   재적재 비용이 섞인다(`session.json`의 `overlay` 블록에 그대로 적는다).
- * - **④ ③결과 오버레이 arm**([RenderArm.usesDynamicHighlightBoxes] — `detect_cpu_highlight` /
- *   `_1q`) — 위와 **같은 4패스**이고, 그 앞에 **H칸(좌표 평활·hold)** 하나가 더 붙는다
+ * - **④ ③결과 오버레이 arm**([RenderArm.usesDynamicHighlightBoxes] — `detect_cpu_highlight` ·
+ *   `detect_cpu_highlight_1q` · `detect_cpu_chain_highlight` ·
+ *   `detect_cpu_chain_highlight_1q`) — 앞의 둘은 위와 **같은 4패스**이고, 뒤의 둘은 아래
+ *   ②③④ 통합 arm의 9패스다. **네 arm 모두** 그 앞에 **H칸(좌표 평활·hold)** 하나가 더 붙는다
  *   ([OverlaySmoother]). 🔴 **GPU 패스가 아니라 GL 스레드의 CPU 구간**이라 GPU query가 아니라
  *   `stage_h_ms`(CPU 벽시계) 열로 나가고, GPU 패스를 **열기 전에** 닫힌다
  *   ([RenderArm.OVERLAY_STAGE_H_SCOPE]). 박스는 [DetectOverlayPublisher]가 게시한 ③ 결과이고
  *   개수가 프레임마다 다르므로 `overlay_boxes` 열이 그 프레임의 개수를 말한다.
- * - **②③④ 통합 arm**([RenderArm.usesChainedHighlight] — `detect_cpu_chain_highlight`) —
- *   ② 체인 7패스 **뒤에 오버레이 패스를 끼운** 9패스([drawChainedHighlight]):
+ * - **②③④ 통합 arm**([RenderArm.usesChainedHighlight] — `detect_cpu_chain_highlight`와
+ *   그 프레임 단일 query 짝 `detect_cpu_chain_highlight_1q`) — ② 체인 7패스 **뒤에 오버레이
+ *   패스를 끼운** 9패스([drawChainedHighlight]). 두 arm은 **이 함수를 그대로 함께 타고**
+ *   갈리는 것은 GPU timer query를 거는 방식 하나뿐이다:
  *   ```
  *   패스1   OES   → FBO_A                 → stage_b_ms
  *   패스2~4 drago 3단  FBO_A → FBO_B      → stage_d_analyze/build/apply_ms
@@ -1274,7 +1281,8 @@ class PassthroughRenderer(
      * 지우면 그 프레임의 ② 결과가 통째로 사라진다(화면이 박스만 남은 검은 화면이 된다).
      * 그 대가로 타일 GPU가 컬러 어태치먼트를 다시 load하고 `stage_i_ms`에 그 비용이 섞인다 —
      * 게다가 패스7과 패스8의 타깃이 같은 FBO라 두 열의 경계도 흐려진다
-     * ([RenderArm.CHAIN_HIGHLIGHT_TILE_RELOAD_NOTE]가 그 사실을 `session.json`에 낸다).
+     * ([RenderArm.chainHighlightTileReloadNote]가 그 사실을 `session.json`에 낸다 — 열 지목은
+     * arm마다 다르다. `_1q` 짝에는 패스별 열이 없어 경계 문제 자체가 생기지 않는다).
      *
      * ### 패스 수는 정확히 9여야 한다
      * [GpuTimerRing.beginPass]/[GpuTimerRing.endPass] 호출 수가 [RenderArm.gpuColumns]의
@@ -1399,7 +1407,10 @@ class PassthroughRenderer(
         }
         Log.e(
             TAG,
-            "🔴 ${RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT.id}: 준비 실패로 전 프레임이 " +
+            // 🔴 **arm.id다** — 이 경로는 `_1q` 짝도 함께 탄다(usesChainedHighlight).
+            //    상수를 박아 두면 폴백했을 때 logcat에 **돌지 않은 arm의 이름**이 나가고,
+            //    현장에서 원인을 가르려는 사람이 첫 줄부터 틀린 조건을 본다.
+            "🔴 ${arm.id}: 준비 실패로 전 프레임이 " +
                 "패스스루로 폴백한다(② 체인도 ④ 오버레이도 화면에 없다). 실패 항목 = " +
                 missing.joinToString(" / ") +
                 ". session.json의 render.processing.frames_fell_back_to_passthrough가 그 수다"

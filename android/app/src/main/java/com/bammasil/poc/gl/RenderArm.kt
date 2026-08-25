@@ -395,10 +395,15 @@ enum class RenderArm(
     ),
 
     // ── 하한이 없던 세 계열의 프레임 단일 query 짝(`*_1q`) ─────────────────
-    // 🔴 **왜 이 셋이 더 필요한가:** 단일 query 짝을 실제로 잰 것은 [BLIT_2PASS] ·
-    // [DRAGO_CLAHE_CHAIN] · [DRAGO_CLAHE_CHAIN_BF] 셋뿐이라, [DRAGO_CLAHE_FUSED] ·
-    // [DRAGO_CLAHE_FUSED_BF] · [HIGHLIGHT_BOXES] 계열에는 **패스별 계측의 상한만 있고
-    // 하한이 없다**(`docs/STATUS.md` 알려진 이슈 22).
+    // 🔴 **왜 이 셋이 더 필요한가:** 이 블록을 쓴 시점에 단일 query 짝을 실제로 잰 것은
+    // [BLIT_2PASS] · [DRAGO_CLAHE_CHAIN] · [DRAGO_CLAHE_CHAIN_BF] 셋뿐이라,
+    // [DRAGO_CLAHE_FUSED] · [DRAGO_CLAHE_FUSED_BF] · [HIGHLIGHT_BOXES] 계열에는 **패스별
+    // 계측의 상한만 있고 하한이 없었다**(`docs/STATUS.md` 알려진 이슈 22).
+    //
+    // ⚠ **그 뒤로 짝이 더 생겼다** — ③→④ 세트와 ②③④ 통합 세트가 뒤에 붙어 지금은 짝이
+    //   열 쌍이다. **지금 짝이 있는 arm의 유일한 출처는 [singleFrameQueryPeer]이고**, 사람이
+    //   읽는 전수 목록은 [SINGLE_QUERY_HOW_TO_COMPARE]가 낸다 — 이 머리말에 목록을 두 번째로
+    //   적지 않는다(적으면 arm을 더하는 날 한쪽만 고쳐진다).
     //
     // ⚠ **부풀림 비율을 다른 arm에서 옮겨 보정할 수 없다.** 중복 계상량은 마지막 전체화면
     //   패스의 비용을 따라가므로 패스 구성마다 다르다 — 같은 라운드에서 ④ 오버레이 arm은
@@ -597,10 +602,17 @@ enum class RenderArm(
      * `overlay_boxes`·`stage_i_ms`는 정상값이 나온다** — 이 arm 최대의 무음 실패 지점이고,
      * `PassthroughRenderer.drawChainedHighlight`가 그것을 주석으로 못 박고 있다.
      *
-     * 🔴 **이 arm에는 `_1q` 짝이 없다** → [singleFrameQueryPeer]에 넣지 않았고, 그래서
-     * **I칸·H칸의 하한을 이 arm에서 낼 수 없다**(상한만 나온다). 하한은 "같은 계측 방식의 두
-     * arm 차"로만 낼 수 있는데 그 분모(`..._1q`)를 이 세션에 만들지 않았다 — 스모크 범위
-     * 밖이다(알려진 이슈 36의 교훈은 그대로 유효하다).
+     * 🔴 **이 arm에는 이제 `_1q` 짝이 있다** → [DETECT_CPU_CHAIN_HIGHLIGHT_1Q]를
+     * [singleFrameQueryPeer]에 이어 두었다. 그래서 I는 **상한과 하한이 둘 다** 나온다:
+     * 상한은 이 arm의 `stage_i_ms`(패스별 계측이라 중복 계상한다 — 알려진 이슈 21),
+     * 하한은 `detect_cpu_chain_highlight_1q − detect_cpu_chain_1q`다(둘 다 프레임 단일
+     * query여야 뜻이 있고 같은 세션·같은 빌드에서 잰다). 분모가 `drago_clahe_chain_1q`가
+     * **아닌** 이유는 거기에 탐지 부하가 없어서다 — 알려진 이슈 36이 그 부류다.
+     * 전문은 [CHAIN_HIGHLIGHT_BOUNDS_NOTE].
+     *
+     * ⚠ **H는 하한·상한의 대상이 아니다.** `stage_h_ms`는 CPU 벽시계 직접 측정이고 모든 GPU
+     * query **밖**에서 닫힌다([OVERLAY_STAGE_H_SCOPE]) — `gpu_frame_ms` 차분에 H는 물리적으로
+     * 들어 있지 않다. 예전에 이 자리에 적혀 있던 "I칸·H칸의 하한"은 범주 오류였다.
      *
      * 🔴 **제품 구성 확정이 아니다** → [CHAIN_HIGHLIGHT_NOT_A_PRODUCT_DECISION].
      * ⚠ 탐지 입력은 이 arm에서도 **원본 프레임**이다 → [CHAIN_HIGHLIGHT_DETECT_INPUT_NOTE].
@@ -628,6 +640,97 @@ enum class RenderArm(
             "stage_i_ms",
             "gpu_present_ms",
         ),
+    ),
+
+    // ── ②③④ 통합 arm의 짝 3개 (스키마 v7) ───────────────────────────────
+    // 🔴 **셋이 통합 arm([DETECT_CPU_CHAIN_HIGHLIGHT])의 I 상한 옆에 하한을 세운다.** 그 arm은
+    // 짝이 없어 지금까지 상한만 냈다. 전문은 [CHAIN_HIGHLIGHT_BOUNDS_NOTE]이고, 세 arm이
+    // 각각 맡는 자리는 이렇다:
+    //
+    //   detect_cpu_chain               8패스(체인 7 + present) + 탐지. **오버레이 없음**.
+    //                                  패스별 계측 → 통합 arm과의 차분이 ④ 오버레이다
+    //   detect_cpu_chain_1q            위와 렌더가 같고 프레임 단일 query → 🔴 **I 하한의 분모**
+    //   detect_cpu_chain_highlight_1q  통합 arm과 렌더가 같고 프레임 단일 query
+    //                                  → 🔴 **I 하한의 분자**
+    //
+    // 🔴 **분모를 `drago_clahe_chain_1q`로 잡으면 안 된다** — 거기엔 탐지 부하가 없다
+    //   ([usesDetectSession]이 false이고 `detect.csv`도 없다). 알려진 이슈 36이 그 부류다:
+    //   분모를 잘못 고르면 하한이 0으로 나오고 그 0은 '공짜'가 아니라 **분모가 상한을 중복
+    //   계상했다**는 뜻이었다.
+    //
+    // ⚠ **`detect_cpu_chain`을 [usesDynamicHighlightBoxes]에 넣지 않는다** — 넣으면 오버레이가
+    //   없는 arm이 `stage_h_ms`·`overlay_boxes` 열을 싣고, 그러면 그 arm은 더 이상 "오버레이만
+    //   뺀 분모"가 아니다.
+    //
+    // ⚠ 목록 **맨 뒤**에 붙인다. 스피너는 entries 순서라 중간에 끼우면 측정자가 손으로 고르던
+    //   기존 arm의 위치가 전부 밀린다(`_1q` 셋·회전 대조군·③→④ 세트·통합 arm을 뒤에 붙인 것과
+    //   같은 이유다).
+    // ⚠ 열 이름을 companion의 상수로 쓰지 않는다 — enum 상수가 companion보다 먼저 초기화되므로
+    //   초기화 순서 함정에 걸린다([GAMMA_ONLY]의 같은 주석). 문자열을 직접 적었고, 어긋나면
+    //   [SINGLE_FRAME_QUERY_COLUMN_MISMATCH]가 잡는다.
+
+    /**
+     * ② 체인 + ③ 탐지이고 **④ 오버레이가 없는** arm. 8패스다 — 렌더는 [DRAGO_CLAHE_CHAIN]과
+     * **글자 그대로 같은 GL 호출**이고([usesChainedComputeStage2]에 함께 넣어 같은
+     * `PassthroughRenderer.drawChainedComputeStage2`를 탄다) 다른 것은 탐지가 도는가 하나뿐이다.
+     *
+     * 🔴 **[DETECT_CPU_CHAIN_HIGHLIGHT]에서 ④만 뺀 arm이라는 것이 이 arm의 뜻이다.** 그래서
+     * 두 arm의 차분이 ④ 오버레이 + 통합 arm에만 있는 present 번짐이고, [DRAGO_CLAHE_CHAIN]과의
+     * 차분이 탐지를 켜서 생긴 변화다.
+     *
+     * ⚠ 오버레이가 없으므로 [usesDynamicHighlightBoxes]에 **넣지 않았다**(위 블록 머리말).
+     *
+     * 토큰 4개·열 8개는 **전부 이미 있는 것**이다 — 조합이라고 새 토큰·새 열을 만들지 않는다.
+     */
+    DETECT_CPU_CHAIN(
+        "detect_cpu_chain",
+        listOf("blit_2pass", "stage2_drago", "stage2_clahe", "detect"),
+        // 짝(drago_clahe_chain)과 **같은 목록·같은 순서**다. 탐지는 별 스레드에서 돌고 렌더
+        // 경로를 하나도 건드리지 않으므로 열이 같아야 차분이 뜻을 갖는다.
+        listOf(
+            "stage_b_ms",
+            "stage_d_analyze_ms",
+            "stage_d_build_ms",
+            "stage_d_apply_ms",
+            "stage_d_analyze2_ms",
+            "stage_d_build2_ms",
+            "stage_d_apply2_ms",
+            "gpu_present_ms",
+        ),
+    ),
+
+    /**
+     * [DETECT_CPU_CHAIN]의 프레임 단일 query 판. 렌더 8패스, 열 1개.
+     * 🔴 **I 하한의 분모**다 → [CHAIN_HIGHLIGHT_BOUNDS_NOTE].
+     */
+    DETECT_CPU_CHAIN_1Q(
+        "detect_cpu_chain_1q",
+        listOf("blit_2pass", "stage2_drago", "stage2_clahe", "detect"),
+        listOf("gpu_frame_ms"),
+    ),
+
+    /**
+     * [DETECT_CPU_CHAIN_HIGHLIGHT]의 프레임 단일 query 판. 렌더 9패스, 열 1개.
+     *
+     * 🔴 **렌더는 짝과 글자 그대로 같다** — [usesChainedHighlight]에 함께 넣어 같은
+     * `PassthroughRenderer.drawChainedHighlight`를 타고, 평활·hold도 같은 자리에서 같은 값으로
+     * 돈다. 🔴 그래서 [usesDynamicHighlightBoxes]와 [highlightBoxCount]의 DYNAMIC 분기에도
+     * 함께 들어 있어야 한다 — 빠지면 박스를 0개 그려 렌더가 짝과 달라지고 두 계측의 차분이
+     * 아무 뜻이 없어진다([HIGHLIGHT_BOXES_1Q]가 같은 경고를 달고 있다).
+     *
+     * 🔴 **I 하한의 분자**다 → [CHAIN_HIGHLIGHT_BOUNDS_NOTE].
+     */
+    DETECT_CPU_CHAIN_HIGHLIGHT_1Q(
+        "detect_cpu_chain_highlight_1q",
+        listOf(
+            "blit_2pass",
+            "stage2_drago",
+            "stage2_clahe",
+            "detect",
+            "stage4_highlight",
+            "stage4_smoothing",
+        ),
+        listOf("gpu_frame_ms"),
     );
 
     /**
@@ -656,9 +759,15 @@ enum class RenderArm(
      * 🔴 [DRAGO_CLAHE_CHAIN_1Q]가 **여기 함께 들어 있다.** 그 arm은 계측 방식만 다르고
      * 렌더는 같아야 하므로 짝과 **같은 draw 함수**를 타야 한다 — 여기서 빼면 `dispatchDraw`가
      * 3패스 골격으로 떨어뜨려 실험이 통째로 무의미해진다.
+     *
+     * 🔴 [DETECT_CPU_CHAIN]·[DETECT_CPU_CHAIN_1Q]도 **여기다.** 탐지는 별 스레드에서 돌고 GL
+     * 패스를 하나도 더하지 않으므로 렌더가 체인과 글자 그대로 같다.
+     * ⚠ [usesChainedHighlight]와 **교집합이 공집합이어야 한다** — 겹치면 `dispatchDraw`가
+     * 8패스 경로로 떨어뜨려 ④가 조용히 사라진다(그 프로퍼티의 같은 경고).
      */
     val usesChainedComputeStage2: Boolean
-        get() = this == DRAGO_CLAHE_CHAIN || this == DRAGO_CLAHE_CHAIN_1Q
+        get() = this == DRAGO_CLAHE_CHAIN || this == DRAGO_CLAHE_CHAIN_1Q ||
+            this == DETECT_CPU_CHAIN || this == DETECT_CPU_CHAIN_1Q
 
     /**
      * ② 자리가 **체인이고 그 뒤에 ④ 오버레이 패스가 하나 더 붙는** arm인가(9패스).
@@ -669,7 +778,7 @@ enum class RenderArm(
      * [usesChainedBilateral]이 같은 이유로 갈라져 있다).
      */
     val usesChainedHighlight: Boolean
-        get() = this == DETECT_CPU_CHAIN_HIGHLIGHT
+        get() = this == DETECT_CPU_CHAIN_HIGHLIGHT || this == DETECT_CPU_CHAIN_HIGHLIGHT_1Q
 
     /**
      * ② 자리가 **융합**(통계 두 벌 + 적용 한 벌)인 arm인가.
@@ -718,7 +827,7 @@ enum class RenderArm(
      */
     val usesDynamicHighlightBoxes: Boolean
         get() = this == DETECT_CPU_HIGHLIGHT || this == DETECT_CPU_HIGHLIGHT_1Q ||
-            this == DETECT_CPU_CHAIN_HIGHLIGHT
+            this == DETECT_CPU_CHAIN_HIGHLIGHT || this == DETECT_CPU_CHAIN_HIGHLIGHT_1Q
 
     /** ② 자리에 bilateral 한 패스가 붙는 arm인가(체인이든 융합이든). */
     val usesBilateral: Boolean
@@ -743,6 +852,11 @@ enum class RenderArm(
             //    쓰고 GpuTimerRing이 **첫 패스만** 감싼다 — 그런데 로그만 보면 그럴듯하다.
             DETECT_CPU_HIGHLIGHT_1Q -> DETECT_CPU_HIGHLIGHT
             DETECT_CPU_1Q -> DETECT_CPU
+            // ②③④ 통합 세트. 이 둘의 차가 통합 arm의 **I 하한**이다
+            // ([CHAIN_HIGHLIGHT_BOUNDS_NOTE]). 여기 빠뜨리면 [renderPassCount]가 열 수(1)를
+            // 그대로 쓰고 GpuTimerRing이 **첫 패스만** 감싼다 — 로그만 보면 그럴듯하다.
+            DETECT_CPU_CHAIN_HIGHLIGHT_1Q -> DETECT_CPU_CHAIN_HIGHLIGHT
+            DETECT_CPU_CHAIN_1Q -> DETECT_CPU_CHAIN
             else -> null
         }
 
@@ -783,6 +897,10 @@ enum class RenderArm(
         get() = this == DETECT_CPU || this == DETECT_NNAPI || this == DETECT_XNNPACK ||
             this == DETECT_CPU_PROF || this == DETECT_NNAPI_PROF || this == DETECT_XNNPACK_PROF ||
             this == DETECT_CPU_NOROT || this == DETECT_CPU_1Q ||
+            // ②③④ 통합 세트에서 **오버레이가 없는** 두 arm. 나머지 하나
+            // ([DETECT_CPU_CHAIN_HIGHLIGHT_1Q])는 usesDynamicHighlightBoxes 경유로 이미
+            // 걸리므로 여기 중복 등록하지 않는다.
+            this == DETECT_CPU_CHAIN || this == DETECT_CPU_CHAIN_1Q ||
             usesDynamicHighlightBoxes ||
             usesDetectParityDump
 
@@ -821,7 +939,8 @@ enum class RenderArm(
         get() = when (this) {
             DETECT_CPU, DETECT_CPU_PROF, DETECT_PARITY_CPU, DETECT_CPU_NOROT,
             DETECT_CPU_HIGHLIGHT, DETECT_CPU_HIGHLIGHT_1Q, DETECT_CPU_1Q,
-            DETECT_CPU_CHAIN_HIGHLIGHT -> "cpu"
+            DETECT_CPU_CHAIN_HIGHLIGHT, DETECT_CPU_CHAIN_HIGHLIGHT_1Q,
+            DETECT_CPU_CHAIN, DETECT_CPU_CHAIN_1Q -> "cpu"
             DETECT_NNAPI, DETECT_NNAPI_PROF, DETECT_PARITY_NNAPI -> "nnapi"
             DETECT_XNNPACK, DETECT_XNNPACK_PROF, DETECT_PARITY_XNNPACK -> "xnnpack"
             else -> null
@@ -856,7 +975,8 @@ enum class RenderArm(
             //    짝과 달라지고, 그러면 두 계측의 차분이 아무 뜻이 없어진다.
             HIGHLIGHT_BOXES, HIGHLIGHT_BOXES_1Q -> HIGHLIGHT_BOX_COUNT
             HIGHLIGHT_BOXES_STRESS -> HIGHLIGHT_BOX_COUNT_STRESS
-            DETECT_CPU_HIGHLIGHT, DETECT_CPU_HIGHLIGHT_1Q, DETECT_CPU_CHAIN_HIGHLIGHT ->
+            DETECT_CPU_HIGHLIGHT, DETECT_CPU_HIGHLIGHT_1Q,
+            DETECT_CPU_CHAIN_HIGHLIGHT, DETECT_CPU_CHAIN_HIGHLIGHT_1Q ->
                 HIGHLIGHT_BOX_COUNT_DYNAMIC
             else -> 0
         }
@@ -2002,9 +2122,14 @@ enum class RenderArm(
                 "평활 트랙·그릴 목록·정점 버퍼는 전부 상한 크기로 **한 번** 잡아 두고 " +
                 "in-place로 재기록한다. GL 스레드에서 GC가 돌면 그것이 곧 프레임타임 꼬리다"
 
-        // ── 통합 arm(`detect_cpu_chain_highlight`) ────────────────────────
+        // ── 통합 arm(`detect_cpu_chain_highlight` 계열) ───────────────────
         // 🔴 이 arm은 **측정용 추가**이고 제품 구성 결정이 아니다. 아래 네 문장이 그 사실과
         //   읽는 법·계측 한계를 담고 `session.json`으로 나간다.
+        // 🔴 **네 문장은 arm 중립으로 쓴다** — 통합 arm에는 이제 짝이 셋 있고
+        //   ([DETECT_CPU_CHAIN] · [DETECT_CPU_CHAIN_1Q] · [DETECT_CPU_CHAIN_HIGHLIGHT_1Q])
+        //   같은 문장이 그 arm들의 `session.json`에도 실린다. 어느 arm이 실어도 참인 문장이어야
+        //   한다 — "이 arm은 9패스다" 같은 arm 고유 사실을 여기 넣으면 8패스 arm의 로그에서
+        //   거짓이 된다(그 부류의 서술은 `SessionWriter`의 arm별 분기가 맡는다).
 
         /** 🔴 이 문장이 빠지면 "제품 구성이 정해졌다"로 읽힌다. `session.json`으로 나간다. */
         const val CHAIN_HIGHLIGHT_NOT_A_PRODUCT_DECISION =
@@ -2033,27 +2158,82 @@ enum class RenderArm(
         /**
          * 🔴 패스7과 패스8의 **타깃이 같은 FBO_A**라 두 열의 경계가 흐려진다.
          * `PassthroughRenderer.drawHighlightOverlay`가 패스2·3에 대해 적은 것과 **같은 자리**다.
+         *
+         * 🔴 **상수가 아니라 함수인 이유:** 물리 사실(타일 재적재가 일어난다 · 패스7↔8이 같은
+         * FBO_A다)은 [usesChainedHighlight]인 **두 arm 모두에서 참**이지만, 그 비용이 **어느
+         * 열에 앉는가**는 계측 방식이 정한다. 프레임 단일 query 짝
+         * ([DETECT_CPU_CHAIN_HIGHLIGHT_1Q])에는 `stage_i_ms`도 `stage_d_apply2_ms`도 없으므로
+         * 열 이름을 박아 두면 **CSV에 없는 열을 사실로 지목**하고, 같은 블록의
+         * `overlay.gpu_column_note`("이 arm에는 stage_i_ms가 없다")와 정면으로 모순된다
+         * (`SessionWriter.buildOverlay`의 `iCostPhrase`가 같은 지적에서 나왔다 — 그 값을
+         * 그대로 받아 두 자리의 표현이 갈라지지 않게 한다).
+         *
+         * @param iCostPhrase ④ 오버레이 비용이 이 arm에서 앉는 열. **호출부가 하나만 만들어**
+         *   이 함수와 비-체인 분기가 함께 쓴다.
+         * @param singleFrameQuery 프레임 단일 query arm인가. **열 귀속만** 갈리고 물리 사실은
+         *   두 arm이 같다 — 문장을 지우지 않고 지목만 바꾼다.
          */
-        const val CHAIN_HIGHLIGHT_TILE_RELOAD_NOTE =
-            "⚠ 오버레이 패스(패스8)는 **glClear를 부르지 않는다** — ② 체인의 출력 위에 얹기 " +
-                "때문이다(지우면 ② 결과가 사라진다). 그래서 타일 GPU가 컬러 어태치먼트를 다시 " +
-                "load하고 **stage_i_ms에는 그 비용이 섞여 있다.** 오버레이 패스의 실제 비용이며 " +
-                "빼낼 수단이 없다. " +
+        fun chainHighlightTileReloadNote(
+            iCostPhrase: String,
+            singleFrameQuery: Boolean,
+        ): String {
+            // 🔴 두 갈래가 답하는 것은 **귀속**뿐이다. 앞뒤 문장은 공유하므로 물리 서술이
+            //    한쪽만 고쳐지는 일이 생기지 않는다.
+            val attribution = if (singleFrameQuery) {
+                "🔴 그리고 **패스7(clahe apply)과 패스8의 타깃이 같은 FBO_A**라 드라이버가 두 " +
+                    "렌더패스를 병합할 수 있다 — 다만 **이 arm에서는 두 열의 경계 문제가 " +
+                    "생기지 않는다.** 귀속을 가를 패스별 열이 애초에 없기 때문이다. 그 대신 " +
+                    "어느 패스가 비쌌는지를 이 arm에서 낼 수 없고(gpu_column_note · " +
+                    "how_to_compare), 경계가 흐려지는 문제는 짝 arm의 stage_d_apply2_ms ↔ " +
+                    "stage_i_ms에서 본다. "
+            } else {
                 "🔴 게다가 **패스7(clahe apply)과 패스8의 타깃이 같은 FBO_A**라 드라이버가 두 " +
-                "렌더패스를 병합하면 stage_d_apply2_ms와 stage_i_ms의 경계가 흐려진다 — " +
-                "4패스 오버레이 arm에서 패스2·3(둘 다 FBO_B)에 대해 적은 것과 **같은 자리**이고 " +
+                    "렌더패스를 병합하면 stage_d_apply2_ms와 stage_i_ms의 경계가 흐려진다 — " +
+                    "4패스 오버레이 arm에서 패스2·3(둘 다 FBO_B)에 대해 적은 것과 " +
+                    "**같은 자리**다. "
+            }
+            return "⚠ 오버레이 패스(패스8)는 **glClear를 부르지 않는다** — ② 체인의 출력 위에 " +
+                "얹기 때문이다(지우면 ② 결과가 사라진다). 그래서 타일 GPU가 컬러 어태치먼트를 " +
+                "다시 load하고 **${iCostPhrase}에는 그 비용이 섞여 있다.** 오버레이 패스의 " +
+                "실제 비용이며 빼낼 수단이 없다. " +
+                attribution +
                 "일반 주의사항은 gpu_timer.attribution_note와 같다. 패스 사이에 바인드·뷰포트를 " +
                 "다시 명시해 쪼갤 기회를 주는 것까지가 우리가 할 수 있는 일이다"
+        }
 
-        /** 🔴 이 arm에 `_1q` 짝이 없어 **하한을 낼 수 없다**는 사실. `session.json`으로 나간다. */
-        const val CHAIN_HIGHLIGHT_NO_LOWER_BOUND =
-            "🔴 **이 arm에서는 I칸·H칸의 하한을 낼 수 없다 — 상한만 나온다.** 하한은 '같은 " +
-                "계측 방식의 두 arm 차'로만 낼 수 있는데 이 arm의 프레임 단일 query 짝" +
-                "(detect_cpu_chain_highlight_1q)을 만들지 않았다(스모크 범위 밖이다). " +
-                "알려진 이슈 36이 그 부류다: 분모를 잘못 고르면 하한이 0으로 나오고 그 0은 " +
-                "'공짜'가 아니라 **분모가 상한을 중복 계상했다**는 뜻이었다. 그러므로 이 런에서 " +
-                "인용할 수 있는 것은 stage_i_ms(I 상한) · stage_h_ms(H, CPU 벽시계) · 패스별 " +
-                "D 열이고, **차분으로 만든 하한은 이 런에 없다**"
+        /**
+         * 🔴 ②③④ 통합 세트에서 **I의 상한·하한이 각각 어느 arm에서 나오는가**. `session.json`
+         * 으로 나간다(`stage2_params.bounds_note` · `overlay.bounds_note`).
+         *
+         * 🔴 **arm 중립 문장이다** — 세트의 네 arm 중 어느 것이 실어도 참이어야 한다. 예전 이름
+         * (`CHAIN_HIGHLIGHT_NO_LOWER_BOUND`)과 예전 키(`no_lower_bound_note`)는 통합 arm에
+         * 짝이 없던 시절의 것이라 **하한의 분자가 되는 arm 자신이 "하한을 낼 수 없다"를 싣게
+         * 된다.** 그래서 이름과 키를 함께 바꿨다.
+         *
+         * ⚠ 예전 문장의 "I칸·H칸의 하한"은 **범주 오류**였다 — H는 CPU 벽시계이고 모든 GPU
+         * query 밖에서 닫힌다([OVERLAY_STAGE_H_SCOPE]). 그러므로 `gpu_frame_ms` 차분에 H는
+         * 물리적으로 들어 있지 않고, H는 차분으로 유도할 대상이 아니라 `stage_h_ms` 열로
+         * **직접 측정**된다.
+         */
+        const val CHAIN_HIGHLIGHT_BOUNDS_NOTE =
+            "🔴 **②③④ 통합 세트에서 I의 상한과 하한은 서로 다른 arm에서 나온다 — 한 arm의 " +
+                "로그만 보고 둘을 다 얻을 수 없다.** " +
+                "**I 상한** = detect_cpu_chain_highlight의 stage_i_ms다. 패스별 계측이라 " +
+                "중복 계상하므로(알려진 이슈 21) 그 값이 상한이다. " +
+                "**I 하한** = detect_cpu_chain_highlight_1q − detect_cpu_chain_1q이며 " +
+                "**둘 다 프레임 단일 query일 때만** 뜻이 있다(GL_TIME_ELAPSED가 중첩되지 않아 " +
+                "패스별 계측과 섞을 수 없다). 🔴 **같은 세션·같은 빌드에서 잰다** — 다른 세션의 " +
+                "값과 빼면 발열·조명·AE 상태의 차이가 중복 계상량으로 둔갑한다. " +
+                "🔴 **분모가 drago_clahe_chain_1q가 아닌 이유:** 거기엔 탐지 부하가 없다" +
+                "(그 arm은 ORT 세션을 열지 않고 detect.csv도 내지 않는다). 알려진 이슈 36이 " +
+                "그 부류다 — 분모를 잘못 고르면 하한이 0으로 나오고 그 0은 '오버레이가 공짜'가 " +
+                "아니라 **분모가 상한을 통째로 중복 계상했다**는 뜻이었다. " +
+                "🔴 **H는 하한·상한의 대상이 아니다.** stage_h_ms는 CPU 벽시계 직접 측정이고 " +
+                "모든 GPU query **밖**에서 닫힌다(overlay.smoothing.scope) — gpu_frame_ms " +
+                "차분에 H는 물리적으로 들어 있지 않으므로 'H의 하한'은 범주 오류다. H는 두 " +
+                "오버레이 arm(detect_cpu_chain_highlight / _1q)이 stage_h_ms 열로 **직접** 낸다. " +
+                "⚠ 오버레이가 없는 두 arm(detect_cpu_chain / _1q)에는 stage_i_ms도 stage_h_ms도 " +
+                "없다 — 그 arm들의 자리는 **분모**이고 그것이 이 세트에서 그 arm의 뜻 전부다"
 
         // ── 프레임 단일 query arm(`*_1q`) ─────────────────────────────────
         // 🔴 **이 arm들은 알고리즘이 아니라 계측 방식이 다르다.** 아래 네 문장이 그 사실과
@@ -2126,14 +2306,22 @@ enum class RenderArm(
                 "drago_clahe_fused_bf_1q↔drago_clahe_fused_bf · " +
                 "highlight_boxes_1q↔highlight_boxes · " +
                 "detect_cpu_highlight_1q↔detect_cpu_highlight · " +
-                "detect_cpu_1q↔detect_cpu. 다른 arm과 짝지으면 렌더가 " +
-                "달라 그 차분은 아무 뜻이 없다. " +
-                "🔴 **③→④ 세트(v7)에서 I 하한의 분모는 `detect_cpu_1q` 하나다** — " +
-                "`detect_cpu_highlight_1q − detect_cpu_1q`이며, `blit_2pass_1q`를 분모로 " +
-                "쓰면 **거기에 탐지 부하가 없어서** 차이에 탐지 비용이 섞인다. 알려진 이슈 36이 " +
-                "그 부류다(`highlight_boxes_1q`가 분모와 소수점 셋째 자리까지 같아 I 하한이 " +
-                "0으로 나왔고, 그 0은 '오버레이가 공짜'가 아니라 분모가 상한을 통째로 중복 " +
-                "계상했다는 뜻이었다). " +
+                "detect_cpu_1q↔detect_cpu · " +
+                "detect_cpu_chain_1q↔detect_cpu_chain · " +
+                "detect_cpu_chain_highlight_1q↔detect_cpu_chain_highlight. 다른 arm과 " +
+                "짝지으면 렌더가 달라 그 차분은 아무 뜻이 없다. " +
+                "🔴 **I 하한의 분모는 세트마다 다르다 — 하나가 아니다.** " +
+                "③→④ 세트(v7)는 `detect_cpu_highlight_1q − detect_cpu_1q`이고, " +
+                "②③④ 통합 세트는 `detect_cpu_chain_highlight_1q − detect_cpu_chain_1q`다. " +
+                "분모는 **분자에서 ④ 오버레이만 뺀 arm**이어야 하며(② 구성과 탐지가 같아야 " +
+                "한다), `blit_2pass_1q`나 `drago_clahe_chain_1q`를 분모로 쓰면 **거기에 탐지 " +
+                "부하가 없어서** 차이에 탐지 비용이 섞인다. 알려진 이슈 36이 그 부류다" +
+                "(`highlight_boxes_1q`가 분모와 소수점 셋째 자리까지 같아 I 하한이 0으로 " +
+                "나왔고, 그 0은 '오버레이가 공짜'가 아니라 분모가 상한을 통째로 중복 계상했다는 " +
+                "뜻이었다). " +
+                "🔴 **H는 이 차분의 대상이 아니다** — stage_h_ms는 CPU 벽시계이고 모든 GPU " +
+                "query 밖에서 닫히므로(overlay.smoothing.scope) gpu_frame_ms 차분에 들어 있지 " +
+                "않다. H는 오버레이 arm이 그 열로 직접 낸다. " +
                 "🔴 **부풀림 비율을 arm 사이에서 옮기지 말 것** — 중복 계상량은 마지막 " +
                 "전체화면 패스의 비용을 따라가므로 패스 구성마다 다르다(같은 라운드에서 " +
                 "④ 오버레이 arm +2% / 9패스 arm +43%). 하한이 필요하면 **그 arm의 `_1q` " +

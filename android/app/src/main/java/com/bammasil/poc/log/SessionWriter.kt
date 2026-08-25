@@ -787,8 +787,10 @@ object SessionWriter {
             "note",
             "패스스루 arm에는 query를 하나도 걸지 않는다 — query 자체가 GPU 동작과 드라이버 " +
                 "스케줄링을 바꾸므로, 승격 베이스라인을 재현하는 경로에 넣으면 그 기준이 " +
-                "기준이 아니게 된다. stage_i_ms는 ④ 오버레이 arm" +
-                "(highlight_boxes / highlight_boxes_stress / detect_cpu_highlight)이 낸다. " +
+                "기준이 아니게 된다. stage_i_ms는 ④ 오버레이 arm(highlight_boxes / " +
+                "highlight_boxes_stress / detect_cpu_highlight / " +
+                "detect_cpu_chain_highlight)이 낸다 — 프레임 단일 query 짝(`_1q`)은 " +
+                "**이 열을 내지 않는다**(열이 gpu_frame_ms 하나뿐이다). " +
                 "🔴 stage_h_ms는 **GPU 열이 아니다** — CPU 벽시계(GL 스레드)라 이 블록의 " +
                 "어느 칸에도 들어가지 않는다(overlay.smoothing 참고)"
         )
@@ -1006,33 +1008,20 @@ object SessionWriter {
                 putChain(json, facts)
                 json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
                 // 🔴 putChain의 note는 "전체 8패스"라고 말한다 — 이 arm은 9패스다.
-                json.put(
-                    "note",
-                    "② 자리가 **6패스**(3단 × 2벌)이고 그 뒤에 ④ 오버레이 패스가 하나 더 " +
-                        "붙어 **전체 9패스**다(체인 arm은 8패스다). 하위 패스를 합치지 않고 " +
-                        "D 계열 슬롯 6개에 그대로 낸다(docs/FRAME_LOG_SCHEMA.md §2). " +
-                        "④의 서술은 session.json의 overlay 블록에 있다. " +
-                        "🔴 이 arm은 **측정용 추가이며 제품 구성 확정이 아니다** — " +
-                        "not_a_product_decision을 함께 읽을 것"
-                )
+                //    문장은 `_1q` 짝과 **공유한다**(사본을 두면 한쪽만 고쳐진다).
+                json.put("note", CHAIN_HIGHLIGHT_STAGE2_NOTE)
                 json.put(
                     "not_a_product_decision",
                     RenderArm.CHAIN_HIGHLIGHT_NOT_A_PRODUCT_DECISION
                 )
                 json.put("detect_input_note", RenderArm.CHAIN_HIGHLIGHT_DETECT_INPUT_NOTE)
-                json.put("no_lower_bound_note", RenderArm.CHAIN_HIGHLIGHT_NO_LOWER_BOUND)
+                json.put("bounds_note", RenderArm.CHAIN_HIGHLIGHT_BOUNDS_NOTE)
                 // 🔴 putChain이 넣은 계수는 **체인 arm 기준**이다(색공간 변환 계수는 ② 6패스가
                 //    글자 그대로 같으므로 그대로 성립한다). 그 범위를 문장으로 못 박는다 —
                 //    적지 않으면 "9패스 arm을 8패스로 셌다"로 읽힌다.
                 json.put(
                     "color_transform_sites_note",
-                    "🔴 **위 color_transform_sites의 arm은 drago_clahe_chain이다**(이 arm의 " +
-                        "id가 아니다). ② 6패스의 셰이더가 체인과 **글자 그대로 같으므로** 그 " +
-                        "계수가 이 arm에도 그대로 성립하고, 이 arm에만 있는 패스8(④ 오버레이)의 " +
-                        "색공간 변환은 **0**이다(오버레이 셰이더는 LabGlsl을 부르지 않는다 — " +
-                        "정적 오버레이 arm에서 기계로 세어 확증돼 있다). 즉 합은 같다. " +
-                        "declared 표(color_transform_declared)의 passes_total은 **체인의 8**이며 " +
-                        "이 arm은 9다 — 그 칸만 이 arm에서 성립하지 않는다"
+                    CHAIN_HIGHLIGHT_COLOR_TRANSFORM_SITES_NOTE
                 )
             }
             // 오버레이가 없는 3패스 골격 + 탐지. 짝은 detect_cpu다.
@@ -1041,8 +1030,100 @@ object SessionWriter {
                 json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
                 putSingleFrameQueryNotes(json, RenderArm.DETECT_CPU_1Q)
             }
+            // ── ②③④ 통합 arm의 짝 3개 ───────────────────────────────────
+            // 🔴 **`else`를 만들지 않는다.** 이 when이 망라적인 것이 이 파일의 안전장치다 —
+            //    새 arm이 들어오면 컴파일이 깨지고, 그래서 서술을 빠뜨린 채로 로그가 나가지
+            //    않는다(`render.passes[]`의 `else -> drago 패스 이름` 함정의 반대편이다).
+            //
+            // ② 자리가 **체인 6패스**다 → putChain을 그대로 재사용한다(사본을 만들지 않는다).
+            // 🔴 putHighlightCopy를 부르면 "② 자리는 단순 복사다"라고 거짓 선언한다.
+            // ⚠ 오버레이가 없으므로 통합 arm의 ④ 관련 키는 **넣지 않는다.**
+            RenderArm.DETECT_CPU_CHAIN -> {
+                putChain(json, facts)
+                // 🔴 ② 서술만 보고 "탐지가 프레임타임에 안 들어간다"를 유도하지 못하게 한다.
+                json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
+                putChainDetectColorTransformNote(json)
+            }
+            RenderArm.DETECT_CPU_CHAIN_1Q -> {
+                putChain(json, facts)
+                json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
+                putChainDetectColorTransformNote(json)
+                putSingleFrameQueryNotes(json, RenderArm.DETECT_CPU_CHAIN_1Q)
+            }
+            // 🔴 통합 arm 분기와 **같은 구성**이다 — 렌더가 짝과 글자 그대로 같으므로 ②·④
+            //    서술도 그대로 성립하고, 다른 것은 계측 방식 하나뿐이다(그 사실은
+            //    putSingleFrameQueryNotes가 덮는다). 사본을 만들지 않는 이유는 위와 같다.
+            RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT_1Q -> {
+                putChain(json, facts)
+                json.put("detect_round_scope", RenderArm.DETECT_ROUND_SCOPE)
+                json.put("note", CHAIN_HIGHLIGHT_STAGE2_NOTE)
+                json.put(
+                    "not_a_product_decision",
+                    RenderArm.CHAIN_HIGHLIGHT_NOT_A_PRODUCT_DECISION
+                )
+                json.put("detect_input_note", RenderArm.CHAIN_HIGHLIGHT_DETECT_INPUT_NOTE)
+                json.put("bounds_note", RenderArm.CHAIN_HIGHLIGHT_BOUNDS_NOTE)
+                json.put(
+                    "color_transform_sites_note",
+                    CHAIN_HIGHLIGHT_COLOR_TRANSFORM_SITES_NOTE
+                )
+                putSingleFrameQueryNotes(json, RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT_1Q)
+            }
         }
         return json
+    }
+
+    /**
+     * ②③④ 통합 arm(9패스)의 `stage2_params.note`. [putChain]의 note가 "전체 8패스"라고
+     * 말하므로 **그 arm에서만** 덮는다.
+     *
+     * 🔴 상수로 뽑은 이유: 통합 arm과 그 `_1q` 짝이 **같은 문장**을 실어야 한다. 사본을 두면
+     * 한쪽만 고쳐지는 날 두 arm의 서술이 갈라지고, 그러면 두 계측을 비교할 근거가 로그 위에서
+     * 부터 깨진다([putChain]/[putBlit2Pass]를 공유하는 것과 같은 논거다).
+     */
+    private val CHAIN_HIGHLIGHT_STAGE2_NOTE =
+        "② 자리가 **6패스**(3단 × 2벌)이고 그 뒤에 ④ 오버레이 패스가 하나 더 붙어 " +
+            "**전체 9패스**다(체인 arm은 8패스다). 하위 패스를 합치지 않고 " +
+            "D 계열 슬롯 6개에 그대로 낸다(docs/FRAME_LOG_SCHEMA.md §2). " +
+            "④의 서술은 session.json의 overlay 블록에 있다. " +
+            "🔴 이 arm은 **측정용 추가이며 제품 구성 확정이 아니다** — " +
+            "not_a_product_decision을 함께 읽을 것"
+
+    /**
+     * 통합 arm(9패스) 계열의 `color_transform_sites_note`. [putChain]이 넣은 계수는
+     * **체인 arm 기준**이라는 사실과 그 범위를 못 박는다.
+     *
+     * 🔴 통합 arm과 그 `_1q` 짝이 같은 문장을 실어야 하므로 상수로 뽑았다
+     * ([CHAIN_HIGHLIGHT_STAGE2_NOTE]와 같은 논거).
+     */
+    private val CHAIN_HIGHLIGHT_COLOR_TRANSFORM_SITES_NOTE =
+        "🔴 **위 color_transform_sites의 arm은 drago_clahe_chain이다**(이 arm의 " +
+            "id가 아니다). ② 6패스의 셰이더가 체인과 **글자 그대로 같으므로** 그 " +
+            "계수가 이 arm에도 그대로 성립하고, 이 arm에만 있는 패스8(④ 오버레이)의 " +
+            "색공간 변환은 **0**이다(오버레이 셰이더는 LabGlsl을 부르지 않는다 — " +
+            "정적 오버레이 arm에서 기계로 세어 확증돼 있다). 즉 합은 같다. " +
+            "declared 표(color_transform_declared)의 passes_total은 **체인의 8**이며 " +
+            "이 arm은 9다 — 그 칸만 이 arm에서 성립하지 않는다"
+
+    /**
+     * ② 체인 + ③ 탐지이고 **④ 오버레이가 없는** arm(8패스) 계열의
+     * `color_transform_sites_note`.
+     *
+     * 🔴 **통합 arm의 문장을 그대로 쓰면 거짓이 된다** — 그 문장은 "이 arm은 9다"라고 말하지만
+     * 이 arm은 체인과 **같은 8패스**다(탐지는 별 스레드에서 돌고 GL 패스를 더하지 않는다).
+     * 그래서 `passes_total` 칸도 이 arm에서 그대로 성립한다.
+     */
+    private fun putChainDetectColorTransformNote(json: JSONObject) {
+        json.put(
+            "color_transform_sites_note",
+            "🔴 **위 color_transform_sites의 arm은 drago_clahe_chain이다**(이 arm의 id가 " +
+                "아니다). ② 6패스의 셰이더가 체인과 **글자 그대로 같으므로** 그 계수가 이 " +
+                "arm에도 그대로 성립한다. " +
+                "⚠ 이 arm에는 ④ 오버레이 패스가 없으므로 **패스 수도 체인과 같은 8**이다 — " +
+                "탐지는 별 스레드에서 돌고 GL 패스를 하나도 더하지 않는다. 그래서 declared " +
+                "표(color_transform_declared)의 passes_total(8)까지 이 arm에서 그대로 " +
+                "성립한다(9패스 통합 arm은 그 칸만 성립하지 않는다)"
+        )
     }
 
     /**
@@ -1372,8 +1453,21 @@ object SessionWriter {
         // 🔴 통합 arm은 패스 번호도 타깃 FBO도 다르다(패스8/FBO_A) — 4패스 arm의 문장을
         //    그대로 내면 "패스2와 패스3" 같은 **없는 패스**를 가리킨다.
         if (facts.arm.usesChainedHighlight) {
-            json.put("tile_reload_note", RenderArm.CHAIN_HIGHLIGHT_TILE_RELOAD_NOTE)
-            json.put("no_lower_bound_note", RenderArm.CHAIN_HIGHLIGHT_NO_LOWER_BOUND)
+            // 🔴 **열 지목은 arm이 정한다.** 물리 사실(타일 재적재 · 패스7↔8이 같은 FBO_A)은
+            //    두 arm 다 참이지만 `_1q` 짝에는 stage_i_ms도 stage_d_apply2_ms도 없다 —
+            //    열 이름이 박힌 문장을 그대로 실으면 **CSV에 없는 열을 사실로 지목**하고,
+            //    바로 위 gpu_column_note("이 arm에는 stage_i_ms가 없다")와 정면으로 모순된다.
+            //    ⚠ bounds_note가 arm 중립이라 게이트를 안 나눈 것과 **다른 사안**이다: 그쪽은
+            //    문장에 열 이름이 없다. 아래 else 분기와 **같은 iCostPhrase**를 넘겨 두 자리의
+            //    표현이 갈라지지 않게 한다(이 함수 KDoc의 요구).
+            json.put(
+                "tile_reload_note",
+                RenderArm.chainHighlightTileReloadNote(iCostPhrase, singleQuery)
+            )
+            // 🔴 **arm 중립 문장이라 게이트를 나누지 않는다.** 예전 이름
+            //    (no_lower_bound_note)이면 하한의 **분자**인 `_1q` arm이 자기 로그에
+            //    "하한을 낼 수 없다"를 싣게 된다.
+            json.put("bounds_note", RenderArm.CHAIN_HIGHLIGHT_BOUNDS_NOTE)
             json.put(
                 "not_a_product_decision",
                 RenderArm.CHAIN_HIGHLIGHT_NOT_A_PRODUCT_DECISION
@@ -1394,18 +1488,47 @@ object SessionWriter {
         //    자체가 성립하지 않는다 — 없는 절차를 안내하지 않는다.
         json.put(
             "how_to_compare",
-            if (facts.arm.usesChainedHighlight) {
+            // 🔴 **`!singleQuery`가 첫 조건이다.** 통합 arm의 `_1q` 짝도
+            //    usesChainedHighlight가 true인데 **그 arm에는 stage_i_ms 열이 없다** —
+            //    조건을 좁히지 않으면 없는 열로 비교하라고 안내한다.
+            if (facts.arm.usesChainedHighlight && !singleQuery) {
                 // 🔴 이 arm의 stage_i_ms를 정적 arm의 개당 기울기로 나눠 검산하지 않는다
-                //    (박스 크기가 장면이 정한다). 그리고 하한을 낼 분모가 없다.
-                "🔴 **이 arm의 stage_i_ms는 ④의 상한이고 하한은 이 런에 없다**" +
-                    "(no_lower_bound_note). 뜻이 있는 비교는 둘이다: " +
+                //    (박스 크기가 장면이 정한다).
+                "🔴 **이 arm의 stage_i_ms는 ④의 상한이다.** 하한은 이 arm이 아니라 " +
+                    "${RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT_1Q.id} − " +
+                    "${RenderArm.DETECT_CPU_CHAIN_1Q.id}에서 나온다(bounds_note). " +
+                    "뜻이 있는 비교는 넷이다: " +
                     "(1) **drago_clahe_chain과의 차분** — 앞 7패스가 글자 그대로 같은 GL " +
                     "호출이므로 그 차가 ④ 오버레이 + 그 arm에 없는 present 번짐이다. " +
-                    "(2) **detect_cpu_highlight와의 차분** — ④와 ③이 같고 ② 자리만 다르므로 " +
+                    "(2) **${RenderArm.DETECT_CPU_CHAIN.id}와의 차분** — ②와 ③이 같고 ④ " +
+                    "오버레이만 없는 arm이므로 그 차가 ④ 오버레이(+ present 번짐)의 패스별 " +
+                    "계측 판이다. " +
+                    "(3) **detect_cpu_highlight와의 차분** — ④와 ③이 같고 ② 자리만 다르므로 " +
                     "그 차가 ② 체인의 증분이다. " +
+                    "(4) **${RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT_1Q.id}와의 차분**" +
+                    "(gpu_sum − gpu_frame_ms) — 패스별 계측이 프레임 전체를 얼마나 부풀려 " +
+                    "세는가. " +
                     "⚠ 어느 쪽도 **개당 비용으로 나누지 말 것**: 박스 개수·크기를 장면이 " +
                     "정하므로(box_count_note) 정적 arm의 개당 기울기와 물리량이 다르다. " +
                     "⚠ 그리고 gpu_sum은 하한이다(gpu_timer.attribution_note)"
+            } else if (facts.arm.usesChainedHighlight && singleQuery) {
+                // 🔴 통합 arm의 프레임 단일 query 짝 전용. 이 arm의 열은 gpu_frame_ms
+                //    하나뿐이라 패스별 분해를 안내하면 **없는 열**을 가리킨다.
+                "🔴 **이 arm의 열은 ${RenderArm.SINGLE_FRAME_QUERY_COLUMN} 하나뿐이다** — " +
+                    "④ 오버레이 패스만의 비용은 이 arm에서 나오지 않는다(짝 arm " +
+                    "${peerId}의 stage_i_ms가 그 질문에 답한다). 이 arm이 답하는 질문은 " +
+                    "**둘**이다: " +
+                    "(1) 짝 arm ${peerId}의 gpu_sum이 **프레임 전체를 얼마나 부풀려 세는가** " +
+                    "— 같은 세션·같은 빌드의 두 값 차가 곧 패스별 계측의 중복 계상량이다. " +
+                    "(2) **${RenderArm.DETECT_CPU_CHAIN_1Q.id}와의 차가 ④ 오버레이의 I " +
+                    "하한**이다 — 둘 다 프레임 단일 query여야 뜻이 있고, 그 arm이 이 arm에서 " +
+                    "④만 뺀 렌더다. " +
+                    "⚠ **패스별 분해는 이 arm에서 낼 수 없다** — 어느 패스가 비싼지는 짝 arm의 " +
+                    "열이 말하고, 그 열들이 얼마나 부풀어 있는지는 이 arm이 말한다. 둘 다 " +
+                    "필요하다. " +
+                    "🔴 **H는 이 차분의 대상이 아니다** — stage_h_ms는 CPU 벽시계이고 모든 GPU " +
+                    "query 밖에서 닫히므로(smoothing.scope) 이 arm도 그 열을 **직접** 싣는다. " +
+                    "전문은 bounds_note다"
             } else if (singleQuery) {
                 "🔴 **이 arm으로 ④의 개당 비용을 구할 수 없다.** 열이 gpu_frame_ms 하나뿐이라 " +
                     "오버레이 패스가 분리되지 않고, 개수만 다른 짝(highlight_boxes_stress)의 " +
@@ -3452,6 +3575,15 @@ object SessionWriter {
                         RenderArm.DRAGO_CLAHE_FUSED_1Q -> FUSED_STAGE2_PASSES
                         RenderArm.DRAGO_CLAHE_FUSED_BF_1Q ->
                             FUSED_STAGE2_PASSES + bilateralPass("FBO_A (처리 해상도. 핑퐁)")
+                        // ②③④ 통합 세트에서 **오버레이가 없는** 두 arm. ② 자리가 체인과
+                        // 글자 그대로 같으므로 체인의 목록을 그대로 재사용한다(사본을 만들지
+                        // 않는다). 🔴 else 낙하로 처리하지 않는다 — 흘리면 8패스 arm의
+                        // passes[]에 oes_to_fbo_a + present **둘만** 남고 ② 6패스가 통째로
+                        // 사라진다(위 else -> drago 함정과 같은 부류). ⚠ 게다가 그것을 잡는
+                        // 자기검사(pass_column_count_mismatch)는 !singleFrameQuery로 걸려
+                        // 있어 `_1q` arm에서는 **아예 돌지 않는다** — 기계가 못 잡는 자리다.
+                        RenderArm.DETECT_CPU_CHAIN -> CHAIN_STAGE2_PASSES
+                        RenderArm.DETECT_CPU_CHAIN_1Q -> CHAIN_STAGE2_PASSES
                         else -> emptyList()
                     }
                     listOf(
