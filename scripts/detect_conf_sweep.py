@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import struct
 import sys
 from pathlib import Path
 
@@ -85,13 +86,65 @@ def parse_conf_list(raw: str) -> list[float]:
             value = float(tok)
         except ValueError as exc:
             raise dp.ParityError(f"--conf 값을 숫자로 읽지 못했다: {tok!r}") from exc
-        # 0.0을 허용하면 전 앵커가 통과해 NMS가 다른 것을 재게 된다(앱과 같은 방어선).
-        if not 0.0 < value < 1.0:
-            raise dp.ParityError(f"--conf는 0<v<1이어야 한다: {value}")
+        # 🔴 방어선은 **후처리가 실제로 쓰는 값**으로 판단한다. `dp.postprocess`는
+        #    `best >= np.float32(conf_thr)`로 비교하므로(detect_parity.py:609) 임계의
+        #    정체성은 float32에서 정해진다 — `same_threshold`의 논거와 같은 기준이다.
+        #    float64로만 보면 1e-300이 통과했다가 후처리에서 0.0으로 접혀 전 앵커가
+        #    통과하고(8400개 전수) NMS가 다른 것을 재게 된다. 0.9999999999999999도
+        #    같은 이유로 후처리에서 1.0이 된다. 두 기준이 갈리지 않게 여기서 접는다.
+        try:
+            f32 = _to_f32(value)
+        except OverflowError:   # float32로 담을 수 없을 만큼 큰 수
+            raise dp.ParityError(
+                f"--conf는 후처리가 쓰는 float32 기준 0<v<1이어야 한다: "
+                f"입력 {tok!r}(float64 {value!r}) → float32 범위를 넘는다"
+            ) from None
+        if not 0.0 < f32 < 1.0:
+            # ⚠ 원문과 float32로 접힌 값을 **둘 다** 보인다. 1e-300은 float64로는 범위
+            #    안이라, 접힌 값을 안 보이면 왜 거부됐는지 알 수 없다.
+            raise dp.ParityError(
+                f"--conf는 후처리가 쓰는 float32 기준 0<v<1이어야 한다: "
+                f"입력 {tok!r}(float64 {value!r}) → float32 {f32!r}"
+            )
         out.append(value)
     if not out:
         raise dp.ParityError("--conf가 비었다")
     return sorted(set(out), reverse=True)
+
+
+def conf_key(conf: float) -> str:
+    """`by_conf` 슬롯의 **정체성**. 값에서 손실 없이 유도한다.
+
+    🔴 예전에는 `f"{c:g}"`(유효숫자 6자리)를 키로 썼다. 그러면 서로 다른 float 둘이
+    같은 키로 접혀 **한 슬롯에 두 번 누적된다** — 박스 수가 오류도 경고도 없이 2배가
+    됐다(`0.35`와 `0.3499999940395355`, 또는 `0.1234561`/`0.1234562`). `repr`은
+    float64를 **왕복 가능**하게 적으므로 서로 다른 두 값이 같은 키가 되지 않는다.
+    """
+    return repr(float(conf))
+
+
+def _to_f32(value: float) -> float:
+    """float64를 IEEE754 single로 반올림. `np.float32(x)`와 같은 연산이다(C 캐스트)."""
+    return struct.unpack("<f", struct.pack("<f", float(value)))[0]
+
+
+def same_threshold(a, b) -> bool:
+    """두 임계가 **후처리에게** 같은 값인가.
+
+    `dp.postprocess`는 `best >= np.float32(conf_thr)`로 비교한다 — 임계의 정체성은
+    float32에서 정해진다. 매니페스트 선언값은 float32 왕복을 거친 값이라
+    (`0.35` → `0.3499999940395355`) float64 차가 5.96e-9다. 이걸 float64 오차한계로
+    가르면 "표시가 뜬다 == 후처리가 같은 임계를 쓴다"가 깨진다(실제로 12덤프에서
+    선언값 표시가 한 번도 안 떴다). 그래서 **후처리와 같은 기준**으로 본다.
+    """
+    if isinstance(a, bool) or isinstance(b, bool):
+        return False
+    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+        return False
+    try:
+        return _to_f32(a) == _to_f32(b)
+    except (OverflowError, ValueError):   # 매니페스트가 float32 밖의 수를 실었을 때
+        return False
 
 
 def _tensor(sample: dict, key: str, root: Path, where: str):
@@ -100,8 +153,11 @@ def _tensor(sample: dict, key: str, root: Path, where: str):
     규약 §3의 구조를 `detect_parity`와 **같은 방식으로** 읽는다 — 모양을 추측하지 않는다.
     채널 축과 앵커 축이 뒤바뀐 채 디코딩되면 후처리가 조용히 다른 것을 센다.
 
-    ⚠ 서술자의 `sha256`도 대조한다. 이 스크립트는 **오래 전에 뜬 덤프**를 다시 읽는 것이
-    용도라, 파일이 그 사이 바뀌었으면 sweep 결과가 그 덤프의 것이 아니게 된다.
+    ⚠ 서술자의 `sha256`도 대조한다. **다만 이것이 sweep의 유일한 방어선은 아니다** —
+    `dp.load_dump`가 이미 모든 샘플의 `input`·`output` 해시를 필수 대조하고, 통과한
+    뒤에만 여기 온다. 즉 정상 경로에서 이 검사는 도달 불가능하고 파일마다 해시가 두 번
+    계산된다(이중 방어선). 남겨 두는 이유는 `_tensor`가 `load_dump`를 거치지 않은
+    호출자에게 불려도 텐서를 무검사로 읽지 않게 하기 위해서다.
     """
     blk = sample.get(key)
     dp._require(
@@ -147,10 +203,19 @@ def sweep_dump(dump: dp.Dump, conf_list: list[float], warnings: list[str]) -> di
     dp._require(bool(samples), f"{dump.root}: 매니페스트에 samples가 없다")
 
     per_conf: dict[str, dict] = {
-        f"{c:g}": {"conf": c, "samples": [], "boxes_total": 0,
-                   "pre_nms_total": 0, "by_class": {}}
+        conf_key(c): {"conf": c, "samples": [], "boxes_total": 0,
+                      "pre_nms_total": 0, "by_class": {}}
         for c in conf_list
     }
+    # 🔴 슬롯이 접히면 같은 슬롯에 두 번 누적돼 박스 수가 조용히 배가 된다. `conf_key`가
+    #    왕복 가능한 표현이라 접힐 수 없지만, **조용히 지나가는 쪽을 원천 차단**한다.
+    dp._require(
+        len(per_conf) == len(conf_list),
+        f"conf 슬롯 키가 충돌했다({len(conf_list)}개 → {len(per_conf)}개). "
+        f"접힌 채 누적하면 박스 수가 배가 된다 — 여기서 멈춘다: "
+        f"{[conf_key(c) for c in conf_list]}",
+    )
+    dump_max_conf = 0.0
 
     for i, sample in enumerate(samples):
         where = f"{dump.label}#{i:02d}"
@@ -165,7 +230,7 @@ def sweep_dump(dump: dp.Dump, conf_list: list[float], warnings: list[str]) -> di
             boxes, pre_nms, max_conf = dp.postprocess(
                 raw2d, box, float(conf), float(iou_thr), classes, rot
             )
-            slot = per_conf[f"{conf:g}"]
+            slot = per_conf[conf_key(conf)]
             by_class: dict[str, int] = {}
             for b in boxes:
                 by_class[b["cls_name"]] = by_class.get(b["cls_name"], 0) + 1
@@ -176,6 +241,7 @@ def sweep_dump(dump: dp.Dump, conf_list: list[float], warnings: list[str]) -> di
                 "max_conf": round(float(max_conf), 6),
                 "by_class": by_class,
             })
+            dump_max_conf = max(dump_max_conf, float(max_conf))
             slot["boxes_total"] += len(boxes)
             slot["pre_nms_total"] += int(pre_nms)
             for name, count in by_class.items():
@@ -191,6 +257,14 @@ def sweep_dump(dump: dp.Dump, conf_list: list[float], warnings: list[str]) -> di
         #    (docs/research/RESEARCH_20260823_UPSTREAM.md §4).
         "declared_conf": declared_conf,
         "iou": iou_thr,
+        # 🔴 **이 sweep이 이 덤프에서 잰 것이 있었는가.** `boxes_total: 0`만 읽으면
+        #    "임계가 높아서 0"과 "이 덤프가 애초에 아무것도 못 봤다"가 구분되지 않는다.
+        #    목록의 어떤 임계도 앵커 하나 통과시키지 못했으면 이 덤프에 대해 sweep은
+        #    **아무 말도 하지 않은 것**이다 (detect_parity의 nothing_to_compare와 같은 뜻).
+        "max_conf_overall": round(dump_max_conf, 6),
+        "nothing_to_sweep": all(
+            slot["pre_nms_total"] == 0 for slot in per_conf.values()
+        ),
         "by_conf": per_conf,
     }
 
@@ -207,22 +281,30 @@ def render(results: list[dict], conf_list: list[float], warnings: list[str]) -> 
     for r in results:
         add(f"── {r['label']}  (샘플 {r['sample_count']}개 · format {r['format']} · "
             f"iou {r['iou']} · 매니페스트 선언 conf {r['declared_conf']})")
-        add(f"   {'conf':>6}  {'박스합':>7}  {'pre_nms':>8}   클래스별")
+        add(f"   {'conf':>8}  {'박스합':>7}  {'pre_nms':>8}   클래스별")
         for conf in conf_list:
-            slot = r["by_conf"][f"{conf:g}"]
+            slot = r["by_conf"][conf_key(conf)]
             by_class = slot["by_class"]
             shown = ", ".join(f"{k}={v}" for k, v in sorted(by_class.items())) or "—"
-            declared = r["declared_conf"]
             mark = ""
-            if isinstance(declared, (int, float)) and abs(float(declared) - conf) < 1e-9:
+            # float32에서 같은가 = 후처리가 같은 임계를 쓰는가. §`same_threshold` 참고.
+            if same_threshold(r["declared_conf"], conf):
                 mark = "  ← 매니페스트 선언값"
-            add(f"   {conf:>6g}  {slot['boxes_total']:>7}  {slot['pre_nms_total']:>8}   "
-                f"{shown}{mark}")
+            # 표시도 왕복 가능한 표현으로 찍는다 — `:g`로 줄이면 서로 다른 두 임계가
+            # 같은 줄처럼 보여, 슬롯이 분리돼 있다는 사실이 화면에서 사라진다.
+            add(f"   {conf_key(conf):>8}  {slot['boxes_total']:>7}  "
+                f"{slot['pre_nms_total']:>8}   {shown}{mark}")
         # max_conf는 임계와 무관하다 — 한 번만 낸다. 어느 임계가 그 프레임을 가르는지
         # 사람이 바로 보게 하는 것이 이 줄의 목적이다.
-        first = r["by_conf"][f"{conf_list[0]:g}"]["samples"]
+        first = r["by_conf"][conf_key(conf_list[0])]["samples"]
         add("   샘플별 max_conf: "
             + ", ".join(f"#{s['index']:02d}={s['max_conf']:.3f}" for s in first))
+        if r["nothing_to_sweep"]:
+            add(f"   🔴 이 sweep은 이 덤프에서 **잰 것이 없다** — 목록의 어떤 임계도 앵커 "
+                f"하나 통과시키지 못했다(max_conf 최대 {r['max_conf_overall']:.6f} < 목록 "
+                f"최저 임계 {conf_key(conf_list[-1])}). 박스합 0을 '임계가 걸러냈다'로 "
+                f"읽지 마라 — 이 목록 안에서는 임계가 가른 것이 없다. 이 덤프에 볼 것이 "
+                f"없다는 뜻은 아니다: 더 낮은 임계로 다시 돌리면 달라질 수 있다")
         add("")
     if warnings:
         add("⚠ 경고")
@@ -248,6 +330,16 @@ def main() -> int:
     bind_numpy()
     conf_list = parse_conf_list(args.conf)
     warnings: list[str] = []
+    # 슬롯은 float64로 분리하지만 **후처리는 float32에서 비교한다.** 목록 안에 float32가
+    # 같은 값이 둘 있으면 두 줄이 반드시 같은 수를 낸다 — 그 사실을 사람에게 말해 준다
+    # (예전엔 이 둘이 한 슬롯에 접혀 박스 수가 2배로 찍혔다).
+    for i, a in enumerate(conf_list):
+        for b in conf_list[i + 1:]:
+            if same_threshold(a, b):
+                warnings.append(
+                    f"--conf에 후처리가 구분하지 못하는 값이 둘 있다: {conf_key(a)} / "
+                    f"{conf_key(b)} — float32에서 같은 임계라 두 줄이 같은 결과를 낸다"
+                )
     results = [sweep_dump(dp.load_dump(Path(d)), conf_list, warnings)
                for d in args.dump]
 
@@ -261,7 +353,13 @@ def main() -> int:
                 "conf_list": conf_list,
                 "dumps": results,
                 "warnings": warnings,
-                "note": "어느 임계도 권장값이 아니다. 박스 수로 ms를 외삽하지 마라.",
+                "note": (
+                    "어느 임계도 권장값이 아니다. 박스 수로 ms를 외삽하지 마라. "
+                    "by_conf의 키는 conf를 왕복 가능하게 적은 문자열이다(서로 다른 임계가 "
+                    "접히지 않는다). 덤프의 nothing_to_sweep=true는 **그 덤프에서 sweep이 "
+                    "잰 것이 없었다**는 뜻이다(목록의 어떤 임계도 앵커 하나 통과시키지 "
+                    "못했다) — boxes_total 0을 '임계가 걸러냈다'로 읽지 마라."
+                ),
             }, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
