@@ -238,6 +238,9 @@ FRAME_DERIVED_SERIES = GPU_DERIVED_SERIES + (
     "output_interval_ms",
     "render_latency_ms",
     "recv_to_render_ms",
+    # ⚠ 위 recv_to_render_ms와 **한 글자 차이인데 다른 물리량**이다(render start까지 vs
+    #   render end까지). FrameSeries 필드 주석에 셋의 관계가 적혀 있다.
+    "recv_to_render_start_ms",
 )
 
 # 각 열이 **어느 스키마 버전에서 들어왔는가.** 옛 세션(선언 버전 < 하네스 버전)에 경고를 낼 때
@@ -1232,6 +1235,22 @@ class FrameSeries:
     # ⚠ 세 조각을 더해도 capture_to_render_ms와 정확히 같아지지 않는다(render_start가 없는
     #   프레임이 있고, 폐기가 조각마다 따로 일어난다). **분포끼리 더해 검산하지 않는다.**
     capture_to_recv_ms: list[float] = field(default_factory=list)
+    # t_render_start - t_recv. 위 분해의 **가운데 조각**(디스패치 대기 = 수신부터 렌더 시작까지
+    # 큐에서 기다린 시간). 같은 시계(CLOCK_BOOTTIME) 두 시각의 차다.
+    # ⚠ **`recv_to_render_ms`와 한 글자 차이인데 물리량이 다르다.** 이쪽은 render **start**
+    #   까지고, 그쪽은 render **end**까지(체류시간 전체)다. 같은 키에 섞지 않는다
+    #   (render_latency_ms / recv_to_render_ms를 가른 것과 같은 급의 위험이다).
+    # 세 값의 관계:
+    #   - **행 단위로만** `recv_to_render_start_ms + render_latency_ms == recv_to_render_ms`.
+    #   - **분포끼리는 성립하지 않는다** — 폐기가 조각마다 따로 일어나므로 표본 집합이 다르다
+    #     (p50끼리 더해 검산하지 않는다).
+    #   - `recv_to_render_start_ms <= recv_to_render_ms`는 항상 참이며, 이는
+    #     `check_clock_consistency` 교차검사 A(t_render_start >= t_recv)와 같은 불변식이다.
+    # 🔴 **상한 가드를 두지 않는다**(기본 `(MIN_POSITIVE_MS, None)`). 여기엔 `t_capture_ns`가
+    #    섞이지 않으므로 상한의 근거가 없고(폐기 가드 주석), 같은 단조 시계 안에서 큰 값은
+    #    시계 오류가 아니라 **실제로 느린 프레임**이다 — 그 느린 프레임이 이 분해의 표적이다.
+    # ⚠ 세 조각을 더해도 capture_to_render_ms와 같아지지 않는다(위 주석과 같은 이유).
+    recv_to_render_start_ms: list[float] = field(default_factory=list)
     # ── GPU 패스 시간 (GPU 시계 — 위 시계열들과 **다른 시계**다. 섞지 않는다) ──
     stage_b_ms: list[float] = field(default_factory=list)
     stage_d_ms: list[float] = field(default_factory=list)
@@ -1417,6 +1436,10 @@ if OVERLAY_FRESHNESS_SERIES not in _frame_field_names:
 if "capture_to_recv_ms" not in _frame_field_names:
     _frame_field_errors.append(
         "FrameSeries에 capture_to_recv_ms 필드가 없다 — 파생 시계열을 담을 자리가 없다"
+    )
+if "recv_to_render_start_ms" not in _frame_field_names:
+    _frame_field_errors.append(
+        "FrameSeries에 recv_to_render_start_ms 필드가 없다 — 파생 시계열을 담을 자리가 없다"
     )
 if _frame_field_errors:
     raise RuntimeError(
@@ -1754,6 +1777,20 @@ def read_frames(
             _collect(
                 series, "recv_to_render_ms", series.recv_to_render_ms,
                 (t_re - t_recv) / 1e6,
+            )
+
+        # 디스패치 대기 — 지연 3분해의 **가운데 조각**. `t_render_end`와 무관하므로 위
+        # 블록 안이 아니라 `t_rs`만 보고 낸다(렌더가 끝나지 않은 프레임에서도 대기 시간은
+        # 이미 확정돼 있다). 상한 없음 — `t_capture_ns`가 섞이지 않는다(필드 주석).
+        # 부수 효과로 이 열의 below_min 계수가 아래 교차검사 A의 위반 수와 **거의** 맞물린다
+        # — 공짜 검산이다. 정확한 관계는 `below_min >= 교차검사 A 위반`이고 등호는
+        # `t_rs == t_recv`인 행이 없을 때만 성립한다: below_min은 `not (v > 0)`이라
+        # 동시각(0.0)을 세고, 교차검사 A는 `t_rs < t_recv`라 엄격 부등호로 안 센다.
+        # 실기기 로그에서는 ns 해상도라 동시각이 안 나온다(실측 1,482,265행 중 0건).
+        if t_rs != MISSING:
+            _collect(
+                series, "recv_to_render_start_ms", series.recv_to_render_start_ms,
+                (t_rs - t_recv) / 1e6,
             )
 
         # 교차검사 A: 렌더 시작은 수신 이후여야 한다 (= render_latency <= recv_to_render).

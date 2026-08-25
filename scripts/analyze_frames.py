@@ -1200,12 +1200,17 @@ def main() -> int:
             "render_latency_ms": summarize(series.render_latency_ms),
             "recv_to_render_ms": summarize(series.recv_to_render_ms),
             "capture_to_render_ms": summarize(series.capture_to_render_ms),
-            # 취득~렌더의 **앞자락**(ISP + 큐). v7에서 추가 — 이 한 칸이 있으면
-            # capture_to_render를 capture→recv / recv→render_start / render_start→render_end
-            # 셋으로 가를 수 있다(기존 런의 원본 frames.csv로 소급 분석이 된다).
+            # 취득~렌더의 3분해. 세 칸이 **전부 행 단위 파생 시계열**이라 분포끼리 빼지
+            # 않고도 조각을 볼 수 있다:
+            #   capture→recv(ISP/큐) = capture_to_recv_ms
+            #   recv→render_start(디스패치 대기) = recv_to_render_start_ms
+            #   render_start→render_end(제출) = render_latency_ms
             # ⚠ 세 조각의 분포를 더해 capture_to_render를 검산하지 않는다 — 폐기가 조각마다
             #   따로 일어나고 render_start가 없는 프레임도 있다.
+            # ⚠ recv_to_render_start_ms와 위 recv_to_render_ms는 **다른 물리량**이다
+            #   (render start까지 vs render end까지). 한 글자 차이라 눈으로 구분되지 않는다.
             "capture_to_recv_ms": summarize(series.capture_to_recv_ms),
+            "recv_to_render_start_ms": summarize(series.recv_to_render_start_ms),
         },
         # 단계 비용은 frametime과 **다른 물리량이자 다른 시계**라 블록을 나눈다.
         # 판정선이 없다 — verdict.meets_*는 여기 값을 보지 않는다.
@@ -1682,15 +1687,19 @@ def _print_report(summary: dict) -> None:
     for name in (
         "recv_interval_ms",
         "output_interval_ms",
-        "render_latency_ms",
-        # capture 계열은 **앞자락 → 전체** 순으로 둔다. 분해가 배치로 드러나야 한다.
+        # 지연 계열은 **조각 셋 → 합계** 순으로 둔다. 분해가 배치로 드러나야 한다.
+        # 위 셋이 capture→recv / recv→render_start / render_start→render_end이고,
+        # 아래 둘이 그것을 감싸는 구간(recv→render_end, capture→render_end)이다.
         "capture_to_recv_ms",
+        "recv_to_render_start_ms",
+        "render_latency_ms",
         "recv_to_render_ms",
         "capture_to_render_ms",
     ):
         s = ft[name]
         if s["count"]:
-            LOG.info("  %-22s p50=%-8s p95=%-8s (n=%s)", name, s["p50"], s["p95"], s["count"])
+            # 폭 24 = 가장 긴 이름(recv_to_render_start_ms, 23자)+1. 좁으면 열이 밀린다.
+            LOG.info("  %-24s p50=%-8s p95=%-8s (n=%s)", name, s["p50"], s["p95"], s["count"])
     _print_stages(summary)
     _print_detect(summary)
     _print_overlay(summary)

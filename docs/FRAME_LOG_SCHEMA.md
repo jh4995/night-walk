@@ -298,6 +298,7 @@ v5 자기검사와 같은 모양이다 — 들어가 있으면 모듈이 죽는�
 |---|---|---|---|
 | `overlay_freshness_ms` | `t_render_start_ns − t_overlay_source_ns` | **없음** | `> 0` / 없음 |
 | `capture_to_recv_ms` | `t_recv_ns − t_capture_ns` | **없음** | `> 0` / `< 5000ms` |
+| `recv_to_render_start_ms` | `t_render_start_ns − t_recv_ns` | **없음** | `> 0` / **없음** |
 
 🔴 **신선도를 CSV에 저장하지 않는다.** 유도값이므로 하네스가 계산한다(아래 "유도값은 저장하지
 않는다"). 이 값은 **그 프레임이 그린 박스가 몇 ms 전 탐지 결과인가**이고, 탐지 갱신 지연을
@@ -308,14 +309,27 @@ v5 자기검사와 같은 모양이다 — 들어가 있으면 모듈이 죽는�
 - `t_render_start_ns`가 없는 행은 계산할 수 없으므로 `no_render_start` 사유로 폐기 계수된다
   (조용히 사라지지 않는다).
 
-**`capture_to_recv_ms`는 지연 원인의 1차 분해용이다** (v7). 이 한 칸이 있으면
-`capture_to_render_ms`(프로젝트 최대 위험)를 셋으로 가를 수 있다:
+**`capture_to_recv_ms`와 `recv_to_render_start_ms`는 지연 원인의 1차 분해용이다.**
+둘이 다 있으면 `capture_to_render_ms`(프로젝트 최대 위험)를 셋으로 가를 수 있다:
 
 ```
 capture → recv           ISP + 큐            (capture_to_recv_ms)
-recv    → render_start   디스패치 대기        (recv_to_render_ms − render_latency_ms)
+recv    → render_start   디스패치 대기        (recv_to_render_start_ms)
 render_start → render_end 제출               (render_latency_ms)
 ```
+
+- 🔴 **가운데 조각을 분포끼리의 뺄셈으로 구하지 않는다.** 예전 문서는 이것을
+  `recv_to_render_ms − render_latency_ms`로 적었으나, 그것은 이 저장소가 계속 막아 온
+  연산이다(`p50(B) + p50(D) ≠ p50(B+D)`, 폐기도 조각마다 따로 일어난다).
+  지금은 **행 단위 파생 시계열** `recv_to_render_start_ms`가 같은 물리량을 직접 낸다.
+- ⚠️ **`recv_to_render_start_ms`와 `recv_to_render_ms`는 한 글자 차이인데 물리량이 다르다** —
+  앞은 render **start**까지, 뒤는 render **end**까지(체류시간 전체)다.
+  행 단위로만 `recv_to_render_start_ms + render_latency_ms == recv_to_render_ms`이며,
+  **분포끼리는 성립하지 않는다.** `recv_to_render_start_ms <= recv_to_render_ms`는 항상
+  참이고, 이것은 교차검사 A(`t_render_start >= t_recv`)와 같은 불변식이다.
+- ⚠️ `recv_to_render_start_ms`에는 **`t_capture_ns`가 섞이지 않으므로 상한을 두지 않는다**
+  (→ §4 가드 표). 같은 단조 시계 안의 큰 값은 시계 오류가 아니라 **실제로 느린 프레임**이고,
+  그것이 정확히 이 분해의 표적이다.
 
 - 🔴 **기존 런의 원본 `frames.csv`로 소급 분석이 된다** — 앱 변경이 필요 없다(`t_capture_ns`와
   `t_recv_ns`는 v1부터 있다).
@@ -447,7 +461,7 @@ render_start → render_end 제출               (render_latency_ms)
 | `model_sha256` · `ep_requested` · `ep_resolved` · `ep_matches` · `period_n` · `padding_pixel_fraction` | `session.json`에서 그대로 옮긴 **그 런의 조건** (아래 §5) |
 | `skipped_while_busy_total` / `_rows` | 누적값의 마지막 관측치 + 관측 행 수 |
 
-## 3. 하네스가 뽑아내는 6가지 (한 숫자로 뭉치지 않는 이유)
+## 3. 하네스가 뽑아내는 7가지 (한 숫자로 뭉치지 않는 이유)
 
 | 지표 | 계산 | 채워지는 조건 | 무엇을 말하나 |
 |---|---|---|---|
@@ -457,6 +471,7 @@ render_start → render_end 제출               (render_latency_ms)
 | `recv_to_render_ms` | `t_render_end - t_recv` | `t_render_end_ns` 있을 때 | 도착~렌더 완료 **체류시간** (큐 대기 포함) |
 | `capture_to_render_ms` | `t_render_end - t_capture` | §4 조건부 | 취득~표시 |
 | `capture_to_recv_ms` | `t_recv - t_capture` | §4 조건부 (v7) | 위 지연의 **앞자락**(ISP + 큐) — 지연 원인 1차 분해 |
+| `recv_to_render_start_ms` | `t_render_start - t_recv` | **`t_render_start_ns`가 있을 때만** | 지연 3분해의 **가운데 조각** — 디스패치 대기(큐) |
 
 > ⚠️ **`render_latency_ms`와 `recv_to_render_ms`는 다른 물리량이므로 같은 키에 섞지 않는다.**
 > 예전 구현은 `t_render_start_ns`가 없으면 `t_recv_ns`를 폴백 기준으로 써서 `recv_to_render`
@@ -464,7 +479,7 @@ render_start → render_end 제출               (render_latency_ms)
 > 구분할 수 없었다. 지금은 **키가 다르므로 어느 쪽을 받았는지가 키로 드러난다** —
 > `t_render_start_ns`가 없는 로그에서는 `render_latency_ms.count == 0`이다.
 
-> ⚠️ **빈 파이프라인에서 이 다섯은 전부 다른 것을 말한다.** 처리가 없으면
+> ⚠️ **빈 파이프라인에서 이 일곱은 전부 다른 것을 말한다.** 처리가 없으면
 > `output_interval ≈ recv_interval`이고, 이건 **연산 비용이 아니라 카메라가 주는 속도**다.
 > "33ms 나왔으니 여유 33ms"는 잘못된 독해다 — 여유의 상한이 아니라 **바닥값**이고
 > 여기서부터 ①②③④가 더해진다. 집계 스크립트가 이 단서를 자동으로 붙인다.
@@ -633,6 +648,7 @@ Android에서는 `SystemClock.elapsedRealtimeNanos()`.
 | `recv_to_render_ms` | `> 0` | **없음** |
 | `capture_to_render_ms` | `> 0` | `< 5000ms` |
 | `capture_to_recv_ms` (v7) | `> 0` | `< 5000ms` — `t_capture_ns`가 섞였으므로 위와 **같은 가드** |
+| `recv_to_render_start_ms` (파생) | `> 0` | **없음** — `t_capture_ns`가 섞이지 **않는다**. 같은 단조 시계 두 시각의 차라 큰 값은 진짜 느린 프레임이다 |
 | `stage_b_ms` · `stage_i_ms` · `gpu_present_ms` | `> 0` | **없음** |
 | D 계열: `stage_d_ms` · `stage_d_analyze_ms` · `stage_d_build_ms` · `stage_d_apply_ms` · `stage_d_denoise_ms` · `stage_d_analyze2_ms` · `stage_d_build2_ms` · `stage_d_apply2_ms` | `> 0` | **없음** |
 | `gpu_frame_ms` (프레임 단일 query, v5) | `> 0` | **없음** |
