@@ -65,6 +65,13 @@ def _adb(adb_path: str, args: list[str], serial: str = "") -> Optional[str]:
         proc = subprocess.run(
             cmd,
             check=True,
+            # ⚠ **stdin을 물려주지 않는다.** `adb shell`은 stdin을 읽어 기기로 흘려보내므로,
+            #   호출자가 파이프로 사람의 응답을 받는 상황이면 그 입력을 통째로 삼킨다.
+            #   실제로 `run_session.read_temperature()`(= 이 함수를 부른다) 직후 첫 프롬프트가
+            #   즉시 EOF가 되어 세션이 시작하자마자 중단됐다.
+            #   `run_session.invoke_child`가 같은 이유로 이미 DEVNULL을 쓴다 — 그 가드가
+            #   adb를 직접 부르는 이 경로에만 빠져 있었다.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
