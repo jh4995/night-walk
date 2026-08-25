@@ -1,0 +1,1659 @@
+{
+  "detect": {
+    "analysis_window_sec": 633.994,
+    "analysis_window_source": "frames.csv의 t_recv_ns **실제 span**(warmup 제외 후 첫 행 ~ 마지막 행). p50 × n으로 유도하지 않았다 — 그 유도는 드롭·폐기만큼 창을 짧게 만들고, 짧아진 창이 duty_cycle의 분모가 되면 점유율이 실제보다 커진다",
+    "boxes_out": {
+      "count": 2122,
+      "max": 0.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "boxes_pre_nms": {
+      "count": 2122,
+      "max": 0.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "budget_cell": {
+      "detect_cadence_ms": null,
+      "detect_wall_ms": null,
+      "stage_e_ms": "E",
+      "stage_f_ms": "F",
+      "stage_g_ms": "G"
+    },
+    "cadence_note": "detect_cadence_ms는 인접한 두 추론의 t_detect_recv_ns 차 = **실측 실행 주기**다. INTERFACES.md의 탐지 주기 N은 아직 미정(☐)이라 하네스가 값을 지어내지 않고 관측으로 말한다. ⚠ 분모가 프레임이 아니라 추론이므로 recv_interval_ms와 더하거나 빼지 않는다(모집단이 다르다)",
+    "clock": "CPU 벽시계(SystemClock.elapsedRealtimeNanos) 구간 길이. **GPU 열(stage_b/d/i_ms·gpu_present_ms·gpu_frame_ms)·프레임타임과 더하지 않는다** — 물리량이 다르다. gpu_sum_ms·stage_d_total_ms에도 들어가지 않는다",
+    "columns_present": [
+      "t_detect_end_ns",
+      "t_image_capture_ns",
+      "max_conf",
+      "stage_e_ms",
+      "stage_f_ms",
+      "stage_g_ms",
+      "boxes_pre_nms",
+      "boxes_out",
+      "skipped_while_busy"
+    ],
+    "declared_enabled": true,
+    "declared_enabled_present": true,
+    "detect_cadence_ms": {
+      "count": 2121,
+      "max": 767.888,
+      "mean": 298.717,
+      "min": 263.422,
+      "p50": 299.286,
+      "p95": 325.635,
+      "p99": 375.128
+    },
+    "detect_wall_ms": {
+      "count": 2122,
+      "max": 745.437,
+      "mean": 284.513,
+      "min": 257.478,
+      "p50": 281.326,
+      "p95": 305.324,
+      "p99": 360.389
+    },
+    "detect_wall_note": "detect_wall_ms = t_detect_end_ns − t_detect_recv_ns. **E+F+G의 합이 아니다** — 그 셋 바깥의 비용(프레임 대기 해제·텐서 복사·콜백 디스패치)이 함께 들어가므로 span − (E+F+G) >= 0인 미계상분이 있다. **버짓 칸도 없다**(budget_cell=null)",
+    "discarded_samples": {},
+    "discarded_total": 0,
+    "duty_cycle": 0.9523,
+    "duty_cycle_note": "Σ(detect_wall_ms) / 분석 창 = 탐지가 시간의 몇 %를 점유했나(0.25 = 25%). Σ=603737.3ms. ⚠ **프레임타임에서 이만큼을 빼거나 더할 수 없다** — 탐지는 별 스레드에서 돌고, 점유율이 100%를 넘지 않는다고 해서 렌더가 굶지 않았다는 뜻도 아니다",
+    "ep_matches": true,
+    "ep_note": "F(추론)는 **EP가 바뀌면 다른 숫자다.** ep_matches=false면 요청한 EP로 세션이 열리지 않은 것이므로 아래 F를 요청 EP의 비용으로 인용하면 틀린다. ep_matches=null이면 대조할 수 없었다는 뜻이지 '같다'가 아니다. ⚠ 하네스는 EP를 해석하지 않는다 — 앱의 자진 신고 두 개를 대조했을 뿐이다",
+    "ep_requested": "cpu",
+    "ep_resolved": "cpu",
+    "ep_vocab_ok": true,
+    "frames_rows_used": 18937,
+    "has_detect_timings": true,
+    "max_conf": {
+      "count": 2122,
+      "max": 0.004,
+      "mean": 0.003,
+      "min": 0.002,
+      "p50": 0.003,
+      "p95": 0.004,
+      "p99": 0.004
+    },
+    "model_sha256": "013dcff8c7e4236b655c3d7b770dc526284c4a4723c55fc1fda10dbe1f6858f0",
+    "n": 2122,
+    "n_note": "n=2122은 **추론 횟수**이고 프레임 수가 아니다(같은 분석 창의 프레임 행은 18937개). detect.csv의 행 단위는 '추론 1회'이며 detect_idx는 frames.csv의 frame_idx와 조인할 수 없다 — 두 파일을 잇는 것은 시각이다",
+    "padding_note": "letterbox 패딩이 입력 텐서에서 차지하는 픽셀 비율. **F의 일부는 회색 패딩을 미는 비용이다** — 720p를 640 정사각에 넣으면 세로 패딩만큼 연산이 는다(models/det_c4b_loli0_640/README.md: 고정 shape을 택한 대가). 이 값 없이 F를 다른 입력 크기의 F와 비교하면 안 된다",
+    "padding_pixel_fraction": 0.4375,
+    "period_n": null,
+    "period_n_note": "앱이 선언한 탐지 주기. **null이 정상이다**(INTERFACES.md에서 아직 ☐ 미정이라 앱이 값을 지어내지 않는다) — 실제 주기는 위 detect_cadence_ms 분포로 말한다",
+    "render_arm": "detect_cpu_chain_highlight_1q",
+    "render_arm_known": true,
+    "rows_accounted": true,
+    "rows_read": 2225,
+    "rows_skipped": {
+      "before_t0": 0,
+      "unparsable_t_detect_recv": 0,
+      "warmup": 103
+    },
+    "rows_skipped_anomalous": 0,
+    "skipped_while_busy_note": "이 값은 **그 시점까지의 누적**이라 마지막으로 관측한 값 하나만 싣는다(단조 증가 수열의 백분위는 뜻이 없다). rows=0이면 total=0은 '건너뛴 프레임이 없다'가 아니라 **재지 않았다**는 뜻이다",
+    "skipped_while_busy_rows": 2122,
+    "skipped_while_busy_total": 17607,
+    "stage_e_ms": {
+      "count": 2122,
+      "max": 52.9,
+      "mean": 19.91,
+      "min": 12.454,
+      "p50": 17.144,
+      "p95": 31.142,
+      "p99": 33.585
+    },
+    "stage_f_ms": {
+      "count": 2122,
+      "max": 708.688,
+      "mean": 263.91,
+      "min": 242.839,
+      "p50": 260.835,
+      "p95": 280.858,
+      "p99": 332.19
+    },
+    "stage_g_ms": {
+      "count": 2122,
+      "max": 2.167,
+      "mean": 0.569,
+      "min": 0.32,
+      "p50": 0.406,
+      "p95": 0.915,
+      "p99": 1.09
+    },
+    "t0_note": "이 t0는 **frames.csv의 첫 행**에서 왔다(detect.csv 자기 첫 행이 아니다). warmup도 같은 값을 썼으므로 두 파일의 분석 창은 같다 — 호출자 책임이며 analyze_frames가 한 스크립트인 이유가 이것이다",
+    "t0_ns": 3797671889434103,
+    "unknown_columns": []
+  },
+  "device": {
+    "adb_path": "C:\\Users\\jh521\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.EXE",
+    "available": true,
+    "props": {
+      "android_release": "16",
+      "android_sdk": "36",
+      "build_fingerprint": "samsung/a34xks/a34x:16/BP2A.250605.031.A3/A346NKSSEEZD4:user/release-keys",
+      "cpu_abi": "arm64-v8a",
+      "device": "a34x",
+      "manufacturer": "samsung",
+      "model": "SM-A346N",
+      "soc_manufacturer": "Mediatek",
+      "soc_model": "MT6877"
+    },
+    "reason": null,
+    "serial": "RFCW604KXFN"
+  },
+  "frametime": {
+    "capture_to_recv_ms": {
+      "count": 18937,
+      "max": 245.278,
+      "mean": 72.756,
+      "min": 60.325,
+      "p50": 71.313,
+      "p95": 83.897,
+      "p99": 99.721
+    },
+    "capture_to_render_ms": {
+      "count": 18937,
+      "max": 258.995,
+      "mean": 77.726,
+      "min": 63.395,
+      "p50": 76.532,
+      "p95": 90.918,
+      "p99": 109.006
+    },
+    "output_interval_ms": {
+      "count": 18936,
+      "max": 145.866,
+      "mean": 33.481,
+      "min": 5.364,
+      "p50": 32.945,
+      "p95": 40.146,
+      "p99": 46.599
+    },
+    "pinned_to_camera_supply": {
+      "out_p50": 32.945,
+      "out_p95": 40.146,
+      "recv_p50": 32.657,
+      "recv_p95": 39.249,
+      "rel_diff_p50": 0.008818936215819084,
+      "rel_diff_p95": 0.022854085454406443,
+      "tail_pinned": true
+    },
+    "primary": {
+      "count": 18936,
+      "max": 145.866,
+      "mean": 33.481,
+      "min": 5.364,
+      "p50": 32.945,
+      "p95": 40.146,
+      "p99": 46.599
+    },
+    "primary_source": "output_interval_ms (t_render_end_ns 간격)",
+    "recv_interval_ms": {
+      "count": 18936,
+      "max": 128.786,
+      "mean": 33.481,
+      "min": 4.247,
+      "p50": 32.657,
+      "p95": 39.249,
+      "p99": 44.845
+    },
+    "recv_to_render_ms": {
+      "count": 18937,
+      "max": 38.243,
+      "mean": 4.97,
+      "min": 1.366,
+      "p50": 4.673,
+      "p95": 7.612,
+      "p99": 10.796
+    },
+    "render_latency_ms": {
+      "count": 18937,
+      "max": 36.636,
+      "mean": 4.678,
+      "min": 1.273,
+      "p50": 4.391,
+      "p95": 7.164,
+      "p99": 10.005
+    }
+  },
+  "label": "session s2_chainpair #3 detect_cpu_chain_highlight_1q/indoor_bright",
+  "overlay": {
+    "budget_cell": {
+      "overlay_boxes": null,
+      "overlay_freshness_ms": null,
+      "stage_h_ms": "H"
+    },
+    "clock": "CPU 벽시계(SystemClock.elapsedRealtimeNanos) — stage_h_ms는 GL 스레드의 CPU 구간 길이다. **GPU 열(stage_b/d/i_ms·gpu_present_ms·gpu_frame_ms)과 더하지 않는다** — gpu_sum_ms에도 stage_d_total_ms에도 들어가지 않는다(lib/frame_log.py의 상수 자기검사가 import 시점에 강제한다)",
+    "columns_defined": [
+      "stage_h_ms",
+      "overlay_boxes",
+      "t_overlay_source_ns"
+    ],
+    "columns_present": [
+      "stage_h_ms",
+      "overlay_boxes",
+      "t_overlay_source_ns"
+    ],
+    "condition_note": "🔴 H칸·I칸은 **박스 개수의 함수다.** overlay_boxes 분포를 함께 옮기지 않은 stage_h_ms·stage_i_ms는 조건이 없는 숫자다(session.json의 overlay.box_count는 arm이 선언한 조건이고, overlay_boxes는 **그 프레임에 실제로 그린 개수**다 — ③ 탐지 결과를 받기 시작하면 두 값이 다르다)",
+    "flicker": {
+      "available": true,
+      "blank_gaps_present": false,
+      "blank_transition_note": ">0 → 0 → >0 전이 횟수 = 박스가 사라졌다 다시 나타난 구간의 개수. 시계열 앞자락/뒷자락에 걸린 0 구간 1개는 세지 않았다(그건 '사라진' 것이 아니라 아직/이미 없는 상태다)",
+      "blank_transitions": 0,
+      "box_count_changes": 0,
+      "box_count_changes_per_min": 0.0,
+      "changes_per_min_note": "분모는 frames.csv t_recv_ns의 실제 span이다",
+      "companion_metrics": [
+        "zero_frame_fraction",
+        "zero_runs_at_edge"
+      ],
+      "distinct_box_counts": [
+        0
+      ],
+      "drew_then_stopped": false,
+      "drew_then_stopped_note": "런이 0으로 끝나지 않았다(또는 박스를 한 번도 그리지 않았다) — 지목 없음",
+      "ended_blank": true,
+      "samples": 18937,
+      "samples_discarded": 0,
+      "sampling_note": "폐기된 행이 없으므로 이 수열은 분석 창의 프레임 순서 그대로다",
+      "started_blank": true,
+      "tail_zero_run_frames": 18937,
+      "threshold": null,
+      "threshold_note": "판정선이 아니다. '몇 회 이상이면 안 된다'는 값은 이 저장소에 없다 — 판정선은 lib/targets.py에만 있고 깜빡임 한계는 아직 팀 합의 전이다. 이 블록은 verdict와 종료 코드를 흔들지 않는다",
+      "zero_frame_fraction": 1.0,
+      "zero_frames": 18937,
+      "zero_run_frames": {
+        "count": 0,
+        "max": null,
+        "mean": null,
+        "min": null,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "zero_run_frames_unit": "frames (ms가 아니다)",
+      "zero_runs_at_edge": 1,
+      "zero_runs_total": 1
+    },
+    "freshness_note": "overlay_freshness_ms = t_render_start_ns − t_overlay_source_ns = 그 프레임이 그린 박스가 **몇 ms 전 탐지 결과인가.** CSV 열이 아니라 하네스가 계산한 파생 시계열이다(유도값은 저장하지 않는다). **버짓 칸이 없다** — 단계 비용이 아니라 결과의 나이다. ⚠ 탐지 주기(detect_cadence_ms)와 다른 값이며 모집단도 다르다(프레임 vs 추론) — 두 분포를 더하거나 비교해 빼지 않는다",
+    "has_overlay_metrics": true,
+    "overlay_boxes": {
+      "count": 18937,
+      "max": 0.0,
+      "mean": 0.0,
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0
+    },
+    "overlay_freshness_ms": {
+      "count": 18937,
+      "max": 760.768,
+      "mean": 149.919,
+      "min": 0.023,
+      "p50": 149.627,
+      "p95": 285.058,
+      "p99": 306.884
+    },
+    "population": "행 하나 = **프레임 1장**. detect 블록의 n(추론 횟수)과 모집단이 다르므로 두 표의 n을 같은 것으로 읽지 말 것",
+    "render_arm": "detect_cpu_chain_highlight_1q",
+    "render_arm_known": true,
+    "stage_h_ms": {
+      "count": 18937,
+      "max": 5.697,
+      "mean": 0.021,
+      "min": 0.004,
+      "p50": 0.016,
+      "p95": 0.03,
+      "p99": 0.096
+    },
+    "stage_h_note": "stage_h_ms는 ④ 좌표 평활·hold의 CPU 구간이다. **어떤 합에도 들어가지 않는다** — H는 열 하나이고, 이 열을 다른 열과 더하는 파생 시계열은 없다"
+  },
+  "run_ts": "20260825_170023",
+  "safety_regression": {
+    "blocked_on": [
+      "동일 야간 클립 세트 (INTERFACES.md 계약 C)",
+      "그 클립의 정답 박스 라벨",
+      "models/golden/ 골든 샘플 (계약 §A-6, 현재 미전달)"
+    ],
+    "evaluated": false,
+    "reason": "③ 탐지가 이 런에서 실제로 돌았고 F(추론) 표본 2122개를 남겼다 — **그러나 그것은 비용을 쟀다는 뜻이지 안전을 평가했다는 뜻이 아니다.** 그것과 별개로 **위험물 강조 누락률은 정답 라벨이 없어 잴 수 없다.** 재려면 셋이 필요하다: (a) 같은 야간 클립 세트(INTERFACES.md 계약 C의 녹화 입력), (b) 그 클립의 정답 박스 라벨, (c) models/golden/의 골든 샘플(계약 §A-6: 야간 720p 입력 + 기대 박스, ±2px 판정) — **현재 미전달**이다. ⚠ 그리고 stairs 재현율은 야간 거리 장면에서 **한 번도 측정된 적이 없다**(models/det_c4b_loli0_640/README.md의 held-out 표는 person 클래스 기준이고 stairs 칸은 오탐률뿐이다). ⚠ 학습 데이터 NightOwls는 **차량 대시캠**이라 보행 시점과 카메라 높이·모션블러가 다르다 — 폰을 든 보행자 시점의 재현율은 이 수치로 말할 수 없다. 이 두 사실 때문에 '탐지가 도니까 안전이 확인됐다'로 읽으면 틀린다"
+  },
+  "schema_version": 7,
+  "session": {
+    "app_version_name": "0.1-poc",
+    "build": {
+      "git_commit": "fe6b03b",
+      "git_dirty": "false",
+      "note": "gradle 구성 시점에 git rev-parse --short HEAD / git status --porcelain을 읽어 BuildConfig에 박은 값이다. 측정 시각이 아니라 **빌드 시각**의 저장소 상태이며, git_dirty=true면 이 APK의 소스는 어느 커밋에도 없다"
+    },
+    "build_type": "release",
+    "camera": {
+      "requested_fps": 30,
+      "resolution": "1280x720"
+    },
+    "camera_actual": {
+      "frame_rate_range": "30-30",
+      "resolution": "1280x720"
+    },
+    "camera_analysis_actual": {
+      "backpressure_strategy": "STRATEGY_KEEP_ONLY_LATEST",
+      "input_format": "YUV_420_888",
+      "input_format_meaning": "🔴 **이 선택이 E의 뜻을 바꾼다.** YUV_420_888을 받아 letterbox·RGB 변환·/255· NCHW 배치를 **앱이 직접** 하므로 그 비용이 전부 stage_e_ms 안에 있다. RGBA_8888을 요청했다면 CameraX가 색 변환을 대신 해 주고 **그 비용이 E 밖에 숨어 E가 과소로 나온다** — 같은 파이프라인의 E라도 두 선택은 비교 대상이 아니다. ⚠ 이 값은 요청이 아니라 **실제로 받은 ImageProxy의 포맷**이다",
+      "input_format_raw": 35,
+      "input_format_requested": "OUTPUT_IMAGE_FORMAT_YUV_420_888",
+      "resolution": "1280x720",
+      "resolution_meaning": "⚠ **Preview(camera_actual)와 다른 use case의 값이다.** CameraX가 둘에 서로 다른 해상도를 줄 수 있으므로 섞어 읽지 말 것. 🔴 이 값은 **센서 방향**이고 letterbox는 **회전 후 치수**에서 나온다(규약 §5) — 90/270°면 아래 rotated_resolution과 폭·높이가 바뀐다",
+      "rotated_resolution": "720x1280",
+      "rotation_applied": true,
+      "rotation_changed_frames": 0,
+      "rotation_degrees": 90,
+      "rotation_degrees_locked": 90,
+      "rotation_lock_meaning": "🔴 **회전각은 첫 분석 프레임에서 잠근다**(규약 §4-3). 이후 다른 값이 오면 **잠근 값을 계속 쓰면서 rotation_changed_frames를 센다** — 조용히 따라가지 않는다. 따라가면 letterbox 기하가 런 중간에 갈려 **E와 박스 좌표가 한 런 안에서 두 뜻을 갖고**, 그건 그 런의 숫자를 통째로 못 쓰게 만든다. ⚠ **rotation_changed_frames != 0인 런은 승격 대상이 아니다.** ⚠ **rotation_degrees=0과 rotation_applied=false는 다른 사실이다**(§4-2) — 기기가 0°를 주면 회전은 적용됐는데 항등인 것이고 그때도 applied는 true다",
+      "rotation_locked": true,
+      "rotation_note": "✅ **분석 프레임의 rotationDegrees를 적용했다.** 어디서: **preprocess_sample_map** — letterbox 목적지 좌표에서 회전 역함수를 거쳐 센서 좌표를 한 번에 잡는다. **추가 패스도 추가 버퍼도 없다**(평면을 회전 복사한 뒤 기존 경로를 태우는 preprocess_plane_copy와 다르다). 🔴 **E의 *정의*는 바뀌지 않았다** — 그것은 DetectPipeline이 t를 찍는 두 줄이고 그 자리는 그대로다(detect_timestamp_sites 참고). 🔴 **E의 *값*은 바뀐다.** 90/270°에서는 목적지 행 하나가 센서의 **열**을 훑으므로 Y 평면의 캐시 지역성이 나빠진다. ⚠ **그 비용은 미측정이다** — 짝 arm(detect_cpu_norot)과의 차분으로만 말한다. 🔴 **이것은 회귀가 아니라 조건 변경이다.** 08-06 라운드의 E와 나란히 놓고 '느려졌다'로 읽지 말 것. ⚠ **남은 가정 둘**: (1) rotationDegrees를 **시계 방향**으로 읽었다(CameraX ImageInfo의 규약이며 기계로 확인한 값이 아니라 문서를 읽은 것이다. 앱과 PC가 **같은 가정**을 했을 뿐이며, 틀리면 실기기 E가 크게 어긋난다 — 조용히 틀리지는 않는다), (2) 모델이 **바로 선** 장면을 기대한다(상류 학습 데이터가 대시캠 정립 영상이라는 정황이지 계약이 아니다 — INTERFACES.md에 이 칸이 없다). 🔴 **반사 규약은 이제 가정이 아니라 규약이다(규약 §5-1).** 그리고 **하나가 아니라 둘이며 자리마다 다르다** — 섞으면 정확히 1px 틀린다: **전처리 샘플 맵은 픽셀 인덱스/중심 공간이라 `(N−1) − v`**이고(이 문장이 말하는 자리다), **후처리 박스는 연속(모서리) 좌표라 `N − v`**다(letterbox 역변환이 낸 값이라 `[0, N]`을 가득 채운다). 둘은 같은 기하의 다른 매개화이며(`c = i + 0.5`로 서로 유도된다) 그래서 **한 함수를 두 자리에 쓰면 안 된다** — 앱은 Rotation.toSensorX/Y(인덱스)와 Rotation.inverseBox(모서리)를 따로 둔다. 박스 쪽 값과 축 대응은 detect.parity.boxes_coordinate_space와 규약 §5-1의 표가 말한다. ⚠ **이 1px은 어떤 왕복 검사로도 안 잡힌다**(정·역이 같은 규약이면 왕복은 통과한다) — geometry_selfcheck의 **프레임 전체 박스 검산**과 폰↔PC 대조, 둘뿐이다. 🔴 그래도 이 런의 boxes_out·max_conf를 **탐지 정확도로 읽으면 안 된다** — 정답 라벨도 골든 샘플(INTERFACES.md §A-6)도 여전히 없다",
+      "rotation_site": "preprocess_sample_map"
+    },
+    "camera_frames_offered": null,
+    "capture_clock_base": "boottime",
+    "capture_clock_base_reason": "취득~콜백 지연 중위값: monotonic 기준 -1257928966714852ns / boottime 기준 74804565ns, 허용범위 [-5000000, 1000000000]ns, 두 시계 오프셋 1257929041519725ns",
+    "capture_clock_probe": [
+      {
+        "boottime_ns": 3797671890155719,
+        "monotonic_ns": 2539742848636225,
+        "t_capture_ns": 3797671826112000
+      },
+      {
+        "boottime_ns": 3797671921761796,
+        "monotonic_ns": 2539742880242071,
+        "t_capture_ns": 3797671859444000
+      },
+      {
+        "boottime_ns": 3797671962434488,
+        "monotonic_ns": 2539742920915302,
+        "t_capture_ns": 3797671892776000
+      },
+      {
+        "boottime_ns": 3797672001979411,
+        "monotonic_ns": 2539742960459687,
+        "t_capture_ns": 3797671926108000
+      },
+      {
+        "boottime_ns": 3797672036290180,
+        "monotonic_ns": 2539742994770148,
+        "t_capture_ns": 3797671959440000
+      },
+      {
+        "boottime_ns": 3797672067576565,
+        "monotonic_ns": 2539743026057148,
+        "t_capture_ns": 3797671992772000
+      },
+      {
+        "boottime_ns": 3797672101787026,
+        "monotonic_ns": 2539743060264533,
+        "t_capture_ns": 3797672026104000
+      },
+      {
+        "boottime_ns": 3797672133292334,
+        "monotonic_ns": 2539743091772533,
+        "t_capture_ns": 3797672059436000
+      }
+    ],
+    "clock_offset_boottime_minus_monotonic_ns": 1257929041519725,
+    "detect": {
+      "arm": "detect_cpu_chain_highlight_1q",
+      "classes": {
+        "contract_conflict": "🔴 **INTERFACES.md 계약 A-4와 모델의 클래스 목록이 어긋난다.** 계약 A-4 = [0=stairs, 1=person] , 모델 임베드 메타(names) = [0=person, 1=stairs, 2=bollard]. 🔴 **어긋난 방식이 하나가 아니라 셋이므로 갈라 적는다** — '순서가 반대다' 하나로 뭉치면 개수 변화가 문장에서 사라지고, 실제로 그렇게 사라진 적이 있다: **(a) 개수** — 🔴 **클래스 수가 계약 2개 → 모델 3개로 바뀌었다.** 이것이 INTERFACES.md §A-4의 불변 규칙이 **런타임에 통보 필수**라고 못 박은 바로 그 사건이다: '클래스가 늘면 출력 shape의 `4+nc`가 바뀐다' · '클래스 추가 = **렌더 규약 변경**'. 실제로 이 런의 출력 shape은 1,7,8400이며, 오버레이 어휘도 함께 움직였다(아래 어휘 대조). **(b) ☐ 자리** — 🔴 **계약이 ☐로 비워 둔 자리가 채워졌다**: index 2 = bollard. 그 자리에는 계약 문서에 이름이 **아예 없으므로 대조할 선언값이 없다** — 틀렸다고 말하는 것이 아니라 **확정된 적이 없다**는 뜻이고, 팀이 A-4를 확정할 때 함께 적어야 하는 칸이다. **(c) 순서** — 🔴 **양쪽에 다 있는 인덱스의 이름이 어긋난다**: index 0 (계약 stairs ↔ 모델 person), index 1 (계약 person ↔ 모델 stairs). 🔴 **그래서 인덱스로 색을 고르면 안 된다** — 인덱스를 계약 이름으로 읽는 순간 **모델의 person에 stairs의 색이** 칠해진다(index 0), **모델의 stairs에 person의 색이** 칠해진다(index 1). 예전에 HighlightOverlay에 있던 'index 0 = stairs'라는 A-4 기반 가정은 **지웠다** — 그 줄이 남아 있었다면 ③→④를 연결하는 순간 위 뒤바뀜이 그대로 화면에 나갔다. 이것은 취향이 아니라 **안전 문제**다. **고치지 않았다** — 계약 문서는 팀 합의 기록이라 런타임이 임의로 못 바꾸고, 모델은 가중치의 사실이라 코드로 뒤집으면 그게 곧 무음 버그다. 🔴 **③→④는 2026-08-07에 연결됐고, 그래서 이 충돌이 무해해졌다** — ④ 오버레이의 색은 **클래스 이름**으로 고른다(gl/OverlayClassColors). 이름의 출처는 이 블록의 classes(모델 임베드 메타의 names) **하나뿐**이고 계약 A-4의 순서를 쓰지 않는다. 🔴 그러므로 팀이 A-4를 어느 쪽으로 확정해도 **오버레이 코드는 바뀌지 않는다** — 그것이 이름으로 거는 설계의 목적이다. **이 런의 이름을 어휘와 대조한 결과**(판정자는 OverlayClassColors.isKnown 하나이고 🔴 **어휘 목록을 이 문장에 열거하지 않는다** — 열거했다가 클래스가 늘던 날 이 문장이 거짓이 됐다): 어휘 **안** = [person, stairs, bollard], 어휘 **밖** = **없다 — 이 런은 모델 이름 전부가 어휘 안이고, 따라서 중립색으로 떨어지는 이름이 하나도 없어야 한다**. 어휘 밖 이름이나 범위 밖 cls는 지우지 않고 **중립색으로** 그리고 그 사실을 session.json의 overlay.class_color_mapping에 남긴다 — 정책 원문은 그 블록의 unknown_policy이며 색 값은 그 블록의 table이 말한다. ⚠ **색 값과 상류 명세 이탈은 이 문장이 말하지 않는다**(여기에 색을 베껴 쓰면 색이 바뀌는 날 또 거짓이 된다) — overlay.class_color_mapping의 person_color_deviation(OverlayClassColors.PERSON_COLOR_DEVIATION)과 bollard_color_provenance가 그 기록이다",
+        "contract_conflict_policy": "충돌이 있어도 **고치지 않는다.** INTERFACES.md는 팀 합의 기록이라 런타임이 임의로 못 바꾸고, 모델은 가중치의 사실이라 코드로 뒤집으면 그게 곧 무음 버그다. 런타임은 위 names(모델에서 읽은 것)를 1순위로 쓰고, 충돌 사실을 여기 기계로 남긴다. null이면 충돌이 없다는 뜻이다",
+        "count": 3,
+        "names": [
+          "person",
+          "stairs",
+          "bollard"
+        ],
+        "raw": "{0: 'person', 1: 'stairs', 2: 'bollard'}",
+        "raw_note": "⚠ 값이 **파이썬 dict 문자열**(작은따옴표)이라 JSON 파서가 못 먹는다. 정규식 관용 파서로 읽되 **파싱 실패를 조용히 넘기지 않는다**(실패하면 런을 시작하지 않는다). 원문을 그대로 싣는 이유는 파싱 결과만 남기면 나중에 되물을 수 없기 때문이다",
+        "source": "모델 임베드 메타데이터(session.metadata.customMetadata['names'])가 **1순위 출처**다 — 가중치와 함께 export되므로 어긋날 수 없다. models/0824/bammasil_det_c4e_s3_11n_640/metadata.json의 classes와 대조해 다르면 런을 시작하지 않는다"
+      },
+      "enabled": true,
+      "enabled_reason": "이 런은 detect.csv를 낸다(추론 2225행). enabled의 뜻은 '③ 탐지를 켠 런인가'이자 pull_frames.py의 반쪽 회수 판정 기준이다 — true인데 파일이 없으면 exit 4다",
+      "ep": {
+        "available_providers": [
+          "CPU",
+          "NNAPI",
+          "WEBGPU",
+          "XNNPACK"
+        ],
+        "available_providers_note": "⚠ **`OrtEnvironment.getAvailableProviders()`는 빌드에 컴파일된 EP 목록이고 '실제로 쓰였나'에 대해 아무것도 말하지 않는다.** 그래도 싣는 이유는 '무엇이 요청 가능했나'의 유일한 근거이기 때문이다. ⚠ 목록에 QNN이 보여도 이 기기에서는 불가능하다 — A34는 MediaTek이다",
+        "event_counts": {
+          "CPUExecutionProvider": 237
+        },
+        "nnapi_deprecation_note": "NNAPI는 Android 15(API 35)에서 deprecated로 공지됐고 측정 기기는 Android 16이다. 벤더 드라이버가 살아 있는지 CPU 참조 구현으로 떨어지는지는 **이 기기에서 실측해야 안다** — 위 resolved와 node_counts가 그 실측이며, 문헌으로 단정하지 않는다",
+        "nnapi_guard": "해당 없음 (ep.requested=cpu)",
+        "no_session_api_note": "⚠ **`OrtSession`에는 '이 세션이 어느 EP를 썼는가'를 돌려주는 API가 없다.** (1.28.0의 OrtSession 공개 메서드를 확인했다: getInputInfo/getOutputInfo/getMetadata/run/endProfiling/getProfilingStartTimeInNs/close뿐이다.) 그래서 판별을 프로파일러와 로그로 돌아서 한다 — 없는 API를 나중에 다시 찾지 말 것",
+        "node_counts": {
+          "CPUExecutionProvider": 237
+        },
+        "node_counts_meaning": "ORT 프로파일의 `*_kernel_time` 이벤트를 provider 원문 문자열별로 센 것이다(event_counts는 provider가 붙은 **모든** 이벤트라 fence까지 포함한다 — kernel 집계가 비었을 때만 판정 근거로 쓴다). 🔴 **노드 수는 작업량 비율이 아니다.** NNAPI가 잡은 서브그래프는 **융합 노드 하나**로 나타나므로 'NNAPI 1 : CPU 200'이 그래프의 99%를 NNAPI가 가져간 상태일 수도 있다. 이 숫자가 보여 주는 것은 **파티셔닝의 모양**이고, 전 노드가 CPU면 **통째 폴백 확정**이다",
+        "profile_json_probe": "/storage/emulated/0/Android/data/com.bammasil.poc/files/detect_profiles/ort_cpu__2026-08-25_15-36-45_316.json",
+        "profile_prefix_measured": null,
+        "profile_prefix_measured_note": "⚠ **파일 경로가 아니라 경로 접두사다** — ORT가 타임스탬프를 붙여 파일명을 정한다. `_prof` arm이 아니면 null이고, 이번 라운드는 프레임당 추론이 없어 측정 세션 프로파일에 담길 것이 없다(세션을 닫을 때 확정 경로를 logcat에 남긴다). 다음 라운드에는 이 파일이 런 디렉토리로 들어가야 한다",
+        "provider_options": {},
+        "provider_options_note": "EP를 붙일 때 넘긴 provider option 원문이다. **빈 객체 = 아무 옵션도 넘기지 않았다(ORT 기본값)**이며 '기록하지 않았다'가 아니다",
+        "requested": "cpu",
+        "resolution_method": "ort_profile_node_providers (probe session)",
+        "resolved": "cpu",
+        "resolved_meaning": "🔴 **판별하지 못했으면 unknown이며 그것은 'CPU였다'와 다른 사실이다.** 요청값을 이 칸에 베끼지 않는다. 판별 규칙: 프로파일에 NNAPI 노드가 하나라도 있으면 nnapi, XNNPACK 노드가 하나라도 있으면 xnnpack, 둘 다 없고 나머지가 전부 CPU면 cpu(=통째 폴백), 그 밖은 unknown. ⚠ **XNNPACK은 CPU EP의 커널을 일부만 대체한다** — 노드가 CPU/XNNPACK로 섞여 나오는 것이 정상이고(Conv/Pool 등만 가져간다), '전부 XNNPACK'을 요구하면 실제로 돌았는데도 unknown이 된다. 섞인 모양은 아래 node_counts가 말한다",
+        "thread_options": "해당 없음 (ep.requested=cpu — 스레드 옵션을 설정하지 않았다. ORT 기본값)",
+        "verbose_log_lines": [
+          "I/onnxruntime( 1062):  [I:onnxruntime:, inference_session.cc:754 TraceSessionOptions] Session Options {  execution_mode:0 execution_order:DEFAULT enable_profiling:1 optimized_model_filepath:\"\" enable_mem_pattern:1 enable_mem_reuse:1 enable_cpu_mem_arena:1 profile_file_prefix:/storage/emulated/0/Android/data/com.bammasil.poc/files/detect_profiles/ort_cpu_ session_logid: session_log_severity_level:0 session_log_verbosity_level:0 max_num_graph_transformation_steps:10 graph_optimization_level:4 intra_op_param:OrtThreadPoolParams { thread_pool_size: 0 auto_set_affinity: 0 allow_spinning: 1 spin_duration_us: -1 spin_backoff_max: 1 dynamic_block_base_: 0 stack_size: 0 affinity_str:  set_denormal_as_zero: 0 } inter_op_param:OrtThreadPoolParams { thread_pool_size: 1 auto_set_affinity: 0 allow_spinning: 1 spin_duration_us: -1 spin_backoff_max: 1 dynamic_block_base_: 0 stack_size: 0 affinity_str:  set_denormal_as_zero: 0 } use_per_session_threads:1 thread_pool_allow_spinning:1 use_deterministic_compute:0 ep_selection_policy:0 config_options",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, inference_session.cc:529 ConstructorCommon] Creating and using per session threadpools since use_per_session_threads_ is true",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, inference_session.cc:574 ConstructorCommon] Dynamic block base set to 0",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, inference_session.cc:2347 Initialize] Initializing session.",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, inference_session.cc:2385 Initialize] Adding default CPU execution provider.",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:27 BFCArena] Creating BFCArena for Cpu with following configs: initial_chunk_size_bytes: 1048576 max_dead_bytes_per_chunk: 134217728 initial_growth_chunk_size_bytes: 2097152 max_power_of_two_extend_bytes: 1073741824 memory limit: 18446744073709551615 arena_extend_strategy: 0",
+          "V/onnxruntime( 1062):  [V:onnxruntime:bammasil, bfc_arena.cc:64 BFCArena] Creating 21 bins of max chunk size 256 to 268435456",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_partitioner.cc:1483 InlineFunctionsAOT] This model does not have any local functions defined. AOT Inlining is not performed",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer EnsureUniqueDQForNodeUnit modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer Level1_RuleBasedTransformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer DoubleQDQPairsRemover modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer ConstantSharing modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer CommonSubexpressionElimination modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer ConstantFolding modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatMulAddFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer ReshapeFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer FreeDimensionOverrideTransformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer SliceConcatToSpaceToDepthFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GeluFusionL1 modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer LayerNormFusionL1 modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer QDQPropagationTransformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer WeightBiasQuantization modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer EnsureUniqueDQForNodeUnit modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer WhereDummyDq modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer TransposeOptimizer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, inference_session.cc:1724 TransformGraph] Running graph optimizations in loop 1 time/s (Graph Optimizations Loop Level : 1)",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer Level2_RuleBasedTransformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer TransposeOptimizer_CPUExecutionProvider modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer QDQSelectorActionTransformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GemmActivationFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatMulIntegerToFloatFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer DynamicQuantizeMatMulFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer ConvActivationFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GeluFusionL2 modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer LayerNormFusionL2 modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer SimplifiedLayerNormFusion modified: 0 with status: OK",
+          "V/onnxruntime( 1062):  [V:onnxruntime:, attention_fusion.cc:333 operator()] MobileClipMHA[/model.10/m/m.0/attn/MatMul]: fusion skipped: qkv MatMul output count or weight initializer check failed",
+          "V/onnxruntime( 1062):  [V:onnxruntime:, attention_fusion.cc:333 operator()] MobileClipMHA[/model.10/m/m.0/attn/MatMul_1]: fusion skipped: qkv MatMul output count or weight initializer check failed",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer AttentionFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer EmbedLayerNormFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GatherSliceToSplitFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GatherToSliceFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatmulTransposeFusion modified: 1 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer BiasGeluFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GroupQueryAttentionFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatMulAddFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer SkipLayerNormFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer BiasSkipLayerNormFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer FastGeluFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer QuickGeluFusion modified: 1 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer BiasSoftmaxFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer BiasDropoutFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatMulScaleFusion modified: 1 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph.cc:5569 CleanUnusedInitializersAndNodeArgs] Removing initializer '/model.10/m/m.0/attn/Constant_1_output_0'. It is no longer used by any node.",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatMulActivationFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatMulNBitsFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GroupQueryAttentionPreNormFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer QDQFinalCleanupTransformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer Level2_RuleBasedTransformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer QDQSelectorActionTransformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GemmActivationFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatMulIntegerToFloatFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer DynamicQuantizeMatMulFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer ConvActivationFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GeluFusionL2 modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer LayerNormFusionL2 modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer SimplifiedLayerNormFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer AttentionFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer EmbedLayerNormFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GatherSliceToSplitFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GatherToSliceFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatmulTransposeFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer BiasGeluFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GroupQueryAttentionFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatMulAddFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer SkipLayerNormFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer BiasSkipLayerNormFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer FastGeluFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer QuickGeluFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer BiasSoftmaxFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer BiasDropoutFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatMulScaleFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatMulActivationFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MatMulNBitsFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer GroupQueryAttentionPreNormFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer QDQFinalCleanupTransformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer NhwcTransformer modified: 0 with status: OK",
+          "V/onnxruntime( 1062):  [V:onnxruntime:, selector_action_transformer.cc:126 MatchAndProcess] Matched Conv",
+          "V/onnxruntime( 1062):  [V:onnxruntime:, selector_action_transformer.cc:126 MatchAndProcess] Matched Conv",
+          "V/onnxruntime( 1062):  [V:onnxruntime:, selector_action_transformer.cc:126 MatchAndProcess] Matched Conv",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer ConvAddActivationFusion modified: 1 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer NhwcTransformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer ConvAddActivationFusion modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer RemoveDuplicateCastTransformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer CastFloat16Transformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer FuseFp16InitializerToFp32NodeTransformer modified: 0 with status: OK",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, graph_transformer.cc:15 Apply] GraphTransformer MemcpyTransformer modified: 0 with status: OK",
+          "V/onnxruntime( 1062):  [V:onnxruntime:, session_state.cc:1367 VerifyEachNodeIsAssignedToAnEp] Node placements",
+          "V/onnxruntime( 1062):  [V:onnxruntime:, session_state.cc:1370 VerifyEachNodeIsAssignedToAnEp]  All nodes placed on [CPUExecutionProvider]. Number of nodes: 237",
+          "V/onnxruntime( 1062):  [V:onnxruntime:, session_state.cc:183 CreateGraphInfo] SaveMLValueNameIndexMapping",
+          "V/onnxruntime( 1062):  [V:onnxruntime:, session_state.cc:229 CreateGraphInfo] Done saving OrtValue mappings.",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, allocation_planner.cc:2653 CreateGraphPartitioner] Use DeviceBasedPartition as default",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, session_state_utils.cc:263 SaveInitializedTensors] Saving initialized tensors.",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 4",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 8",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 64",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 8",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 64",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 24",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 8",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 32",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 16",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 12",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 32",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 24",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 64",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 64",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 8",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 12",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 24",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 64",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 12",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 32",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:280 Reserve] Reserving memory in BFCArena for Cpu size: 32",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, session_state_utils.cc:463 SaveInitializedTensors] Done saving initialized tensors",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, inference_session.cc:2828 Initialize] Session successfully initialized.",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:334 AllocateRawInternal] Extending BFCArena for Cpu. bin_num:14 (requested) num_bytes: 6553600 (actual) rounded_bytes:6553600",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:204 Extend] Extended allocation by 8388608 bytes.",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:207 Extend] Total allocated bytes: 8389216",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:210 Extend] Allocated memory at 0xb4000071eaf0cfc0 to 0xb4000071eb70cfc0",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:334 AllocateRawInternal] Extending BFCArena for Cpu. bin_num:12 (requested) num_bytes: 1048576 (actual) rounded_bytes:1048576",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:204 Extend] Extended allocation by 8388608 bytes.",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:207 Extend] Total allocated bytes: 16777824",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:210 Extend] Allocated memory at 0xb4000071ea709fc0 to 0xb4000071eaf09fc0",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:334 AllocateRawInternal] Extending BFCArena for Cpu. bin_num:13 (requested) num_bytes: 3276800 (actual) rounded_bytes:3276800",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:204 Extend] Extended allocation by 16777216 bytes.",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:207 Extend] Total allocated bytes: 33555040",
+          "I/onnxruntime( 1062):  [I:onnxruntime:bammasil, bfc_arena.cc:210 Extend] Allocated memory at 0xb4000071e83fefc0 to 0xb4000071e93fefc0",
+          "I/onnxruntime( 1062):  [I:onnxruntime:, profiler.cc:123 EndProfiling] Writing profiler data to file /storage/emulated/0/Android/data/com.bammasil.poc/files/detect_profiles/ort_cpu__2026-08-25_15-36-45_316.json",
+          "V/onnxruntime( 1062):  [V:onnxruntime:, inference_session.cc:3978 EndProfiling] Profiler is disabled."
+        ],
+        "verbose_log_meaning": "2순위 근거다. ORT 세션 생성 시 노드 배치 요약이 logcat에 찍히며 추론 오버헤드가 없다. 🔴 **문자열이라 버전마다 바뀌므로 파싱해서 판정하지 않는다** — 원문을 그대로 보존해 사람이 위 resolved와 눈으로 대조하게 한다",
+        "verbose_log_note": "logcat -d -v brief -t 2000 의 출력에서 onnxruntime/ExecutionProvider/Node placements 를 포함한 줄만 남겼다(선택이며 판정이 아니다). 해당 줄 140개 중 140개 보존"
+      },
+      "geometry_selfcheck": {
+        "cases": 404,
+        "failures": [],
+        "max_abs_delta_px": 6.103515625e-05,
+        "passed": true,
+        "tolerance_provenance": "⚠ **우리가 선언한 검사 조건이지 계약값이 아니다**(SAMPLE_COUNT와 같은 부류). 🔴 상류가 자기 대조에 쓴 바(0.0001px)와 **다른 검사다** — 그쪽은 PyTorch↔ONNX 값 대조이고 이쪽은 우리 기하의 왕복이다. 그 바를 여기 끌어오지 않는다",
+        "tolerance_px": 0.009999999776482582,
+        "what_it_checks": "letterbox 640 좌표의 박스를 **역변환(letterbox 역 → 회전 역)으로 센서까지 보냈다가 정변환으로 되돌려** 원래 값으로 돌아오는지 본다. 케이스는 **회전 4각 × 소스 치수 6종(패딩이 홀수로 남는 것 포함) × 박스 8종**이고, 박스에는 **letterbox 패딩 안에만 있는 것 · 프레임 경계를 넘는 것 · 1px · 코너 · 역전 박스**가 들어 있다. 🔴 **프로덕션 함수를 그대로 태운다 — 사본을 만들지 않는다.** 검사용으로 같은 공식을 다시 적으면 같은 오타를 두 번 적고 통과한다. 🔴 **왕복만으로는 못 잡는 것이 둘 있어 표 대조를 따로 붙였다**(정·역이 같은 방향/같은 규약으로 같이 틀리면 왕복은 통과한다): (a) 회전 **방향**(시계/반시계) — 회전 후 (0,0)이 센서의 어디인가, (b) **모서리 규약** — 회전 후 프레임 전체 박스가 센서 프레임 전체로 가는가. 🔴 (b)가 잡는 것은 **정확히 1px**이다: 샘플 맵은 픽셀 인덱스라 반사가 `(N−1)−v`이고 박스는 연속 모서리 좌표라 `N−v`인데, 한 함수를 두 규약에 쓰면 프레임 전체가 원점 쪽으로 1px 밀린다",
+        "why_here": "🔴 **런을 거부하는 자리다** — '임계를 숫자로 못 읽으면 후처리를 시작하지 않는다'와 **같은 자리·같은 취지**다. 기하가 틀린 채로 돈 런은 E가 엉뚱한 픽셀을 읽고 G의 박스가 통째로 어긋나는데 **둘 다 그럴듯한 숫자로 나온다.** 11분을 찍고 나서 아는 것보다 시작 전에 거부하는 쪽이 싸다"
+      },
+      "graph": {
+        "input": {
+          "declared_name": "images",
+          "declared_shape": "1,3,640,640",
+          "dtype": "FLOAT",
+          "name": "images",
+          "shape": [
+            1,
+            3,
+            640,
+            640
+          ]
+        },
+        "output": {
+          "declared_name": "output0",
+          "declared_shape": "1,7,8400",
+          "dtype": "FLOAT",
+          "name": "output0",
+          "shape": [
+            1,
+            7,
+            8400
+          ]
+        },
+        "source": "session.inputInfo / outputInfo의 TensorInfo.shape에서 읽었다. 앱 코드에 640이나 8400 같은 숫자가 없다 — 선언값(declared_*)은 커밋된 models/0824/bammasil_det_c4e_s3_11n_640/metadata.json에서 빌드 시점에 읽어 BuildConfig에 박은 **대조 기준**이다",
+        "validation": "이름·shape·dtype을 선언과 대조하고, 동적 축(≤0)이 있으면 죽는다(INTERFACES.md §A-1: 동적 shape이면 EP가 서브그래프를 못 잡고 통째로 CPU로 떨어진다). 출력 채널이 **4 + 클래스 수**인지도 대조한다 — 그건 하드코딩이 아니라 두 실측(그래프 shape ↔ 임베드 names)의 정합성 검사다. 어긋나면 런을 시작하지 않으므로 이 블록이 존재한다는 것은 전부 통과했다는 뜻이다"
+      },
+      "input": {
+        "backpressure_strategy": "STRATEGY_KEEP_ONLY_LATEST",
+        "input_format": "YUV_420_888",
+        "input_format_meaning": "🔴 **이 선택이 E의 뜻을 바꾼다.** YUV_420_888을 받아 letterbox·RGB 변환·/255· NCHW 배치를 **앱이 직접** 하므로 그 비용이 전부 stage_e_ms 안에 있다. RGBA_8888을 요청했다면 CameraX가 색 변환을 대신 해 주고 **그 비용이 E 밖에 숨어 E가 과소로 나온다** — 같은 파이프라인의 E라도 두 선택은 비교 대상이 아니다. ⚠ 이 값은 요청이 아니라 **실제로 받은 ImageProxy의 포맷**이다",
+        "input_format_raw": 35,
+        "input_format_requested": "OUTPUT_IMAGE_FORMAT_YUV_420_888",
+        "resolution": "1280x720",
+        "resolution_meaning": "⚠ **Preview(camera_actual)와 다른 use case의 값이다.** CameraX가 둘에 서로 다른 해상도를 줄 수 있으므로 섞어 읽지 말 것. 🔴 이 값은 **센서 방향**이고 letterbox는 **회전 후 치수**에서 나온다(규약 §5) — 90/270°면 아래 rotated_resolution과 폭·높이가 바뀐다",
+        "rotated_resolution": "720x1280",
+        "rotation_applied": true,
+        "rotation_changed_frames": 0,
+        "rotation_degrees": 90,
+        "rotation_degrees_locked": 90,
+        "rotation_lock_meaning": "🔴 **회전각은 첫 분석 프레임에서 잠근다**(규약 §4-3). 이후 다른 값이 오면 **잠근 값을 계속 쓰면서 rotation_changed_frames를 센다** — 조용히 따라가지 않는다. 따라가면 letterbox 기하가 런 중간에 갈려 **E와 박스 좌표가 한 런 안에서 두 뜻을 갖고**, 그건 그 런의 숫자를 통째로 못 쓰게 만든다. ⚠ **rotation_changed_frames != 0인 런은 승격 대상이 아니다.** ⚠ **rotation_degrees=0과 rotation_applied=false는 다른 사실이다**(§4-2) — 기기가 0°를 주면 회전은 적용됐는데 항등인 것이고 그때도 applied는 true다",
+        "rotation_locked": true,
+        "rotation_note": "✅ **분석 프레임의 rotationDegrees를 적용했다.** 어디서: **preprocess_sample_map** — letterbox 목적지 좌표에서 회전 역함수를 거쳐 센서 좌표를 한 번에 잡는다. **추가 패스도 추가 버퍼도 없다**(평면을 회전 복사한 뒤 기존 경로를 태우는 preprocess_plane_copy와 다르다). 🔴 **E의 *정의*는 바뀌지 않았다** — 그것은 DetectPipeline이 t를 찍는 두 줄이고 그 자리는 그대로다(detect_timestamp_sites 참고). 🔴 **E의 *값*은 바뀐다.** 90/270°에서는 목적지 행 하나가 센서의 **열**을 훑으므로 Y 평면의 캐시 지역성이 나빠진다. ⚠ **그 비용은 미측정이다** — 짝 arm(detect_cpu_norot)과의 차분으로만 말한다. 🔴 **이것은 회귀가 아니라 조건 변경이다.** 08-06 라운드의 E와 나란히 놓고 '느려졌다'로 읽지 말 것. ⚠ **남은 가정 둘**: (1) rotationDegrees를 **시계 방향**으로 읽었다(CameraX ImageInfo의 규약이며 기계로 확인한 값이 아니라 문서를 읽은 것이다. 앱과 PC가 **같은 가정**을 했을 뿐이며, 틀리면 실기기 E가 크게 어긋난다 — 조용히 틀리지는 않는다), (2) 모델이 **바로 선** 장면을 기대한다(상류 학습 데이터가 대시캠 정립 영상이라는 정황이지 계약이 아니다 — INTERFACES.md에 이 칸이 없다). 🔴 **반사 규약은 이제 가정이 아니라 규약이다(규약 §5-1).** 그리고 **하나가 아니라 둘이며 자리마다 다르다** — 섞으면 정확히 1px 틀린다: **전처리 샘플 맵은 픽셀 인덱스/중심 공간이라 `(N−1) − v`**이고(이 문장이 말하는 자리다), **후처리 박스는 연속(모서리) 좌표라 `N − v`**다(letterbox 역변환이 낸 값이라 `[0, N]`을 가득 채운다). 둘은 같은 기하의 다른 매개화이며(`c = i + 0.5`로 서로 유도된다) 그래서 **한 함수를 두 자리에 쓰면 안 된다** — 앱은 Rotation.toSensorX/Y(인덱스)와 Rotation.inverseBox(모서리)를 따로 둔다. 박스 쪽 값과 축 대응은 detect.parity.boxes_coordinate_space와 규약 §5-1의 표가 말한다. ⚠ **이 1px은 어떤 왕복 검사로도 안 잡힌다**(정·역이 같은 규약이면 왕복은 통과한다) — geometry_selfcheck의 **프레임 전체 박스 검산**과 폰↔PC 대조, 둘뿐이다. 🔴 그래도 이 런의 boxes_out·max_conf를 **탐지 정확도로 읽으면 안 된다** — 정답 라벨도 골든 샘플(INTERFACES.md §A-6)도 여전히 없다",
+        "rotation_site": "preprocess_sample_map"
+      },
+      "model": {
+        "bytes": 10605654,
+        "delivery": "adb push → getExternalFilesDir(null)/models/. APK에 동봉하지 않는 이유: .onnx가 gitignore라 동봉하면 **APK 빌드가 추적되지 않는 파일에 의존**하게 되고 모델 교체마다 재빌드가 필요해진다. 🔴 푸시를 잊으면 앱이 그 arm의 런을 **거부한다** — 조용히 탐지 없이 도는 경로를 만들지 않는다",
+        "file": "bammasil_det_c4e_s3_11n_640.onnx",
+        "path": "/storage/emulated/0/Android/data/com.bammasil.poc/files/models/bammasil_det_c4e_s3_11n_640.onnx",
+        "sha256": "013dcff8c7e4236b655c3d7b770dc526284c4a4723c55fc1fda10dbe1f6858f0",
+        "sha256_declared": "013dcff8c7e4236b655c3d7b770dc526284c4a4723c55fc1fda10dbe1f6858f0",
+        "sha256_declared_source": "models/0824/bammasil_det_c4e_s3_11n_640/metadata.json",
+        "sha256_matches_declared": true,
+        "sha256_source": "앱이 로드한 파일 바이트를 MessageDigest(SHA-256)로 직접 계산했다. metadata.json의 값을 베낀 것이 아니다"
+      },
+      "padding_pixel_fraction": 0.4375,
+      "padding_pixel_fraction_note": "1 − (내용 픽셀 수 / 입력 픽셀 수). 소스 1280x720(**camera_analysis_actual** — Preview가 아니라 분석 use case의 값이며 **센서 방향**이다) → 회전 후 720x1280(rotation_degrees=90, applied=true) → 입력 640x640(그래프에서 읽은 값)로 **계산한 값이며 상수 복사가 아니다.** 🔴 **letterbox는 회전 후 치수에서 나온다**(규약 §5) — 이 값도 그 치수로 계산했다. ⚠ 입력이 정사각이면 90° 스왑이 이 값을 바꾸지 않지만 그건 이 모델의 우연이지 규칙이 아니다. 🔴 **F의 일부는 회색 패딩을 미는 비용**이라 이 값 없이 다른 입력 크기의 F와 비교하면 안 된다. ⚠ 패딩을 어느 쪽에 붙이는지는 이 값에 영향이 없다(면적은 같다) — 그 미확정은 preprocess_assumptions.letterbox_align에 있다",
+      "period_n": null,
+      "period_n_reason": "탐지 주기 N은 INTERFACES.md에서 아직 ☐ 미정이라 앱이 값을 지어내지 않는다. 대신 **idle-gated**로 돈다 — 분석 프레임이 올 때 탐지가 유휴이면 즉시 추론하고, 바쁘면 skipped_while_busy를 올리고 버린다. 실제 주기는 하네스가 detect_cadence_ms 분포로 말한다(선언된 N이 아니라 관측값이다)",
+      "postprocess": {
+        "class_wise_conf": null,
+        "class_wise_conf_reason": "🔴 **적용하지 않았고 코드에 경로도 만들지 않았다.** 상류가 클래스별 conf(bollard 하향 · stairs 유지)를 1순위 카드로 적었지만(RESEARCH_20260823_UPSTREAM.md §4-3 · U-18) **그 임계값이 어느 계약 문서에도 없고** metadata.json에 클래스별 임계 항목 자체가 없다 — 지어내지 않는다(INTERFACES.md 규칙 3). 그리고 이 모델은 11n 계열이라 야간 볼라드 사진에서 conf 0.759~0.804로 나와 **0.25에서 이미 잡힌다**(models/0824/readme_c4e_640.md §6-2). 채택되면 그때 metadata가 클래스별 임계를 실어야 하고, 그것은 이 세션의 범위가 아니다",
+        "conf_declared_in_metadata": 0.3499999940395355,
+        "conf_override_active": true,
+        "conf_source": "🔴 **앱이 실제로 쓰는 conf는 metadata의 선언값이 아니라 이 오버라이드다.** 근거: 상류 최신 결정(detection.md 9-8, 8/23)이 **'단일 운영 conf는 0.25를 유지'**로 못 박았고(docs/research/RESEARCH_20260823_UPSTREAM.md §4-1 인용), 인수 패키지 README도 **'운영 conf 는 0.25 를 권장한다 / 패키지 metadata의 inference.conf 0.35는 내보내기 검증용 기본값이다'**라고 명시했다(models/0824/readme_c4e_640.md §6-2). 0.35는 상류의 어느 판정 표에도 없는 argparse 기본값이며 **야간 볼라드를 놓치는 임계**다(같은 리서치 §4-2). 🔴 **그런데 metadata.json을 고치지 않았다** — 고치면 계약값의 출처가 둘로 갈린다(CLAUDE.md 규칙 3). 재발행 요청은 알려진 이슈 44로 유효하다. 그래서 선언값은 선언값대로 남기고(DETECT_CONF_DECLARED) 앱이 쓰는 값을 여기서 따로 선언한다. ⚠ **클래스별 conf(bollard 하향)는 적용하지 않았다.** 상류가 그것을 1순위 카드로 적었지만(같은 리서치 §4-3 · U-18) **임계값 자체가 어느 계약 문서에도 없고** metadata에 클래스별 임계 항목도 없다 — 지어내지 않는다. 그리고 이 모델(11n 계열)은 야간 볼라드 사진에서 conf 0.759~0.804라 **0.25에서 이미 잡힌다**(models/0824/readme_c4e_640.md §6-2). 코드에 클래스별 경로를 만들지 않았다",
+        "conf_used": 0.25,
+        "declared_source": "models/0824/bammasil_det_c4e_s3_11n_640/metadata.json",
+        "iou_declared_in_metadata": 0.699999988079071,
+        "iou_used": 0.699999988079071,
+        "metadata_not_edited_reason": "🔴 **metadata.json을 고치지 않았다.** 고치면 계약값의 출처가 둘로 갈리고(CLAUDE.md 규칙 3 · INTERFACES.md 공통원칙) 그 뒤로는 어느 쪽이 상류가 준 값인지 말할 수 없다. 그래서 선언값은 선언값대로 남기고 앱이 쓰는 값만 빌드 설정에서 따로 선언했다. **conf 0.25로 metadata 재발행 요청은 알려진 이슈 44로 유효하다** — 재발행이 오면 이 오버라이드를 지우고 선언값을 그대로 쓰는 상태로 되돌린다(build.gradle.kts의 detectConfOverride를 빈 문자열로)",
+        "thresholds_note": "🔴 **이 런의 boxes_out·G·H·I·깜빡임 지표는 전부 conf_used 위에 있다.** 과거 런과 직접 비교하지 말 것 — 알려진 이슈 38이다(임계가 다르면 통과 박스 수가 달라지고, 그러면 G의 NMS 비용·④의 정점 수·overlay_boxes 분포가 함께 움직인다). 비교하려면 conf_used가 같은 런끼리만 놓는다"
+      },
+      "prepare_timing": {
+        "env_init_ms": 1,
+        "first_inference_ms": 264,
+        "measured_session_create_ms": 100,
+        "note": "🔴 **인용 금지 — F가 아니다.** 준비 1회의 벽시계이고 표본이 1개다. 첫 추론은 EP 커널 준비·메모리 아레나 같은 지연 초기화를 포함하고, 입력도 실제 프레임이 아니라 **0으로 채운 더미**다. 여기서 확인한 것은 '세션이 실제로 도는가'와 '프로파일러가 노드 이벤트를 내는가' 둘뿐이다. E·F·G의 분포는 **detect.csv**에 있다",
+        "probe_dummy_infer_ms": 348,
+        "probe_session_create_ms": 152,
+        "sha256_ms": 37,
+        "warmup_inference_ms": [
+          264,
+          268,
+          253,
+          266,
+          261
+        ],
+        "warmup_inferences": 5,
+        "warmup_note": "🔴 **A8 — 기록 전 warmup.** 측정 세션에서 5회를 미리 돌린 뒤에야 detect.csv 기록이 시작된다. 안 하면 1회차의 초기화 비용이 F 분포에 들어가 **p99가 통째로 오염된다.** first_inference_ms가 그 1회차이고 **분포 밖의 값**이다 — F로 인용하지 말 것. ⚠ warmup 입력은 실제 프레임이 아니라 **0으로 채운 더미**다(그래프 초기화가 목적이므로 내용은 무관하다). warmup_inference_ms 배열을 보면 몇 회차부터 평평해지는지 되물을 수 있다"
+      },
+      "preprocess_assumptions": {
+        "layout": "NCHW float32 [1,C,H,W] — C·H·W는 그래프에서 읽은 값이다",
+        "letterbox_align": "🔴 **가정이다(미확정).** metadata.json의 preprocess.resize는 한국어 산문이고 align 키가 없다. INTERFACES.md §A-2의 'letterbox pad 위치 = 상하 균등 분배(center)'도 ☐ 제안값이다. 이 값이 틀리면 **박스가 통째로 패딩이 붙는 축 방향으로 밀린다.** 🔴 **그 축은 회전 뒤에 정해진다** — §A-2의 '상하'는 소스를 회전 없이 letterbox 할 때의 축이고, 90/270°로 돌리면 720p가 세로로 길어져 패딩이 **좌우**로 가므로 밀리는 방향도 **가로**다. 실제 축은 이 런의 letterbox pad_left/pad_top 중 0이 아닌 쪽이 말한다. ⚠ **이번 라운드는 이 가정을 실제로 썼다**(center). 상류에 확정을 요청해 둔 상태이며, 답이 center가 아니면 이 런의 박스 좌표는 그 축으로 밀린 값이다 — E·F 비용은 영향이 없고(패딩 면적이 같다) G의 좌표만 틀린다",
+        "letterbox_align_value": "center",
+        "normalization": "0..255 → 0..1 (/255) 하나뿐이다. **평균/표준편차 정규화 없음** — metadata.json preprocess.mean_std_normalization = null이고 INTERFACES.md §A-2의 mean/std 칸도 '없음(단순 /255)'이다",
+        "pad_value": "🔴 **산문에서 읽은 값이다(미확정).** metadata.json preprocess.resize의 '회색 114 패딩'과 README 표의 (114,114,114)가 출처이며, 기계가 읽을 수 있는 키는 없다. INTERFACES.md §A-2의 같은 칸도 ☐다. 학습 시 값과 다르면 조용히 정확도만 떨어진다 — ⚠ **이번 라운드는 이 값을 실제로 썼다**(114/255)",
+        "pad_value_u8": 114,
+        "resize_interpolation": "🔴 **가정이다(미확정).** 보간 방식은 INTERFACES.md §A-2에도 상류 README에도 없다. 학습·평가 쪽 ultralytics LetterBox가 cv2.resize 기본값 INTER_LINEAR를 쓰므로 **이중선형**을 골랐다(휘도 Y는 이중선형, 색차 U/V는 최근접 — 색차는 이미 2:1로 서브샘플된 평면이고 저주파라 표준 관행이다). ⚠ 최근접으로 바꾸면 **E가 싸지고 정확도가 함께 바뀐다** — 둘을 같이 움직이는 값이라 성능 보고에 이 문장을 붙일 것",
+        "rotation": "✅ **분석 프레임의 rotationDegrees를 적용했다.** 어디서: **preprocess_sample_map** — letterbox 목적지 좌표에서 회전 역함수를 거쳐 센서 좌표를 한 번에 잡는다. **추가 패스도 추가 버퍼도 없다**(평면을 회전 복사한 뒤 기존 경로를 태우는 preprocess_plane_copy와 다르다). 🔴 **E의 *정의*는 바뀌지 않았다** — 그것은 DetectPipeline이 t를 찍는 두 줄이고 그 자리는 그대로다(detect_timestamp_sites 참고). 🔴 **E의 *값*은 바뀐다.** 90/270°에서는 목적지 행 하나가 센서의 **열**을 훑으므로 Y 평면의 캐시 지역성이 나빠진다. ⚠ **그 비용은 미측정이다** — 짝 arm(detect_cpu_norot)과의 차분으로만 말한다. 🔴 **이것은 회귀가 아니라 조건 변경이다.** 08-06 라운드의 E와 나란히 놓고 '느려졌다'로 읽지 말 것. ⚠ **남은 가정 둘**: (1) rotationDegrees를 **시계 방향**으로 읽었다(CameraX ImageInfo의 규약이며 기계로 확인한 값이 아니라 문서를 읽은 것이다. 앱과 PC가 **같은 가정**을 했을 뿐이며, 틀리면 실기기 E가 크게 어긋난다 — 조용히 틀리지는 않는다), (2) 모델이 **바로 선** 장면을 기대한다(상류 학습 데이터가 대시캠 정립 영상이라는 정황이지 계약이 아니다 — INTERFACES.md에 이 칸이 없다). 🔴 **반사 규약은 이제 가정이 아니라 규약이다(규약 §5-1).** 그리고 **하나가 아니라 둘이며 자리마다 다르다** — 섞으면 정확히 1px 틀린다: **전처리 샘플 맵은 픽셀 인덱스/중심 공간이라 `(N−1) − v`**이고(이 문장이 말하는 자리다), **후처리 박스는 연속(모서리) 좌표라 `N − v`**다(letterbox 역변환이 낸 값이라 `[0, N]`을 가득 채운다). 둘은 같은 기하의 다른 매개화이며(`c = i + 0.5`로 서로 유도된다) 그래서 **한 함수를 두 자리에 쓰면 안 된다** — 앱은 Rotation.toSensorX/Y(인덱스)와 Rotation.inverseBox(모서리)를 따로 둔다. 박스 쪽 값과 축 대응은 detect.parity.boxes_coordinate_space와 규약 §5-1의 표가 말한다. ⚠ **이 1px은 어떤 왕복 검사로도 안 잡힌다**(정·역이 같은 규약이면 왕복은 통과한다) — geometry_selfcheck의 **프레임 전체 박스 검산**과 폰↔PC 대조, 둘뿐이다. 🔴 그래도 이 런의 boxes_out·max_conf를 **탐지 정확도로 읽으면 안 된다** — 정답 라벨도 골든 샘플(INTERFACES.md §A-6)도 여전히 없다",
+        "rotation_site": "preprocess_sample_map",
+        "used_this_round": true,
+        "used_this_round_note": "🔴 **이번 라운드는 위 가정 넷을 실제로 썼다**(letterbox 정렬 center · 패딩 114 · 이중선형 보간 · BT.601 full range YUV→RGB). 넷 다 기계로 확인된 계약값이 아니다 — 상류 사이드카가 한국어 산문이라 기계 판독이 안 되고, INTERFACES.md §A-2의 해당 칸들도 여전히 ☐다. 확정을 요청해 둔 상태이며, 답이 다르면 **E·F 비용은 그대로이고 G의 좌표와 점수만 달라진다**",
+        "yuv_to_rgb": "🔴 **가정이다(계약에 없다).** BT.601 **full range**(JFIF) 계수를 썼다: R=Y+1.402(V−128), G=Y−0.344136(U−128)−0.714136(V−128), B=Y+1.772(U−128). 상류는 이미 RGB인 이미지를 읽으므로 이 변환이 상류에 아예 없다 — 대조할 원본이 없다는 뜻이다. limited range(16..235)였다면 대비가 약간 낮은 입력이 되어 점수가 소수점에서 달라진다. 골든 샘플(INTERFACES.md §A-6)이 오면 여기서 걸린다"
+      },
+      "round_scope": "이 arm의 프레임타임을 읽는 법: **detect_bind_only는 분석 use case 하나를 더 붙인 값**이고 추론이 없다(pipeline_stages에 detect 토큰이 없는 이유다). detect_cpu / detect_nnapi / detect_xnnpack · _prof 셋 · detect_parity_* 셋은 프레임 경로에서 **실제로 추론이 돈다** — 렌더 경로 자체는 blit_2pass와 글자 그대로 같으므로, 그 arm들의 프레임타임 차이는 GL 변경이 아니라 **같은 SoC를 탐지 스레드와 나눠 쓴 결과**다. 🔴 E·F·G의 분포는 프레임타임이 아니라 **detect.csv**에 있다",
+      "run": {
+        "accounting_holds": true,
+        "accounting_invariant": "analysis_frames_received == inferences_run + skipped_while_busy + errors. 🔴 **앱이 맞춰 주지 않는다** — 어긋나면 어긋난 채로 싣는다. false면 분석 프레임 하나가 어느 칸에도 계상되지 않은 것이고, 그건 코드 결함이다",
+        "analysis_frames_received": 19832,
+        "box_counts_meaning": "🔴 **boxes_pre_nms / boxes_out / max_conf를 탐지 정확도로 읽지 말 것.** 이 라운드가 재는 것은 E·F·G이고, 그 열들의 용도는 (a) G가 실제로 일을 했는가와 (b) G 비용의 설명 변수까지다. 🔎 **사유가 하나 줄었다(2026-08-07)** — 회전을 적용하면서 '모델이 옆으로 누운 장면을 본다'는 이유는 사라졌다(대조군 arm detect_cpu_norot 제외. 실제 값은 preprocess_assumptions.rotation과 input.rotation_applied가 말한다). 🔴 **그래도 결론은 그대로다.** 남은 이유: **정답 라벨이 없고 골든 샘플(INTERFACES.md §A-6)도 오지 않았다** — 그러니 mAP·누락률은 여전히 말할 수 없다. 그리고 전처리 가정 넷이 아직 미확정이다(preprocess_assumptions.used_this_round_note). ⚠ **탐지가 돈다는 것과 안전을 평가했다는 것은 다른 사실이다** — 안전 회귀는 여전히 evaluated=false다",
+        "detect_csv_rows": 2225,
+        "errors": 0,
+        "inference_enabled": true,
+        "inferences_run": 2225,
+        "inverted_box_samples": [],
+        "inverted_boxes": 0,
+        "inverted_boxes_meaning": "🔴 **x2<x1 또는 y2<y1인 박스의 수다. 거른 개수가 아니라 센 개수이며 그 박스는 boxes_out 안에 그대로 있다**(규약 §5-3). 거르면 면적 0인 박스가 화면 가장자리에 남아 ④가 얇은 선을 그린다 — 사용자에게 보이는 쓰레기다. **나오면 그 자체가 결함**이고 조용히 지우면 결함이 숨는다. 🔴 **좌표 표본을 함께 내는 이유**: 개수만으로는 못 고친다 — 알려진 이슈 34가 잡힌 것은 `x1=0.0, x2=-148.75`라는 구체 좌표 덕이었다. 두 좌표계를 같이 싣는 이유도 같다 — rot_*가 이미 뒤집혀 있으면 원인은 **모델의 w<0**이고(부등호를 보장하는 것은 scale이 아니라 모델이다), rot_*는 멀쩡한데 x/y가 뒤집혔으면 원인은 **회전 역변환**이다. ⚠ 표본은 앞 몇 개만 남긴다 — inverted_boxes와 inverted_box_samples의 크기가 다르면 잘린 것이다(총계 쪽이 참이다)",
+        "last_error": null,
+        "letterbox": {
+          "content": "360x640",
+          "dst": "640x640",
+          "note": "이 런에서 **실제로 쓴** 값이다(마지막 프레임 기준. 해상도가 고정이라 전 프레임 같다). 전처리와 후처리가 **같은 객체**를 쓰므로 역변환이 반올림에서 어긋나지 않는다. 🔴 **`src`는 ② 회전 후 치수다**(센서가 아니다 — 규약 §5). 90/270°면 camera_analysis_actual의 해상도와 폭·높이가 바뀌어 있고, 그때 pad_left와 pad_top도 자리를 바꾼다",
+          "pad_left": 140,
+          "pad_top": 0,
+          "scale": 0.5,
+          "src": "720x1280"
+        },
+        "profile_files_in_run_dir": [
+          "ort_profile_probe.json"
+        ],
+        "profile_files_note": "ORT 프로파일 JSON(Chrome trace)을 **런 디렉토리로 옮겼다.** 예전에는 앱 내부 캐시(/data/user/0/...)에 떨어져 루트 없이 못 꺼냈다 — `_prof` arm의 유일한 산출물인데 회수가 안 되면 그 arm이 아무 답도 못 낸다. ⚠ measured 프로파일을 확정하면(endProfiling) 그 세션은 다시 프로파일할 수 없으므로 앱이 세션을 닫는다 — `_prof` arm으로 연속 측정하려면 arm을 다시 고를 것",
+        "quiesce_note": "A12 정지 순서: (1) 기록 플래그 off → (2) **탐지 스레드 quiesce** → (3) frames.csv + detect.csv → (4) session.json. quiesced=false면 진행 중이던 추론을 시간 안에 못 기다린 것이고 마지막 행이 없을 수 있다",
+        "quiesce_timeout_ms": 3000,
+        "quiesced": true,
+        "rows_match_inferences": true,
+        "rows_match_inferences_note": "detect.csv의 행 수와 inferences_run이 같아야 한다. 다르면 정지 순서(A12)에서 행이 찢겼거나 기록 창 밖의 추론이 섞인 것이다",
+        "skipped_while_busy": 17607
+      },
+      "runtime": {
+        "abi_filters": "arm64-v8a",
+        "note": "🔴 **full 패키지다(onnxruntime-mobile이 아니다).** mobile 쪽은 .ort 포맷·축소 연산자셋이라 이 .onnx(opset 12, FP32)를 못 열 수 있다. 좌표는 build.gradle.kts에서 BuildConfig로 박힌 값이며 실제 링크된 의존성과 같은 곳에서 나온다(사본이 아니다)",
+        "package": "com.microsoft.onnxruntime:onnxruntime-android",
+        "version": "1.28.0",
+        "version_mismatch": null,
+        "version_note": "`version`은 gradle 좌표에 **선언한** 값이고 `version_runtime`은 OrtEnvironment.getVersion()이 **말한** 값이다. 인용은 **version_runtime을 우선**한다 — 둘이 다르면 version_mismatch가 문장으로 말하고, 그 자체가 발견이다. (모델 해시를 metadata.json의 선언값 대신 로드 바이트에서 직접 계산하는 것과 같은 논거다)",
+        "version_runtime": "1.28.0"
+      },
+      "session_loaded": true,
+      "trigger": "idle_gated",
+      "upper_bound_note": "🔴 **이 런은 탐지 주기의 상한 조건이지 배포 구성이 아니다.** 탐지 주기 N은 INTERFACES.md에서 아직 ☐라 앱이 값을 지어내지 않고, 분석 프레임이 올 때 **탐지가 유휴이면 즉시** 추론한다(idle-gated). 그래서 이 런의 SoC 경쟁과 발열은 최악이고, 그 아래에서 관측된 표시 경로 프레임타임은 **'탐지를 최대로 돌렸을 때의 하한'**이다. N을 정해 드물게 돌리면 프레임타임은 이보다 좋아진다. 실측 실행 주기는 하네스가 detect_cadence_ms 분포로 말한다 — 선언된 N이 아니라 관측값이다"
+    },
+    "detect_timestamp_sites": {
+      "clock_note": "🔴 **E·F·G는 CPU 벽시계 구간 길이이고 GPU 시계가 아니다.** stage_b_ms·D 계열· stage_i_ms·gpu_present_ms와 물리량이 다르므로 gpu_sum_ms에도 stage_d_total_ms에도 들어가지 않는다",
+      "stage_e_ms": "🔴 **ImageProxy의 평면 버퍼에서 바이트를 꺼내는 것부터 입력 텐서가 준비될 때까지.** 안에 있는 것: Y/U/V 평면 3개 bulk copy, letterbox 리샘플(휘도 이중선형·색차 최근접), YUV→RGB, /255, NCHW 배치, 직접 버퍼로의 bulk put, OnnxTensor.createTensor. 밖에 있는 것: 프레임 대기 해제, 콜백 디스패치, ImageProxy.close(), session.run(). 시계는 System.nanoTime()(구간 길이 전용)",
+      "stage_f_ms": "🔴 **session.run() 호출 하나뿐이다.** 출력 텐서를 읽는 비용은 여기가 아니라 G에 있다. 시계는 System.nanoTime()",
+      "stage_g_ms": "🔴 **출력 텐서를 네이티브에서 읽어 오는 복사부터** conf 필터 → cxcywh→xyxy → letterbox 역변환 → 클래스별 NMS까지. 시계는 System.nanoTime()",
+      "t_detect_end_ns": "후처리(G)가 끝난 직후, 행을 기록하기 전. t_detect_recv_ns와 같은 시계",
+      "t_detect_recv_ns": "분석 콜백 진입 후 **idle 게이트를 통과한 직후**(전용 detect-analysis 스레드). SystemClock.elapsedRealtimeNanos() — frames.csv의 t_recv_ns와 **같은 시계**다. ⚠ 건너뛴 프레임에는 이 시각이 없다(행 자체가 없다)",
+      "t_image_capture_ns": "ImageProxy.imageInfo.timestamp 원본. 앱이 보정하지 않는다. ⚠ 기준 시계가 기기마다 다르므로(frames.csv의 t_capture_ns와 같은 부류) 우리 시계와 빼지 않는다",
+      "thread_split": "E는 **detect-analysis 스레드**에서, F·G는 **detect-infer 스레드**에서 잰다. 🔴 둘을 가른 이유: 하나였다면 CameraX가 콜백 반환까지 다음 프레임을 주지 않아 **skipped_while_busy가 영원히 0**이 된다(관측하려던 것이 관측 방법 때문에 사라진다). E가 끝나면 ImageProxy를 닫고 분석 스레드가 즉시 다음 프레임을 받으므로 건너뛴 수가 실제로 세어진다. ⚠ 그래서 **E와 F 사이에는 스레드 핸드오프가 하나 있다** — 그 비용은 E에도 F에도 없고, 하네스의 detect_wall_ms(= end − recv) 안에서 미계상분으로 나타난다"
+    },
+    "draws_without_new_frame": 0,
+    "drop_accounting_note": "**표시 경로 2-C**에는 ImageProxy가 없어 버려진 프레임 수를 셀 수 없다. frames.csv의 dropped_since_last는 전부 -1이며, camera_frames_offered/frames_dropped는 0이 아니라 null이다(0은 '드롭 없음'이라는 적극적 주장이다). 아래 surface_frames_available은 카메라 출력 수가 아니라 우리 SurfaceTexture 큐에 도착한 수이므로 드롭의 하한 단서일 뿐이다. ⚠ **③ 탐지 경로는 다르다** — 그쪽은 ImageAnalysis use case라 ImageProxy가 있고 건너뛴 프레임을 실제로 센다. 그 계수는 이 키가 아니라 **detect.run**(analysis_frames_received / inferences_run / skipped_while_busy / errors)에 있으며, 두 경로는 **다른 use case라 프레임 수가 서로 같지 않다.** 한쪽 수를 다른 쪽에 옮겨 적지 말 것",
+    "frames_coalesced_lower_bound": 0,
+    "frames_dropped": null,
+    "frames_emitted": 19835,
+    "generated_by": "android/app (com.bammasil.poc)",
+    "gl": {
+      "context_version_actual": "3.2",
+      "egl_context_client_version_requested": 3,
+      "gl_extension_count": 110,
+      "gl_extensions": "GL_EXT_debug_marker GL_ARM_rgba8 GL_ARM_mali_shader_binary GL_ARM_debug_assert GL_OES_depth24 GL_OES_depth_texture GL_OES_depth_texture_cube_map GL_OES_packed_depth_stencil GL_OES_rgb8_rgba8 GL_EXT_read_format_bgra GL_OES_compressed_paletted_texture GL_OES_compressed_ETC1_RGB8_texture GL_OES_standard_derivatives GL_OES_EGL_image GL_OES_EGL_image_external GL_OES_EGL_image_external_essl3 GL_OES_EGL_sync GL_OES_texture_npot GL_OES_vertex_half_float GL_OES_required_internalformat GL_OES_vertex_array_object GL_OES_mapbuffer GL_EXT_texture_format_BGRA8888 GL_EXT_texture_rg GL_EXT_texture_type_2_10_10_10_REV GL_OES_fbo_render_mipmap GL_OES_element_index_uint GL_EXT_shadow_samplers GL_OES_texture_compression_astc GL_KHR_texture_compression_astc_ldr GL_KHR_texture_compression_astc_hdr GL_KHR_texture_compression_astc_sliced_3d GL_EXT_texture_compression_astc_decode_mode GL_EXT_texture_compression_astc_decode_mode_rgb9e5 GL_KHR_debug GL_EXT_occlusion_query_boolean GL_EXT_disjoint_timer_query GL_EXT_blend_minmax GL_EXT_discard_framebuffer GL_OES_get_program_binary GL_OES_texture_3D GL_EXT_texture_storage GL_EXT_multisampled_render_to_texture GL_EXT_multisampled_render_to_texture2 GL_OES_surfaceless_context GL_OES_texture_stencil8 GL_EXT_shader_pixel_local_storage GL_ARM_shader_framebuffer_fetch GL_ARM_shader_framebuffer_fetch_depth_stencil GL_ARM_mali_program_binary GL_EXT_sRGB GL_EXT_sRGB_write_control GL_EXT_texture_sRGB_decode GL_EXT_texture_sRGB_R8 GL_EXT_texture_sRGB_RG8 GL_KHR_blend_equation_advanced GL_KHR_blend_equation_advanced_coherent GL_OES_texture_storage_multisample_2d_array GL_OES_shader_image_atomic GL_EXT_robustness GL_EXT_draw_buffers_indexed GL_OES_draw_buffers_indexed GL_EXT_texture_border_clamp GL_OES_texture_border_clamp GL_EXT_texture_cube_map_array GL_OES_texture_cube_map_array GL_OES_sample_variables GL_OES_sample_shading GL_OES_shader_multisample_interpolation GL_EXT_shader_io_blocks GL_OES_shader_io_blocks GL_EXT_tessellation_shader GL_OES_tessellation_shader GL_EXT_primitive_bounding_box GL_OES_primitive_bounding_box GL_EXT_geometry_shader GL_OES_geometry_shader GL_ANDROID_extension_pack_es31a GL_EXT_gpu_shader5 GL_OES_gpu_shader5 GL_EXT_texture_buffer GL_OES_texture_buffer GL_EXT_copy_image GL_OES_copy_image GL_EXT_shader_non_constant_global_initializers GL_EXT_color_buffer_half_float GL_EXT_unpack_subimage GL_EXT_color_buffer_float GL_EXT_float_blend GL_EXT_YUV_target GL_OVR_multiview GL_OVR_multiview2 GL_OVR_multiview_multisampled_render_to_texture GL_KHR_robustness GL_KHR_robust_buffer_access_behavior GL_EXT_draw_elements_base_vertex GL_OES_draw_elements_base_vertex GL_EXT_protected_textures GL_EXT_buffer_storage GL_EXT_external_buffer GL_EXT_EGL_image_array GL_EXT_clear_texture GL_ARM_shader_core_properties GL_EXT_texture_filter_anisotropic GL_OES_texture_float_linear GL_ARM_texture_unnormalized_coordinates GL_EXT_shader_framebuffer_fetch GL_EXT_clip_control GL_EXT_polygon_offset_clamp GL_EXT_EGL_image_storage ",
+      "gl_renderer": "Mali-G68 MC4",
+      "gl_shading_language_version": "OpenGL ES GLSL ES 3.20",
+      "gl_vendor": "ARM",
+      "gl_version": "OpenGL ES 3.2 v1.r49p1-03bet0.3666fcaacb504f548df1f5efc729b42d.I3709bd948b52e72feea0b835da3d6ff20",
+      "has_ext_disjoint_timer_query": "true",
+      "has_oes_egl_image_external_essl3": "true",
+      "probe_note": "앱 EGL 컨텍스트에서 onSurfaceCreated 1회 실측. 확장 판별은 glGetString(GL_EXTENSIONS)를 공백으로 쪼갠 토큰 완전일치다(부분 문자열 검색이 아니다). 다른 프로세스(SurfaceFlinger 등)의 드라이버 문자열은 근거로 쓰지 않았다",
+      "supports_compute_shader_es31": "true"
+    },
+    "gpu_timer": {
+      "attribution_note": "query가 패스 시퀀스의 모든 GL **명령**을 빈틈없이 덮는다. 그러나 타일 기반 GPU(Mali-G68)에서 '명령을 덮는 것'은 '그 명령이 유발한 GPU 작업을 덮는 것'이 아니다 — 어느 작업이 어느 query 구간에 담기는지는 드라이버가 정한다. 확실한 것: 마지막 패스는 기본 프레임버퍼에 그리는데 그 타일 해결은 eglSwapBuffers에서 일어나고 GLSurfaceView는 그것을 onDrawFrame 반환 **후에** 부른다 — 모든 query의 바깥이다(GLSurfaceView를 쓰는 한 옮길 수 없다). 그래서 두 갈래이고 어느 쪽이든 '합은 정확하다'가 성립하지 않는다: (1) 드라이버가 glEndQuery에서 렌더패스를 쪼갠다 → **계측이 측정 대상 워크로드를 바꾸고 있다**, (2) 쪼개지 않는다 → **온스크린 해결 비용이 gpu_present_ms 밖으로 떨어져 gpu_sum_ms가 과소가 된다**. **우리는 이 기기에서 둘 중 어느 쪽인지 판별하지 못했다.** 따라서 개별 열의 경계는 ±1패스만큼 흐리고 **합도 하한으로 읽어야 한다** — B·D 칸을 이 값으로 채울 때 이 단서를 함께 옮길 것. 🔴 **정량 근거(독립 검증 실측): gpu_present_ms는 present 패스를 재고 있지 않다.** 적용 패스 열과 바로 다음 present 열의 차(gpu_present_ms − 적용 열; 3패스 arm은 stage_d_ms, 컴퓨트 arm은 stage_d_apply_ms)가 arm별로 blit_2pass 0.692 · gamma_only 0.717 · drago 1.430 · agcwd 1.400 · clahe_gamma 1.403 (ms)다. 컴퓨트 arm 셋에서 **적용 패스 값이 1.24ms 벌어지는 동안 이 차는 ±0.03ms 상수**다 — 적용 패스(FBO_B)의 프래그먼트 실행이 자기 query 창이 아니라 **다음 패스(present)의 창에 앉는다**는 뜻이다(타일러가 FBO_B 렌더패스를 pass5에서 해소한다). 그러므로 **stage_d_apply_ms를 '적용 패스의 비용'으로 인용하면 틀린다** — 개별 D 열은 약 한 패스 밀려 있고, **이 런에서 신뢰할 수 있는 것은 합(gpu_sum)뿐이다.** 그 합도 위 이유로 여전히 하한이다",
+      "attribution_note_scope": "🔴 **아래 attribution_note는 패스별 계측(짝 arm)을 서술한 문장이다.** 이 런은 query가 하나뿐이므로 문단 순서가 아니라 **내용으로 골라 읽어야 한다.** ▪ 이 런에 그대로 성립하는 것 = **eglSwapBuffers 항목**: 마지막 패스는 기본 프레임버퍼에 그리는데 그 타일 해결이 eglSwapBuffers에서 일어나고 GLSurfaceView는 그것을 onDrawFrame 반환 **후에** 부르므로 **모든 query의 바깥**이다 — 그래서 gpu_frame_ms도 하한이다(single_frame_query_lower_bound). ▪ 이 런에 성립하지 **않는** 것 = ① '개별 열의 경계가 ±1패스만큼 흐리다'와 ② **패스별 열이 약 한 패스 밀려 있다는 정량 근거 항목**(gpu_present_ms − 적용 열이 arm별로 상수라는 그 대목, stage_d_apply_ms를 '적용 패스의 비용'으로 인용하면 틀린다는 결론까지) — **이 arm에는 패스별 열이 아예 없다.** 그 항목을 남겨 두는 이유는 짝 arm의 열이 왜 부풀 수 있는지가 거기 적혀 있고, 이 arm의 값은 **그것과 나란히 놓을 때만** 뜻을 갖기 때문이다",
+      "columns_emitted": [
+        "gpu_frame_ms"
+      ],
+      "compute_pass_note": "이 arm의 패스2·3·5·6은 glDispatchCompute다. 컴퓨트는 타일러를 거치지 않으므로 아래 attribution_note의 '렌더패스 병합' 갈래가 그대로 적용되지는 않는다. 대신 SSBO 배리어(glMemoryBarrier)의 실제 대기가 어느 query에 담기는지는 드라이버가 정한다 — 배리어를 **소비하는 쪽 패스의 맨 앞**에 두었으므로 대기 비용은 소비자(패스3·4·6·7) 쪽으로 청구되도록 의도했다. 그것이 실제로 그렇게 되는지는 **이 기기에서 검증하지 못했다**",
+      "discard_note": "disjoint가 세워진 프레임의 in-flight query는 전량 버렸고, 정지 시점에 안 끝난 tail query도 버렸다(각각 discarded_disjoint_queries / unresolved_queries). 버린 자리는 CSV에 -1로 남는다 — 0으로 채우면 '그 패스가 0ms였다'는 거짓 주장이 된다. 하네스는 -1을 below_min 폐기로 세므로 개수가 조용히 사라지지 않는다. ⚠ skipped_ring_full_frames의 편향 방향: 링이 차는 것은 회수가 밀렸을 때, 즉 **GPU가 느린 구간**이므로 버려지는 쪽이 가장 비싼 프레임이다 — 0이 아니면 stage_* 분포의 p95/p99가 낙관 쪽으로 치우친다",
+      "discarded_disjoint_queries": 3,
+      "disjoint_accounting_note": "GL_GPU_DISJOINT_EXT는 '지난 읽기 이후 누적'이고 읽으면 리셋된다. 계측하지 않는 기간(프리뷰·arm 전환·앱 시작 직후)에 선 플래그가 이 런의 것으로 계상되지 않도록, 런의 **첫 읽기는 기준선으로만 쓰고 세지 않는다**. 런 도중의 읽기는 전부 센다 — 그 구간은 in-flight query가 실제로 걸쳐 있는 구간이다",
+      "disjoint_frames": 3,
+      "extension": "GL_EXT_disjoint_timer_query",
+      "extension_present": "true",
+      "instrumentation": "single_frame_query",
+      "instrumentation_overhead_note": "계측 on/off A/B는 이 빌드로 할 수 없다 — 패스스루가 아닌 arm은 항상 계측하고 패스스루 arm은 절대 계측하지 않으므로, 두 arm의 차이에서 '패스 비용'과 'query 비용'을 분리할 수단이 없다(구조적 한계이며 토글을 새로 만들지 않았다). 즉 여기 값에 query 자체의 오버헤드가 얼마나 섞였는지는 미측정이다",
+      "instrumented": true,
+      "instrumented_frames": 19835,
+      "malformed_frames": 0,
+      "max_passes_per_frame": 12,
+      "method": "프레임 단일 query — **프레임 전체를 query 하나로** 감싼다(프레임당 query = 1, 열은 gpu_frame_ms 하나). 링이 첫 패스의 beginPass에서만 glBeginQuery를, 마지막 패스의 endPass에서만 glEndQuery를 걸고 나머지 호출은 커서만 올린다 — **draw 함수는 패스별 계측 arm과 글자 그대로 같은 코드**다. 패스별 분해는 이 모드에서 나오지 않는다(GL_TIME_ELAPSED가 중첩되지 않아 둘을 같이 걸 수 없고, 그래서 arm으로 갈랐다). GL_TIME_ELAPSED_EXT(0x88BF) via core glBeginQuery/glEndQuery + glGetQueryObjectuiv(GL_QUERY_RESULT_AVAILABLE) 비차단 폴링. android.opengl에 glQueryCounterEXT/glGetQueryObjectui64vEXT 진입점이 없어 타임스탬프 방식은 쓸 수 없다(JNI 필요). 결과는 32비트로만 받으므로 약 4.29초까지 담기고, 그보다 큰 결과가 어떻게 되는지는 **구현 정의**다",
+      "note": "패스스루 arm에는 query를 하나도 걸지 않는다 — query 자체가 GPU 동작과 드라이버 스케줄링을 바꾸므로, 승격 베이스라인을 재현하는 경로에 넣으면 그 기준이 기준이 아니게 된다. stage_i_ms는 ④ 오버레이 arm(highlight_boxes / highlight_boxes_stress / detect_cpu_highlight / detect_cpu_chain_highlight)이 낸다 — 프레임 단일 query 짝(`_1q`)은 **이 열을 내지 않는다**(열이 gpu_frame_ms 하나뿐이다). 🔴 stage_h_ms는 **GPU 열이 아니다** — CPU 벽시계(GL 스레드)라 이 블록의 어느 칸에도 들어가지 않는다(overlay.smoothing 참고)",
+      "peer_arm": "detect_cpu_chain_highlight",
+      "positive_samples": 19832,
+      "queries_per_frame": 1,
+      "render_passes_per_frame": 9,
+      "resolved_frames": 19832,
+      "resolved_queries": 19832,
+      "ring_depth_frames": 4,
+      "single_frame_query_how_to_compare": "🔴 **비교는 같은 세션·같은 빌드의 짝 arm과 나란히 놓고 한다.** gpu_frame_ms(이 arm) 대 gpu_sum_ms(짝 arm)의 **차가 곧 패스별 계측의 중복 계상량**이다 — 그것이 이 arm의 존재 이유다. ⚠ 짝은 렌더가 같은 arm 하나뿐이다: blit_2pass_1q↔blit_2pass · drago_clahe_chain_1q↔drago_clahe_chain · drago_clahe_chain_bf_1q↔drago_clahe_chain_bf · drago_clahe_fused_1q↔drago_clahe_fused · drago_clahe_fused_bf_1q↔drago_clahe_fused_bf · highlight_boxes_1q↔highlight_boxes · detect_cpu_highlight_1q↔detect_cpu_highlight · detect_cpu_1q↔detect_cpu · detect_cpu_chain_1q↔detect_cpu_chain · detect_cpu_chain_highlight_1q↔detect_cpu_chain_highlight. 다른 arm과 짝지으면 렌더가 달라 그 차분은 아무 뜻이 없다. 🔴 **I 하한의 분모는 세트마다 다르다 — 하나가 아니다.** ③→④ 세트(v7)는 `detect_cpu_highlight_1q − detect_cpu_1q`이고, ②③④ 통합 세트는 `detect_cpu_chain_highlight_1q − detect_cpu_chain_1q`다. 분모는 **분자에서 ④ 오버레이만 뺀 arm**이어야 하며(② 구성과 탐지가 같아야 한다), `blit_2pass_1q`나 `drago_clahe_chain_1q`를 분모로 쓰면 **거기에 탐지 부하가 없어서** 차이에 탐지 비용이 섞인다. 알려진 이슈 36이 그 부류다(`highlight_boxes_1q`가 분모와 소수점 셋째 자리까지 같아 I 하한이 0으로 나왔고, 그 0은 '오버레이가 공짜'가 아니라 분모가 상한을 통째로 중복 계상했다는 뜻이었다). 🔴 **H는 이 차분의 대상이 아니다** — stage_h_ms는 CPU 벽시계이고 모든 GPU query 밖에서 닫히므로(overlay.smoothing.scope) gpu_frame_ms 차분에 들어 있지 않다. H는 오버레이 arm이 그 열로 직접 낸다. 🔴 **부풀림 비율을 arm 사이에서 옮기지 말 것** — 중복 계상량은 마지막 전체화면 패스의 비용을 따라가므로 패스 구성마다 다르다(같은 라운드에서 ④ 오버레이 arm +2% / 9패스 arm +43%). 하한이 필요하면 **그 arm의 `_1q` 짝을 직접 재는 수밖에 없다** — 뒤의 세 짝이 생긴 이유가 그것이다. ⚠ **다른 세션의 짝과 비교하지 말 것** — 발열·조명·AE 상태가 다르면 그 차이가 중복 계상량으로 둔갑한다. ⚠ 이 arm은 **패스별 분해를 낼 수 없다.** 어느 패스가 비싼지는 짝 arm의 열이 말하고, 그 열들이 얼마나 부풀어 있는지는 이 arm이 말한다 — 둘 다 필요하다",
+      "single_frame_query_lower_bound": "🔴 **프레임 단일 query로도 이 값은 여전히 하한이다.** 마지막 패스는 기본 프레임버퍼에 그리는데 그 타일 해결은 eglSwapBuffers에서 일어나고 GLSurfaceView는 그것을 onDrawFrame 반환 **후에** 부른다 — 프레임 단일 query의 **바깥**이다(GLSurfaceView를 쓰는 한 옮길 수 없다. 패스별 계측의 attribution_note와 같은 이유다). 그러므로 이 실험이 재는 것은 **'중복 계상량의 하한'이지 '진짜 GPU 시간'이 아니다** — gpu_frame_ms를 '이 arm의 실제 프레임 GPU 시간'으로 옮겨 적지 말 것",
+      "single_frame_query_not_a_sum": "🔴 **gpu_frame_ms는 gpu_sum_ms와 다른 물리량이다.** 프레임 하나를 query 하나로 감싼 값이고, 패스별 열의 합이 아니다 — **둘을 더하지 말 것**(더하면 같은 프레임을 두 번 세는 것이다). 같은 이유로 D 계열도 아니고(stage_d_total_ms에 들어가지 않는다) **버짓 칸도 없다** — 단계 비용이 아니라 프레임 전체 GPU 시간이므로 칸 라벨을 붙이면 그 숫자가 D칸으로 인용된다. 한 런에 이 열과 패스별 열이 **함께 있을 수 없다**(GL_TIME_ELAPSED가 중첩되지 않는다) — 그래서 이 arm의 CSV에는 패스별 열이 아예 없다",
+      "single_frame_query_what_differs": "🔴 **이 arm은 알고리즘이 아니라 계측 방식이 다르다.** 렌더 경로는 짝 arm과 **글자 그대로 같다** — 같은 draw 함수를 타고(RenderArm.uses* 판별식에 이 arm을 함께 넣었다) 셰이더·패스 수·파라미터가 전부 같다. 다른 것은 GPU timer query를 거는 방식 하나뿐이다: 패스마다 하나씩(짝 arm) 대신 **프레임 전체를 query 하나로** 감싼다(GL_TIME_ELAPSED는 중첩되지 않아 둘을 같이 걸 수 없다 — 그래서 arm으로 갈랐다). 그러므로 두 arm의 프레임타임·지연 분포는 **같아야 하고**, 다르면 그것 자체가 계측 오버헤드의 증거다. 왜 만들었는가: 직전 라운드의 패스별 계측에서 gpu_sum(패스별 query의 합)이 **물리적으로 불가능한 값**을 냈다 — chain_bf가 29.92fps × 43.794ms = 1초에 1.31초의 GPU 작업이고, 30fps는 스톨·드롭 없이 유지됐으며 행 단위로 95.8%의 행에서 gpu_sum이 그 프레임의 출력 간격을 넘었다. 원인 후보는 **gpu_present_ms가 마지막 전체화면 패스의 타일 해결을 흡수해 중복 계상**하는 것이다(present는 전 arm에서 같은 셰이더인데 query 값이 1.862 → 15.078로 부풀었고, 부풀림이 마지막 전체화면 패스 비용의 73~88%다. 마지막 패스가 얇은 quad인 ④ 오버레이 arm은 +0.010(2%)로 대조군이 된다). ⚠️ 여기 적힌 수치는 **이 문자열이 쓰인 시점의 사본**이며 출처는 그 런의 summary.json과 그 라운드 팀 보고서다 — 어긋나면 그쪽이 맞다",
+      "skipped_ring_full_frames": 0,
+      "supported": true,
+      "target_enum": "GL_TIME_ELAPSED_EXT=0x88BF, GL_GPU_DISJOINT_EXT=0x8FBB",
+      "unresolved_queries": 0,
+      "zero_result_queries": 0
+    },
+    "hud_info_hidden": false,
+    "lighting_condition": "indoor_bright",
+    "log_clock": "SystemClock.elapsedRealtimeNanos() (CLOCK_BOOTTIME)",
+    "measurement": {
+      "duration_ns": 664054858193,
+      "started_elapsed_realtime_ns": 3797671874325565,
+      "stopped_elapsed_realtime_ns": 3798335929183758
+    },
+    "overlay": {
+      "blink_not_a_perf_claim": "🔴 **깜빡임이 없다는 사실을 성능 근거로 쓰지 말 것 — 그리고 arm마다 뜻이 다르다.** (a) 정적 더미 arm(highlight_boxes / _stress / _1q): 박스가 프레임마다 완전히 같아 **구조적으로** 깜빡임이 없을 뿐이고 그 런은 깜빡임을 **시험하지 않았다.** (b) ③ 결과 arm(detect_cpu_highlight / _1q): 박스가 실제로 바뀌므로 이제 **깜빡임이 시험된다** — H칸(좌표 IIR 평활·hold)이 이 라운드에 구현됐고, '만들지 않았다'의 유일한 기계 근거는 하네스의 overlay.flicker 블록(blank_transitions + zero_frame_fraction + zero_runs_at_edge + drew_then_stopped)이다. 🔴 **눈으로 본 것은 계측이 아니다** — 그 블록 없이 '깜빡이지 않았다'고 쓰지 말 것. 설계상 무엇을 막았는지는 overlay_no_flicker_design에 있다. 상류가 이것을 안전 이슈로 규정했다(RESEARCH_20260803_UPSTREAM.md §5)",
+      "bollard_color_provenance": "⚠ **이탈이 아니다 — 상류 팔레트에 `bollard` 항목이 아예 없었다.** 두 사실을 갈라 적는다: (1) **항목 부재** — 상류 `scripts/emphasize.py`의 팔레트는 `stairs`·`person` 둘뿐이고 `bollard`는 어휘 밖이라 예전에는 중립색(흰색) fallback으로 그려졌다(unknown_policy). (2) **우리가 선언한 값** — 초록 (0, 1, 0)은 사용자 지시로 우리가 정한 값이며 상류가 확정한 색이 아니다. 🔴 초록을 고른 대가는 person_color_deviation의 (b)에 있다(빨강+초록 = 적록색약 조합). 상류가 나중에 `bollard` 색을 확정하면 그 값으로 교체한다",
+      "bounds_note": "🔴 **②③④ 통합 세트에서 I의 상한과 하한은 서로 다른 arm에서 나온다 — 한 arm의 로그만 보고 둘을 다 얻을 수 없다.** **I 상한** = detect_cpu_chain_highlight의 stage_i_ms다. 패스별 계측이라 중복 계상하므로(알려진 이슈 21) 그 값이 상한이다. **I 하한** = detect_cpu_chain_highlight_1q − detect_cpu_chain_1q이며 **둘 다 프레임 단일 query일 때만** 뜻이 있다(GL_TIME_ELAPSED가 중첩되지 않아 패스별 계측과 섞을 수 없다). 🔴 **같은 세션·같은 빌드에서 잰다** — 다른 세션의 값과 빼면 발열·조명·AE 상태의 차이가 중복 계상량으로 둔갑한다. 🔴 **분모가 drago_clahe_chain_1q가 아닌 이유:** 거기엔 탐지 부하가 없다(그 arm은 ORT 세션을 열지 않고 detect.csv도 내지 않는다). 알려진 이슈 36이 그 부류다 — 분모를 잘못 고르면 하한이 0으로 나오고 그 0은 '오버레이가 공짜'가 아니라 **분모가 상한을 통째로 중복 계상했다**는 뜻이었다. 🔴 **H는 하한·상한의 대상이 아니다.** stage_h_ms는 CPU 벽시계 직접 측정이고 모든 GPU query **밖**에서 닫힌다(overlay.smoothing.scope) — gpu_frame_ms 차분에 H는 물리적으로 들어 있지 않으므로 'H의 하한'은 범주 오류다. H는 두 오버레이 arm(detect_cpu_chain_highlight / _1q)이 stage_h_ms 열로 **직접** 낸다. ⚠ 오버레이가 없는 두 arm(detect_cpu_chain / _1q)에는 stage_i_ms도 stage_h_ms도 없다 — 그 arm들의 자리는 **분모**이고 그것이 이 세트에서 그 arm의 뜻 전부다",
+      "box_count": null,
+      "box_count_column": "overlay_boxes",
+      "box_count_dynamic": true,
+      "box_count_note": "🔴 **이 arm의 박스 개수는 선언된 조건이 아니라 프레임마다 다른 관측값이다.** 그래서 box_count가 null이고, 조건은 frames.csv의 **overlay_boxes** 열이 프레임별로 말한다(그 열에서 **0은 정상값**이다 — 그 프레임에 그린 박스가 없었다는 뜻이고 야간 보행에서는 그런 프레임이 다수다). ⚠ 그러므로 이 arm의 stage_i_ms·stage_h_ms를 **개수 없이 인용하지 말 것** — 정적 arm에서 box_count가 필수 조건인 것과 같은 논거이며, 여기서는 그 조건이 분포다. 정적 arm의 개당 기울기로 나눠 검산하지도 말 것(박스 크기가 다르다)",
+      "box_count_provenance": "🔴 **박스 개수와 배치는 사양이 아니라 우리가 선언한 측정 조건이다.** 실제 개수는 장면마다 다르므로(상류도 '몇 개 기준인지 함께 적을 것'이라는 단서를 달았다 — FRAME_BUDGET.md §3 주5) 이 값을 사양으로 옮기지 말 것. arm 두 개로 갈라 잰다: highlight_boxes = 4개(stairs 1 + person 3) / highlight_boxes_stress = 32개(개당 비용 기울기용). 배치는 8x4 셀 격자에서 **서로 겹치지 않는 같은 크기**의 박스를 stride 7로 뽑은 것이다(gcd(7,32)=1이라 순열이고, 개수가 적어도 화면 전체에 퍼진다). **박스 크기가 두 arm에서 같으므로** 두 값을 나란히 놓아 개당 기울기로 쓸 수 있다 — 격자를 개수에 맞춰 바꾸면 박스마다 둘레가 달라져 그 기울기가 깨진다. 🔴 **이 문단은 정적 더미 arm(highlight_boxes / _stress / _1q) 셋에만 해당한다.** ③ 결과를 그리는 arm(detect_cpu_highlight / _1q)에서는 개수도 배치도 크기도 **장면이 정한다** — 그 arm의 box_count는 null이고 프레임별 개수는 frames.csv의 overlay_boxes 열이 말한다(box_count_dynamic 참고). 그러므로 그 arm의 stage_i_ms를 위 개당 기울기로 나눠 검산하지 말 것: 박스 크기가 이 격자와 다르다",
+      "box_source": "🔴 **③ 탐지 결과다.** DetectOverlayPublisher가 게시한 스냅샷을 GL 스레드가 H칸(좌표 평활·hold)에 태워 그린다 — 정적 더미가 아니므로 **프레임마다 다르고 재현 가능하지 않다.** 같은 장면을 다시 찍어도 같은 박스가 나오지 않는다. 좌표 공간의 사슬은 coordinate_map에, 평활 정책은 smoothing에 있다",
+      "class_color_mapping": {
+        "bollard_color_provenance": "⚠ **이탈이 아니다 — 상류 팔레트에 `bollard` 항목이 아예 없었다.** 두 사실을 갈라 적는다: (1) **항목 부재** — 상류 `scripts/emphasize.py`의 팔레트는 `stairs`·`person` 둘뿐이고 `bollard`는 어휘 밖이라 예전에는 중립색(흰색) fallback으로 그려졌다(unknown_policy). (2) **우리가 선언한 값** — 초록 (0, 1, 0)은 사용자 지시로 우리가 정한 값이며 상류가 확정한 색이 아니다. 🔴 초록을 고른 대가는 person_color_deviation의 (b)에 있다(빨강+초록 = 적록색약 조합). 상류가 나중에 `bollard` 색을 확정하면 그 값으로 교체한다",
+        "class_names_used": [
+          "person",
+          "stairs",
+          "bollard"
+        ],
+        "contract_a4_conflict": "🔴 **INTERFACES.md 계약 A-4와 모델의 클래스 목록이 어긋난다.** 계약 A-4 = [0=stairs, 1=person] , 모델 임베드 메타(names) = [0=person, 1=stairs, 2=bollard]. 🔴 **어긋난 방식이 하나가 아니라 셋이므로 갈라 적는다** — '순서가 반대다' 하나로 뭉치면 개수 변화가 문장에서 사라지고, 실제로 그렇게 사라진 적이 있다: **(a) 개수** — 🔴 **클래스 수가 계약 2개 → 모델 3개로 바뀌었다.** 이것이 INTERFACES.md §A-4의 불변 규칙이 **런타임에 통보 필수**라고 못 박은 바로 그 사건이다: '클래스가 늘면 출력 shape의 `4+nc`가 바뀐다' · '클래스 추가 = **렌더 규약 변경**'. 실제로 이 런의 출력 shape은 1,7,8400이며, 오버레이 어휘도 함께 움직였다(아래 어휘 대조). **(b) ☐ 자리** — 🔴 **계약이 ☐로 비워 둔 자리가 채워졌다**: index 2 = bollard. 그 자리에는 계약 문서에 이름이 **아예 없으므로 대조할 선언값이 없다** — 틀렸다고 말하는 것이 아니라 **확정된 적이 없다**는 뜻이고, 팀이 A-4를 확정할 때 함께 적어야 하는 칸이다. **(c) 순서** — 🔴 **양쪽에 다 있는 인덱스의 이름이 어긋난다**: index 0 (계약 stairs ↔ 모델 person), index 1 (계약 person ↔ 모델 stairs). 🔴 **그래서 인덱스로 색을 고르면 안 된다** — 인덱스를 계약 이름으로 읽는 순간 **모델의 person에 stairs의 색이** 칠해진다(index 0), **모델의 stairs에 person의 색이** 칠해진다(index 1). 예전에 HighlightOverlay에 있던 'index 0 = stairs'라는 A-4 기반 가정은 **지웠다** — 그 줄이 남아 있었다면 ③→④를 연결하는 순간 위 뒤바뀜이 그대로 화면에 나갔다. 이것은 취향이 아니라 **안전 문제**다. **고치지 않았다** — 계약 문서는 팀 합의 기록이라 런타임이 임의로 못 바꾸고, 모델은 가중치의 사실이라 코드로 뒤집으면 그게 곧 무음 버그다. 🔴 **③→④는 2026-08-07에 연결됐고, 그래서 이 충돌이 무해해졌다** — ④ 오버레이의 색은 **클래스 이름**으로 고른다(gl/OverlayClassColors). 이름의 출처는 이 블록의 classes(모델 임베드 메타의 names) **하나뿐**이고 계약 A-4의 순서를 쓰지 않는다. 🔴 그러므로 팀이 A-4를 어느 쪽으로 확정해도 **오버레이 코드는 바뀌지 않는다** — 그것이 이름으로 거는 설계의 목적이다. **이 런의 이름을 어휘와 대조한 결과**(판정자는 OverlayClassColors.isKnown 하나이고 🔴 **어휘 목록을 이 문장에 열거하지 않는다** — 열거했다가 클래스가 늘던 날 이 문장이 거짓이 됐다): 어휘 **안** = [person, stairs, bollard], 어휘 **밖** = **없다 — 이 런은 모델 이름 전부가 어휘 안이고, 따라서 중립색으로 떨어지는 이름이 하나도 없어야 한다**. 어휘 밖 이름이나 범위 밖 cls는 지우지 않고 **중립색으로** 그리고 그 사실을 session.json의 overlay.class_color_mapping에 남긴다 — 정책 원문은 그 블록의 unknown_policy이며 색 값은 그 블록의 table이 말한다. ⚠ **색 값과 상류 명세 이탈은 이 문장이 말하지 않는다**(여기에 색을 베껴 쓰면 색이 바뀌는 날 또 거짓이 된다) — overlay.class_color_mapping의 person_color_deviation(OverlayClassColors.PERSON_COLOR_DEVIATION)과 bollard_color_provenance가 그 기록이다",
+        "contract_a4_conflict_note": "🔴 위 문장은 detect.classes.contract_conflict와 **같은 문장이다**(DetectContract.contractConflictText 하나가 만든다). 여기 함께 싣는 이유는 오버레이 색을 되짚는 사람이 detect 블록까지 안 열어도 이 충돌을 만나게 하려는 것이다",
+        "counts_by_class": {},
+        "counts_by_class_note": "🔴 **그린 박스를 정규화된 이름으로 센 값이다**(게시 시점 계수 = 그린 시점과 다를 수 있다: hold 때문에 한 게시가 여러 프레임에 걸쳐 그려지고, 이 표는 **게시당 한 번** 센다). 프레임당 개수는 frames.csv의 overlay_boxes다. 키가 `<cls N: ...>` 꼴이면 cls가 **모델 이름 목록의 범위 밖**이었다는 뜻이고 그때 이름을 지어내지 않았다",
+        "no_red_reason": "🔴 **상류 명세: 빨강 금지.** 빨강은 휘도가 낮아 야간 배경에 묻히고 적록색약에서 무너진다 (RESEARCH_20260803_UPSTREAM.md §5). 🔴 **그런데 이 런의 어휘색은 그 금지를 지키지 않는다** — `person`이 사용자 지시로 빨강이 됐다(person_color_deviation에 이탈 사유와 위험 두 가지가 있다). 위 금지는 **중립색(unknown=흰색) 후보에 대해서는 여전히 유효하다**",
+        "normalization": "`trim()`으로 앞뒤 공백을 지운 뒤 `lowercase(Locale.ROOT)`로 소문자화한다. **그 이상은 하지 않는다** — 가운데 공백·언더스코어·복수형을 접지 않고(예: `stair`, `stairs_up`, `person 1`은 전부 어휘 밖이다), 로케일 의존 소문자화를 피하려고 Locale.ROOT를 쓴다(터키어 로케일에서 'I'가 'ı'로 내려가는 함정). 🔴 **어휘 밖 이름을 이름으로 추측해 접지 않는다** — 접으면 모델이 클래스를 늘린 날 새 클래스가 조용히 기존 색을 물려받는다",
+        "person_color_deviation": "🔴 **상류 명세 이탈 — 사용자가 재확인해 결정한 지시다.** `person`의 색을 시안 (0, 1, 1)에서 **빨강 (1, 0, 0)**으로 바꿨다. 상류 명세 원문(`scripts/emphasize.py` · RESEARCH_20260803_UPSTREAM.md §5)은 `person`=시안이고 **'🔴 빨강 금지: 휘도가 낮아 야간 배경에 묻히고 적록색약에서 무너진다'**였다. 🔴 **이 이탈이 지는 위험 두 가지를 그대로 적는다.** (a) `person`은 가장 흔한 위험물인데 야간 배경에서 **가장 안 보이는 색**이 된다 — 빨강의 상대 휘도는 0.2126이고 시안은 0.7874다(약 3.7배 차이). (b) 빨강 + 초록(bollard)은 **정확히 적록색약 조합**이라 사람과 볼라드가 구분되지 않는다. 🔴 **이 앱의 대상 사용자가 저시력자다** — 그것이 이 위험을 일반적인 UI 취향 문제와 다르게 만든다. ⚠ 색은 픽셀 비용에 영향이 없으므로(어느 색이든 같은 면적을 채운다) 이 변경은 타이밍 지표를 바꾸지 않는다. 안전 지표는 이 문장이 유일한 기록이다",
+        "source": "🔴 **모델 임베드 메타의 names 하나뿐이다**(DetectRuntime.classNames) — INTERFACES.md 계약 A-4의 순서를 쓰지 않는다. 색은 **이름**으로 고르므로(gl/OverlayClassColors) 팀이 A-4를 어느 쪽으로 확정해도 코드가 바뀌지 않는다",
+        "table": {
+          "<unknown>": "중립색 = 흰색 (1, 1, 1)",
+          "bollard": "초록 (0, 1, 0)",
+          "person": "빨강 (1, 0, 0)",
+          "stairs": "노랑 (1, 1, 0)",
+          "underline": "검정 (0, 0, 0)"
+        },
+        "unknown_names_seen": [],
+        "unknown_policy": "🔴 **지우지 않고 중립색으로 그린다.** 어휘(stairs/person/bollard) 밖 이름이거나 `cls`가 모델 이름 목록의 범위 밖이면 어휘색을 하나도 주지 않고 중립색 = 흰색 (1, 1, 1)으로 그린다. 근거: **탐지된 위험물을 화면에서 지우는 것이 더 나쁘다.** 관측된 이름과 개수는 이 블록의 unknown_names_seen / counts_by_class에 그대로 남고 logcat에도 나간다. ⚠ **중립색 후보에서 빨강은 제외된다**(no_red_reason) — 야간 휘도·적록색약 때문이다. 🔴 **어휘색에는 그 금지가 적용되지 않는다**: `person`이 사용자 지시로 빨강이 됐다(person_color_deviation). 이 문장은 **중립색에 대해서만** 참이다. ⚠ 중립색이 화면에 보이면 그것은 **정상 동작이 아니라 신호다**: 모델의 클래스가 늘었거나 이름이 바뀐 것이므로 오버레이 어휘를 팀과 함께 갱신해야 한다"
+      },
+      "class_note": "🔴 **색은 클래스 이름으로 고른다 — 인덱스로 고르지 않는다**(OverlayClassColors). 어휘는 `stairs`·`person`·`bollard` **셋**이고 이름의 출처는 **모델 임베드 메타의 names 하나뿐**이다(계약 문서의 순서를 쓰지 않는다). 그래서 INTERFACES.md §A-4와 모델의 순서가 반대인 채로도(contract_a4_conflict) 이 코드는 옳게 그리고, 팀이 어느 쪽으로 확정해도 **바뀌지 않는다** — 그것이 이 설계의 목적이다. ⚠ **어휘가 둘에서 셋으로 늘었다**: `bollard`는 모델이 새로 가진 클래스이고 **상류 팔레트에 항목이 없어** 예전에는 중립색(흰색) fallback이었다 — 색을 지어낸 것이 아니라 우리가 선언했다는 사실은 bollard_color_provenance에 있다. 그리고 `person`의 색은 **상류 명세를 벗어났다**(person_color_deviation). 🔴 어휘 밖 이름·범위 밖 cls는 여전히 **지우지 않고 중립색(흰색)으로** 그린다(unknown_policy) — 클래스가 또 늘면 그 자체가 렌더 규약 변경이라(§A-4 불변 규칙) 오버레이 어휘를 팀과 함께 갱신해야 한다. 색은 픽셀 비용에 영향이 없다(어느 색이든 같은 면적을 채운다)",
+      "colors": {
+        "bollard": "초록 (0, 1, 0)",
+        "person": "빨강 (1, 0, 0)",
+        "stairs": "노랑 (1, 1, 0)",
+        "underline": "검정 (0, 0, 0)"
+      },
+      "coordinate_map": {
+        "analysis_aspect": 1.7777777777777777,
+        "analysis_resolution": "1280x720",
+        "aspect_matches": true,
+        "aspect_note": "⚠ aspect_matches가 false면 두 use case의 **시야(crop)가 다르다**는 뜻이고 이 매핑은 그만큼 틀린다 — 그 crop을 알려 주는 런타임 값이 없어 앱이 보정할 수 없다. 그 런의 박스 위치를 화면 기준으로 인용하지 말 것. ⚠ aspect_tolerance는 **우리가 선언한 검사 조건이지 계약값이 아니다**",
+        "aspect_tolerance": 0.001,
+        "assumptions": "🔴 **(1) 세로 축 방향은 가정이다(FLIP_Y=false).** 표시 경로가 방향 보정을 하지 않고(알려진 이슈 13) 패스1의 OES 샘플링은 드라이버가 준 texMatrix를 그대로 쓰므로, '센서 y=0 행이 화면 위인가 아래인가'를 기계로 확인할 수단이 앱에 없다. **화면에서 위아래가 뒤집혀 보이면 OverlayCoordMap.FLIP_Y 하나만 바꾼다** — 매핑이 한 곳에 있는 이유가 그것이다. ⚠ geometry_selfcheck가 확인하는 것은 '프레임 전체 박스가 NDC 전체로 간다'는 **자기 일관성까지**이고 FLIP_Y의 참·거짓이 아니다 — 그건 눈으로만 확인된다. 🔴 **(2) 가로 방향도 같은 처지다** — 좌우 반전이 있었다면 이 매핑은 그대로 틀리고 왕복 검사는 통과한다. 🔴 **(3) letterbox align=center는 여전히 미확정이다**(INTERFACES.md §A-2가 ☐). 회전이 붙었으므로 **90/270°에서는 어긋남이 가로 방향으로 나타난다** — §A-2의 '상하 균등 분배'는 회전 없이 letterbox 할 때의 축이고, 90/270°로 돌리면 720p가 세로로 길어져 패딩이 좌우로 간다. 실제 축은 이 런의 detect.run.letterbox의 pad_left/pad_top 중 0이 아닌 쪽이 말한다. ⚠ **(4) 두 use case가 같은 시야를 본다고 가정한다** — 분석 치수와 처리 치수의 종횡비가 다르면 crop이 다르다는 뜻인데 그 crop을 알려 주는 런타임 값이 없다. 두 치수는 이 블록에 나란히 실리므로 어긋나면 거기서 보인다",
+        "flip_y": false,
+        "formula": "입력 = ① 센서 좌표(DetectPostprocessor.Box — letterbox 역변환 + 회전 역변환까지 끝난 값, 규약 §5-2). scaleX = process_w / analysis_w ; px = x_sensor * scaleX ; ndc_x = 2 * px / process_w - 1. scaleY = process_h / analysis_h ; py = y_sensor * scaleY ; ndc_y = 2 * py / process_h - 1(FLIP_Y=true면 부호를 뒤집는다). 🔴 **analysis_w/h는 분석 use case가 실제로 준 ImageProxy의 치수이고 Preview 해상도가 아니다** — 두 use case는 같은 ResolutionSelector를 써도 같은 값을 받는다는 보장이 없다. 대수적으로는 process 치수가 약분되지만(ndc_x = 2*x/analysis_w - 1) 두 런타임 값을 다 쓰는 형태로 적어 둔다",
+        "process_aspect": 1.7777777777777777,
+        "process_resolution": "1280x720",
+        "selfcheck": "detect.geometry(DetectGeometryCheck)의 **검사 5**가 이 매핑을 태운다 — 센서 프레임 전체 (0,0,srcW,srcH)가 NDC 전체 (-1,-1,1,1)로 가는지. 🔴 그 검사는 **자기 일관성까지**이고 flip_y의 참·거짓도, 호출부가 잘못된 처리 해상도를 넘기는 실수도 잡지 못한다(process 치수가 대수적으로 약분된다) — 후자를 관측하는 것은 이 블록의 analysis_resolution/process_resolution/aspect_matches뿐이다"
+      },
+      "csv_columns": {
+        "overlay_boxes": "🔴 **그 프레임에 실제로 그린 박스 수. `0`은 정상값이고 `-1`만 '기록 안 함'이다.** session.json의 overlay.box_count와 **다른 값이다**(그쪽은 선언된 조건이고 이 arm에서는 null이다)",
+        "stage_h_ms": "④ 좌표 평활·hold의 구간 길이. 🔴 **CPU 벽시계**(GL 스레드)이므로 gpu_sum_ms에도 stage_d_total_ms에도 들어가지 않는다. ms **소수 6자리**로 쓴다 — 소수 1자리로 쓰면 싼 샘플이 0.0이 되어 하한 가드(> 0)가 그 샘플만 골라 폐기한다",
+        "t_overlay_source_ns": "그 프레임이 쓴 탐지 결과의 게시 시각(CLOCK_BOOTTIME). 🔴 **박스가 0개(빈 결과)여도 적는다** — `-1`은 **첫 추론 완료 전**만이다. 신선도(t_render_start_ns − 이 값)는 **PC가 계산한다** — 유도값을 앱이 저장하지 않는다"
+      },
+      "dropped_over_cap": {
+        "note": "상한(smoothing.box_cap)을 넘어 **세고 버린** 박스 수다 — 조용히 버리지 않는다. `publish`는 탐지 워커가 게시할 때, `smoothing`은 GL 스레드가 hold 중인 트랙까지 합쳐 셀 때 넘친 수다(후자는 **프레임마다** 세므로 같은 초과가 여러 번 계상될 수 있다 — 두 수를 더하지 말 것). 🔴 0이 아니면 그 런의 화면에 실제로 있던 위험물 일부가 그려지지 않았다는 뜻이고, 그때는 상한을 올려 다시 재야 한다(임의 측정값이다)",
+        "publish": 0,
+        "smoothing": 0
+      },
+      "fill": "비채움 — 박스 **내부**(스트로크보다 더 안쪽)는 한 픽셀도 건드리지 않는다. ⚠ 다만 이 문장은 **내부에 대한 것뿐이다**: 스트로크 자체는 경계선 위에 가운데 맞춤이라 **경계 밖 3.0px(720p 기준)을 덮는다** — 스펙 문구('경계선 밖은 일절 안 건드림')와 어긋나는 지점이고, 전문은 upstream_deviation에 있다",
+      "geometry": "얇은 사각형 스트로크 quad(GL_TRIANGLES). 박스당 정점 48개(띠 4개 × 삼각형 2개 × 3정점 × 스트로크 2벌)이고 드로우콜은 프레임당 **1회**다. 🔴 전체화면 프래그먼트 SDF로 그리지 않았다 — 그러면 픽셀 셰이더가 화면 전체를 돌아 오버레이 비용이 화면 전체 비용으로 부풀고 I칸이 **다른 물리량**이 된다(FRAME_BUDGET.md §5가 I칸을 GL 드로우콜 계측으로 못 박았다)",
+      "gpu_column": "gpu_frame_ms",
+      "gpu_column_note": "🔴 **이 arm에는 stage_i_ms가 없다.** 계측 방식만 다른 arm이라(렌더는 짝과 글자 그대로 같다) 열이 gpu_frame_ms 하나뿐이고, 그 값은 **프레임 전체의 GPU 시간**이지 I칸이 아니다 — 버짓 I칸으로 옮겨 적지 말 것. ④ 오버레이 패스만의 비용은 짝 arm detect_cpu_chain_highlight의 stage_i_ms가 말한다. 이 블록의 나머지 키(박스 개수·기하·색·스펙 이탈)는 **렌더가 같으므로 그대로 성립한다**",
+      "gpu_status": "준비 완료 — ④ 오버레이 **1패스**(얇은 사각형 스트로크 quad, glDrawArrays GL_TRIANGLES 1회). 이중 스트로크(검정 밑선 + 대비색 본선) · 비채움. 두께는 **처리 해상도의 짧은 변에서 계산**한다 (720p 기준 4.0px). 정점 버퍼는 최대 32개분을 **컨텍스트당 한 번** 잡고 이후 in-place로 재기록한다(프레임당 할당 0). 텍스처를 읽지 않으므로 셰이더는 GLSL ES 1.00이다. ⚠ **이 문장은 GL 자원의 상태이고 박스의 출처를 말하지 않는다** — 출처(정적 더미인가 ③ 탐지 결과인가)는 arm이 정하며 overlay.box_source가 arm별로 말한다",
+      "how_to_compare": "🔴 **이 arm의 열은 gpu_frame_ms 하나뿐이다** — ④ 오버레이 패스만의 비용은 이 arm에서 나오지 않는다(짝 arm detect_cpu_chain_highlight의 stage_i_ms가 그 질문에 답한다). 이 arm이 답하는 질문은 **둘**이다: (1) 짝 arm detect_cpu_chain_highlight의 gpu_sum이 **프레임 전체를 얼마나 부풀려 세는가** — 같은 세션·같은 빌드의 두 값 차가 곧 패스별 계측의 중복 계상량이다. (2) **detect_cpu_chain_1q와의 차가 ④ 오버레이의 I 하한**이다 — 둘 다 프레임 단일 query여야 뜻이 있고, 그 arm이 이 arm에서 ④만 뺀 렌더다. ⚠ **패스별 분해는 이 arm에서 낼 수 없다** — 어느 패스가 비싼지는 짝 arm의 열이 말하고, 그 열들이 얼마나 부풀어 있는지는 이 arm이 말한다. 둘 다 필요하다. 🔴 **H는 이 차분의 대상이 아니다** — stage_h_ms는 CPU 벽시계이고 모든 GPU query 밖에서 닫히므로(smoothing.scope) 이 arm도 그 열을 **직접** 싣는다. 전문은 bounds_note다",
+      "no_blink_reason": "🔴 **깜빡임 금지 — 안전 이슈다.** 대상 사용자가 광과민이므로 상류가 '항상 정적 윤곽'으로 못 박았다(RESEARCH_20260803_UPSTREAM.md §5). 그래서 이 오버레이는 난수를 쓰지 않고 박스가 프레임마다 **완전히 같다**(재현성도 그 덕에 유지된다)",
+      "no_red_reason": "🔴 **상류 명세: 빨강 금지.** 빨강은 휘도가 낮아 야간 배경에 묻히고 적록색약에서 무너진다 (RESEARCH_20260803_UPSTREAM.md §5). 🔴 **그런데 이 런의 어휘색은 그 금지를 지키지 않는다** — `person`이 사용자 지시로 빨강이 됐다(person_color_deviation에 이탈 사유와 위험 두 가지가 있다). 위 금지는 **중립색(unknown=흰색) 후보에 대해서는 여전히 유효하다**",
+      "not_a_product_decision": "🔴 **이 arm은 ②③④를 한 프레임에서 돌려 보기 위한 측정용 추가이며 제품 구성 확정이 아니다.** 팀 결정 4건이 아직 미결이다: (1) 융합 채택 여부(drago_clahe_fused는 알고리즘 변경이라 팀장 판단이다 — fused_deviation), (2) bf 포함 여부, (3) INTERFACES.md §B-4의 시간축(ts)이 ☐, (4) 탐지 주기 N이 ☐(FRAME_BUDGET.md §7 질문 3). 그러므로 이 arm은 **상류 잠정 1위(D1A1+bf+ts)와 같은 구성이 아니다** — ② 자리는 D1A1까지이고 bf도 ts도 없다. 이 런의 숫자를 '제품 구성의 프레임타임'으로 옮겨 적지 말 것",
+      "person_color_deviation": "🔴 **상류 명세 이탈 — 사용자가 재확인해 결정한 지시다.** `person`의 색을 시안 (0, 1, 1)에서 **빨강 (1, 0, 0)**으로 바꿨다. 상류 명세 원문(`scripts/emphasize.py` · RESEARCH_20260803_UPSTREAM.md §5)은 `person`=시안이고 **'🔴 빨강 금지: 휘도가 낮아 야간 배경에 묻히고 적록색약에서 무너진다'**였다. 🔴 **이 이탈이 지는 위험 두 가지를 그대로 적는다.** (a) `person`은 가장 흔한 위험물인데 야간 배경에서 **가장 안 보이는 색**이 된다 — 빨강의 상대 휘도는 0.2126이고 시안은 0.7874다(약 3.7배 차이). (b) 빨강 + 초록(bollard)은 **정확히 적록색약 조합**이라 사람과 볼라드가 구분되지 않는다. 🔴 **이 앱의 대상 사용자가 저시력자다** — 그것이 이 위험을 일반적인 UI 취향 문제와 다르게 만든다. ⚠ 색은 픽셀 비용에 영향이 없으므로(어느 색이든 같은 면적을 채운다) 이 변경은 타이밍 지표를 바꾸지 않는다. 안전 지표는 이 문장이 유일한 기록이다",
+      "process_resolution": "1280x720",
+      "publish": {
+        "allocation_note": "🔴 **게시당 객체를 만든다**(스냅샷 1개 + 배열 3개 + 박스 복사 목록). 게시는 실측 약 3.4Hz이고 그 자리는 **E·F·G 구간 밖**이다 — DetectPipeline.infer에서 gNs가 확정되고 detect.csv 행 기록이 끝난 뒤, parity 덤프와 **같은 자리**다. 그래서 이 할당이 stage_e/f/g_ms에 섞이지 않고, 승격된 F 실측과의 비교도 끊기지 않는다(그 구간의 코드는 바이트 단위로 그대로다). 🔴 **GL 스레드에는 프레임당 할당이 없다**: latest()는 참조 읽기 하나이고, 평활 트랙·그릴 목록·정점 버퍼는 전부 상한 크기로 **한 번** 잡아 두고 in-place로 재기록한다. GL 스레드에서 GC가 돌면 그것이 곧 프레임타임 꼬리다",
+        "clock": "t_overlay_source_ns = SystemClock.elapsedRealtimeNanos()(CLOCK_BOOTTIME)이며 frames.csv의 t_recv_ns·t_render_start_ns와 **같은 시계**다. 시각은 슬롯 교체 **직전에** 찍고, GL 스레드는 t_render_start_ns를 찍기 **전에** 읽는다 — 그래서 어떤 프레임도 자기 렌더 시작보다 미래에 게시된 결과를 쓰지 않는다",
+        "run_facts": {
+          "boxes_published": 0,
+          "boxes_published_note": "🔴 **게시된 박스의 런 총계이고 그린 박스 수가 아니다** — hold 때문에 한 게시가 여러 표시 프레임에 걸쳐 그려진다. 프레임당 개수는 frames.csv의 overlay_boxes다",
+          "enabled": true,
+          "publish_count": 2225
+        },
+        "site": "DetectPipeline.infer — gNs 확정 + detect.csv 행 기록 뒤 (parity와 같은 자리)"
+      },
+      "rejected_inverted": 0,
+      "rejected_inverted_note": "🔴 **역전 박스(x2<x1 / y2<y1)를 세고 그리지 않은 수다**(규약 §5-3). 후처리는 거르지 않고 세기만 하므로 그 박스가 게시자까지 온다 — 그리면 면적이 0이거나 음수인 사각형이 화면 가장자리에 얇은 선으로 남고 그건 사용자에게 보이는 쓰레기다. 🔴 **detect.run.inverted_boxes와 교차 대조할 것** — 그 값은 후처리가 센 런 총계이고 이 값은 게시자가 거른 런 총계다. 두 수가 다르면 어느 단계가 역전을 만들었는지가 갈린다(게시자는 게시된 추론만 보고, 후처리는 모든 추론을 본다 — 게시자가 꺼져 있던 구간이 없으면 두 수는 같아야 한다). ⚠ 클램프로 막지 않는다(클램프가 바로 그 면적 0 박스를 만들었다)",
+      "shape": "이중 스트로크 (검정 밑선 + 대비색 본선)",
+      "short_side_px": 720,
+      "smoothing": {
+        "box_cap": 32,
+        "cpu_column": "stage_h_ms",
+        "discard_condition": "match_iou 이상인 측정이 hold_frames 프레임 **연속으로** 없으면 폐기한다. 🔴 **TTL은 새 게시가 왔을 때만 다시 찬다** — 같은 스냅샷을 다시 보는 프레임에서는 깎인다(게시 슬롯은 새 게시가 올 때까지 직전 스냅샷을 보존하므로, 프레임마다 재충전하면 탐지가 멈춰도 낡은 박스가 무한히 그려진다). 게시 주기가 실측 ≈9프레임이고 hold가 18프레임이므로 **탐지가 정상인 동안은 만료되지 않고**, 사라지는 것은 새 게시에서 그 박스가 빠졌거나 게시가 끊긴 경우다(no_flicker_design 참고). 🔴 연결은 **같은 클래스끼리만** 한다(사람과 계단이 겹쳤을 때 색이 서로 뒤바뀌는 것을 막는다)",
+        "hold_cadence_note": "🔴 **hold를 프레임 수로 적었으므로 '몇 번의 탐지를 버티는가'는 이 값만으로 말할 수 없다.** 탐지 주기 N이 미정이라(FRAME_BUDGET.md §7 질문 3) 앱은 idle-gated로 돌고, 실제 주기는 하네스가 detect_cadence_ms 분포로 낸다 — **선언된 N이 아니라 관측값이다.** 그러므로 hold_frames를 인용할 때 그 런의 cadence 분포를 함께 옮긴다. 🔴 **H의 1회 비용을 프레임당으로 환산하지 말 것** — H는 탐지 주기마다가 아니라 **표시 프레임마다** 돈다(그래서 stage_h_ms가 프레임당 1행이다). 환산하면 탐지 주기에 딸린 값처럼 보이는데 그렇지 않다",
+        "hold_frames": 18,
+        "iir_alpha": 0.3499999940395355,
+        "latency_note": "⚠ **H는 render_latency_ms를 키운다** — GL 스레드에서 도는 CPU 구간이고 onDrawFrame 안에 있으므로 그렇다. **예상된 결과이며 결함이 아니다.** 그 증분은 짝 arm(detect_cpu / detect_cpu_1q)의 같은 열과 나란히 놓아야 보이고, 오버레이 GPU 패스(stage_i_ms)와 **다른 물리량**이다",
+        "match_iou": 0.30000001192092896,
+        "no_flicker_design": "설계에서 막은 것 넷: (1) **점멸·펄스·알파 변조가 코드에 없다** — 광과민 사용자에게 안전 이슈로 규정된 항목이라(no_blink_reason) 밝기·알파를 시간에 따라 바꾸는 경로를 두지 않았다. 블렌딩 자체를 켜지 않는다. (2) **hold 안에서는 끊지 않는다** — 갱신이 안 온 프레임에 박스를 0으로 떨어뜨리지 않고 마지막 좌표를 계속 그린다. 사라졌다 나타나는 구간이 곧 깜빡임이기 때문이다. (3) **새 게시가 그 박스를 다시 담으면 TTL이 다시 찬다** — 게시 주기가 실측 약 3.4Hz(30FPS에서 ≈9프레임)이고 hold가 18프레임이므로, **탐지가 정상인 동안은 만료 전에 다음 게시가 온다.** 그래서 탐지 주기와 표시 주기가 다르다는 사실 때문에 깜빡이는 일은 생기지 않는다. 🔴 **TTL은 새 게시가 왔을 때만 다시 찬다 — 같은 스냅샷을 다시 보는 프레임에서는 깎인다.** 게시 슬롯은 새 게시가 올 때까지 직전 스냅샷을 보존하므로(정상 동작), 프레임마다 재충전하면 **탐지 워커가 멈추거나 매 프레임 실패해도 낡은 좌표의 박스가 무한히 그려진다.** 야간 보행 보조에서 낡은 위험물 위치를 현재인 것처럼 계속 보여 주는 것이 더 위험하다. (4) **크기·위치는 IIR로만 움직인다** — 새 좌표로 순간 이동하지 않고 iir_alpha로 수렴한다(태어나는 프레임만 예외이며, 거기서 0에서 자라게 하면 그게 곧 튐이다). IIR은 **매 프레임** 돌아 한 게시를 쓰는 ≈9프레임 동안 계속 수렴한다 — TTL 재충전과는 별개다. ⚠ **hold가 만료돼 박스가 사라지는 동작은 남아 있고 그것이 정상이다.** 두 경우에 일어난다: (a) 새 게시가 왔는데 그 박스가 빠졌다(장면에서 실제로 사라졌을 수 있다), (b) **게시가 아예 끊겼다**(탐지가 멈췄거나 매 프레임 실패했다). 🔴 **둘 다 깜빡임이 아니다** — 빠른 on/off가 아니라 탐지가 끊긴 사실의 **정직한 표시**다. 하네스가 그것을 `drew_then_stopped`로 지목하면 **그 지목이 맞는 것이고**, 원인이 (a)인지 (b)인지는 그 지표가 가르지 못한다(detect.run의 errors·inferences_run과 함께 읽어야 갈린다). 그 사라짐은 로그에 그대로 남는다(overlay_boxes의 >0→0 전이·뒷자락). ⚠ 그리고 박스가 크게 튀면 이어지지 않고 **새 박스가 태어난다**(match_iou 미달) — 그때 이전 박스는 hold 동안 함께 그려지므로 잠깐 둘로 보인다. **그 실패 방향을 일부러 택했다**: 잠깐 하나 더 그리는 것이 깜빡이는 것보다 안전하다",
+        "pipeline_stage_token": "stage4_smoothing",
+        "provenance": "🔴 **제안값이 아니다 — H칸의 비용 봉투를 재기 위한 임의값이다.** hold_frames=18(표시 프레임) / match_iou=0.3 / iir_alpha=0.35 / box_cap=32. 🔴 **INTERFACES.md에 이 항목 자체가 없다** — 계약은 A(모델)·B(①②)·C(녹화) 셋뿐이고 ④ 계약도 hold·평활·트래킹 항목도 없다. 그러므로 '계약의 ☐'가 아니라 **항목 부재**이며, 확정해 줄 칸이 아직 존재하지 않는다. GAMMA_MEASUREMENT_VALUE와 같은 취급이다: 팀이 ④ 항목을 만들면 그때 교체한다. ⚠ 값 자체가 H의 비용에 미치는 영향은 거의 없다(연결·평활의 일 양은 박스 수가 정한다) — 그러나 **화면에 보이는 결과는 크게 달라진다.** 그래서 이 값들은 성능 인용이 아니라 **화면 판단**의 조건이며, 값을 옮길 때 이 문장을 함께 옮긴다",
+        "run_facts": {
+          "dropped_over_cap": 0,
+          "map_failed_frames": 0,
+          "note": "🔴 **관측값이지 판정이 아니다.** tracks_expired가 0이 아닌 것은 결함일 수도 있고 '장면에서 위험물이 실제로 사라졌다'일 수도 있는데, 가르려면 정답 라벨이 필요하다(하네스의 safety_regression이 evaluated=false인 이유와 같다). 🔴 map_failed_frames가 0이 아니면 그 프레임들은 좌표를 만들 치수가 없어(FBO가 아직 없거나 분석 치수가 0) **새 게시를 소비하지 못했다** — 값을 지어내지 않고 다음 프레임에 다시 시도한다. 그 프레임에도 hold 중인 트랙은 그대로 그려지므로 overlay_boxes가 반드시 0인 것은 아니다(런 앞자락에서는 트랙이 없어 0이다). ⚠ 이 수가 크면 그 런의 앞자락에서 게시가 여러 번 버려졌다는 뜻이고, t_overlay_source_ns가 그만큼 낡은 값에 머문다",
+          "tracks_created": 0,
+          "tracks_expired": 0
+        },
+        "scope": "🔴 **CPU 벽시계**(SystemClock.elapsedRealtimeNanos, GL 스레드)이며 GPU query가 아니다 — gpu_sum_ms에도 stage_d_total_ms에도 들어가지 않는다. 구간은 **GPU 패스를 열기 전에 닫힌다**(gpuTimer.beginFrame보다 앞이다). 안에 있는 것: (새 게시일 때) 스냅샷의 박스를 NDC로 매핑 → 이전 프레임 목록과 IoU 연결 → 좌표 IIR 평활(**매 프레임**) → hold/TTL 갱신 → **그릴 목록을 정점 버퍼에 in-place 재기록**까지다. 정점 재기록을 일부러 포함했다 — 그 CPU 비용이 GPU query 안에 있으면 (GPU 시간을 재는 query라) **어디에도 계상되지 않는다.** 밖에 있는 것: `latest()` 참조 읽기 하나(t_render_start_ns를 찍기 **전에** 읽는다 — 그래야 어떤 프레임도 자기 렌더 시작보다 미래에 게시된 결과를 쓰지 않는다)와 오버레이 GPU 패스(그쪽은 stage_i_ms다)",
+        "stage": "④ 좌표 평활·hold (버짓 H칸)"
+      },
+      "spec_provenance": "상류(모델링 담당 kty2001/KDT_Hackathon) scripts/emphasize.py로 **확정된 ④ 명세**다 — 이중 스트로크(검정 밑선 + 대비색 본선) · 비채움 · stairs=노랑 / person=시안 · 빨강 금지 · 깜빡임 금지 · 두께는 짧은 변 비례로 720p 기준 4.0px. 출처는 docs/research/RESEARCH_20260803_UPSTREAM.md §5이고 FRAME_BUDGET.md §3 주5에 같은 내용이 있다. 즉 I칸은 '임의 더미의 비용 봉투'가 아니라 **실제 사양으로 잰 값**이다. ⚠ 다만 밑선이 본선보다 얼마나 넓은지는 상류에 기록이 없어 우리가 정했다(stroke_formula의 underline_margin_px_at_720p)",
+      "stage": "④ 선택적 강조 (버짓 I칸)",
+      "stroke_formula": "scale = min(처리폭, 처리높이) / 720.0 ; 본선 = 4.0 * scale ; 검정 밑선 = (4.0 + 2 * 1.0) * scale. 두 띠는 경계선 위에 **가운데를 맞춘다**(cv2.rectangle(thickness=t)와 같은 배치라 안쪽·바깥쪽으로 t/2씩 채운다). 픽셀 값을 하드코딩하지 않고 **처리 해상도에서 계산**하므로 640×360으로 내려도 비례가 유지된다",
+      "stroke_px_at_720p": 4,
+      "tile_reload_note": "⚠ 오버레이 패스(패스8)는 **glClear를 부르지 않는다** — ② 체인의 출력 위에 얹기 때문이다(지우면 ② 결과가 사라진다). 그래서 타일 GPU가 컬러 어태치먼트를 다시 load하고 **gpu_frame_ms(프레임 전체를 감싼 query 하나뿐이라 오버레이 패스만 떼어낼 수 없다)에는 그 비용이 섞여 있다.** 오버레이 패스의 실제 비용이며 빼낼 수단이 없다. 🔴 그리고 **패스7(clahe apply)과 패스8의 타깃이 같은 FBO_A**라 드라이버가 두 렌더패스를 병합할 수 있다 — 다만 **이 arm에서는 두 열의 경계 문제가 생기지 않는다.** 귀속을 가를 패스별 열이 애초에 없기 때문이다. 그 대신 어느 패스가 비쌌는지를 이 arm에서 낼 수 없고(gpu_column_note · how_to_compare), 경계가 흐려지는 문제는 짝 arm의 stage_d_apply2_ms ↔ stage_i_ms에서 본다. 일반 주의사항은 gpu_timer.attribution_note와 같다. 패스 사이에 바인드·뷰포트를 다시 명시해 쪼갤 기회를 주는 것까지가 우리가 할 수 있는 일이다",
+      "underline_margin_px_at_720p": 1,
+      "upstream_deviation": "🔴 **(1) 스펙 문구와 이 구현의 스트로크 기하가 다르다.** 스펙은 '비채움 — 경계선 밖은 일절 안 건드림'인데(FRAME_BUDGET.md:258 · docs/research/RESEARCH_20260803_UPSTREAM.md:114 §5 표의 '채움' 행) 이 구현은 두 띠를 경계선 위에 **가운데 맞춤**해서 경계 **밖으로 나간다.** 720p 기준 실제 값(정점의 NDC 반폭 = 두께/처리폭이고 NDC 1 = 처리폭/2 px이므로 **한쪽 = 두께/2 px**이다): 본선은 밖으로 4.0 / 2 = 2.0px, 검정 밑선은 (4.0 + 2 * 1.0) / 2 = 3.0px — 즉 **경계 밖 3.0px을 덮는다**(가장 바깥 1.0px이 검정, 그 안 2.0px이 대비색). 안쪽도 대칭으로 같은 폭이며, **그보다 더 안쪽(박스 내부)은 한 픽셀도 건드리지 않는다**(overlay.fill). **(2) 왜 고치지 않았는가**: `cv2.rectangle(img, p1, p2, color, thickness=t)`가 스트로크를 경계선 **가운데**에 놓고(안쪽 t/2 · 바깥 t/2), 상류 scripts/emphasize.py가 쓰는 함수가 바로 그것이다. 그러므로 **이 구현이 오히려 상류 동작과 일치할 가능성이 높고**, 스펙 문구가 '비채움'(= 박스 내부를 칠하지 않는다)을 느슨하게 표현한 것일 수 있다. 문구에 맞춰 기하를 안쪽 맞춤으로 고치면 상류와 어긋날 위험이 오히려 커진다. 🔴 **(3) 어느 쪽이 맞는지 확인할 수 없다.** 상류 원문에 `thickness` 인자와 좌표 규약(경계선을 어느 쪽에 포함하는지)이 기록돼 있지 않고, **INTERFACES.md §B-6 골든 이미지가 없어 픽셀 단위 대조가 불가능하다.** 그러므로 (2)는 **추론이지 상류 코드 인용이 아니다** — BF_DEVIATION이 cv2.bilateralFilter의 내부 정의에 대해 한 것과 같은 처지다. **(4) 어디서 걸리는가**: 골든 이미지가 생겨 **픽셀 단위 대조를 하는 날 이 항목을 먼저 의심할 것.** 그리고 경계 밖으로 나가므로 **박스가 프레임 가장자리에 붙으면 밑선이 잘린다**(뷰포트 밖은 조용히 버려진다). ⚠ 사실 확인: **이 arm의 배치는 그 경우를 만들지 않는다** — 셀 격자의 가장자리 여백이 최소 CELL_INSET/CELL_COLS = 폭의 1.5%(720p에서 x 19.2px) · CELL_INSET/CELL_ROWS = 높이의 3%(y 21.6px)라 3.0px보다 훨씬 크다. 그러므로 **정적 더미 arm 셋의 stage_i_ms는 잘림의 영향을 받지 않는다.** 🔴 **그러나 ③ 결과 arm(detect_cpu_highlight / _1q)에서는 그 조건이 실제로 생긴다**(2026-08-07): 탐지 박스는 프레임 경계에 붙을 수 있고 경계 밖으로 나갈 수도 있다(후처리가 클램프하지 않는다). 그때 GL 뷰포트가 밖을 자르므로 **가장자리에서 검정 밑선이 한쪽만 잘려 보인다** — 이것은 이 기하 선택의 알려진 결과이지 결함이 아니며, 클램프로 막지 않는다(클램프는 면적 0 박스를 가장자리에 남겨 더 나쁜 쓰레기를 만든다). **(5) 비용에 대한 영향**: 드로우콜(프레임당 1회)과 정점 수(박스당 48개)는 이 선택과 무관하게 같다. 다만 **채우는 프래그먼트 수는 완전히 같지 않다** — 두께 t 띠 하나의 면적이 가운데 맞춤이면 2t(W+H)이고 안쪽 맞춤이면 2t(W+H) - 4t²이라 **띠마다 4t²만큼 더 채운다**(720p에서 본선 t=4.0 → 64px, 밑선 t=6.0 → 144px, 합 박스당 208px). 이 격자의 720p 박스가 121.6x136.8px이고 박스당 총 5168px을 채우므로 **약 4%**다. 작지만 **0이 아니다** — '그린 픽셀 수가 안 바뀐다'로 적지 말 것",
+      "upstream_reference": "scripts/emphasize.py"
+    },
+    "pipeline_stages": [
+      "blit_2pass",
+      "stage2_drago",
+      "stage2_clahe",
+      "detect",
+      "stage4_highlight",
+      "stage4_smoothing"
+    ],
+    "render": {
+      "arm": "detect_cpu_chain_highlight_1q",
+      "display_path": "2-C: CameraX Preview -> 우리 SurfaceTexture(OES) -> GL",
+      "draw_call": "그리기 패스는 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4), 통계 패스 4개(3단 × 2벌)는 glDispatchCompute. 패스8(④ 오버레이)은 glDrawArrays(GL_TRIANGLES) **최대 1회**다 — 정점 수가 **프레임마다 다르다**(그 프레임에 그린 박스 수 × 박스당 48정점, 상한 1536). 🔴 **박스가 0개인 프레임에서는 드로우콜을 내지 않는다**(0은 정상값이다) — 그때 패스8은 바인드·뷰포트뿐이다. 개수는 frames.csv의 overlay_boxes",
+      "egl_context_client_version": 3,
+      "gl_surface_size": "1080x2340",
+      "note": "표시 방향·화면비 보정을 하지 않는다. 센서 방향 그대로 GL 서피스 전체에 늘려 그리므로 세로 화면에서 프리뷰가 누워 보인다 — 픽셀 비용에는 영향이 없고 이번 측정 범위 밖이다",
+      "pass_boundary_note": "패스마다 glBindFramebuffer + glClear를 명시한다. 타일 기반 GPU(Mali)에서 드라이버가 렌더패스를 병합하면 timer query 귀속이 흐려진다 (gpu_timer.attribution_note 참고)",
+      "pass_column_mapping_note": "🔴 **이 arm에서 패스와 GPU 열은 1:1이 아니다.** 렌더 패스 9개 전부를 query **하나**로 감쌌고 그 값이 gpu_frame_ms 한 열로 나간다 — 그래서 위 passes[]의 gpu_column은 전부 null이고 covered_by가 대신 그 열을 가리킨다. 어느 패스가 비싼지는 이 런에서 나오지 않는다(짝 arm detect_cpu_chain_highlight의 열이 그 질문에 답한다). 🔴 **gpu_frame_ms는 gpu_sum_ms와 다른 물리량이다.** 프레임 하나를 query 하나로 감싼 값이고, 패스별 열의 합이 아니다 — **둘을 더하지 말 것**(더하면 같은 프레임을 두 번 세는 것이다). 같은 이유로 D 계열도 아니고(stage_d_total_ms에 들어가지 않는다) **버짓 칸도 없다** — 단계 비용이 아니라 프레임 전체 GPU 시간이므로 칸 라벨을 붙이면 그 숫자가 D칸으로 인용된다. 한 런에 이 열과 패스별 열이 **함께 있을 수 없다**(GL_TIME_ELAPSED가 중첩되지 않는다) — 그래서 이 arm의 CSV에는 패스별 열이 아예 없다",
+      "passes": [
+        {
+          "covered_by": "gpu_frame_ms",
+          "gpu_column": null,
+          "index": 1,
+          "instrumented": true,
+          "name": "oes_to_fbo_a",
+          "shader": "OES 패스스루 + uTexMatrix",
+          "target": "FBO_A (처리 해상도)"
+        },
+        {
+          "covered_by": "gpu_frame_ms",
+          "gpu_column": null,
+          "index": 2,
+          "instrumented": true,
+          "name": "stage2_drago_analyze",
+          "shader": "전역 통계 리덕션 — 로그평균 휘도(Σlog)와 최대 휘도. 워크그룹 공유메모리 리덕션 + SSBO atomic으로 dispatch 1회",
+          "target": "통계 SSBO (glDispatchCompute)"
+        },
+        {
+          "covered_by": "gpu_frame_ms",
+          "gpu_column": null,
+          "index": 3,
+          "instrumented": true,
+          "name": "stage2_drago_build",
+          "shader": "통계 → 톤커브 계수(logAvg / Lmax / biasPow). CPU로 읽어오면 GPU 동기화가 걸리므로 GPU에서 계산한다",
+          "target": "통계 SSBO (glDispatchCompute, 스레드 1개)"
+        },
+        {
+          "covered_by": "gpu_frame_ms",
+          "gpu_column": null,
+          "index": 4,
+          "instrumented": true,
+          "name": "stage2_drago_apply",
+          "shader": "Drago 톤맵 적용 + 감마 (uSrcGamma / uOutGamma / uSaturation)",
+          "target": "FBO_B (처리 해상도)"
+        },
+        {
+          "covered_by": "gpu_frame_ms",
+          "gpu_column": null,
+          "index": 5,
+          "instrumented": true,
+          "name": "stage2_clahe_analyze",
+          "shader": "타일별 256빈 히스토그램(LAB L). 입력은 **drago가 적용된 FBO_B**이지 카메라 원본이 아니다. binding=1 (drago 통계와 겹치지 않게 민 값)",
+          "target": "히스토그램 SSBO (glDispatchCompute)"
+        },
+        {
+          "covered_by": "gpu_frame_ms",
+          "gpu_column": null,
+          "index": 6,
+          "instrumented": true,
+          "name": "stage2_clahe_build",
+          "shader": "클립 + 초과분 재분배 + CDF → 타일별 256엔트리 LUT (uClipLimit). binding=2",
+          "target": "LUT SSBO (glDispatchCompute, 타일당 워크그룹 1개)"
+        },
+        {
+          "covered_by": "gpu_frame_ms",
+          "gpu_column": null,
+          "index": 7,
+          "instrumented": true,
+          "name": "stage2_clahe_apply",
+          "shader": "타일 간 이중선형 보간 + 감마 (uTiles / uClaheGamma). LAB의 L만 바꾸고 a,b는 그대로 둔다",
+          "target": "FBO_A (처리 해상도. 핑퐁으로 되돌아온다)"
+        },
+        {
+          "covered_by": "gpu_frame_ms",
+          "gpu_column": null,
+          "index": 8,
+          "instrumented": true,
+          "name": "stage4_highlight",
+          "shader": "④ 이중 스트로크 박스 **프레임마다 다른 개수**(frames.csv의 overlay_boxes)(검정 밑선 + 대비색 본선, 비채움). GL_TRIANGLES **드로우콜 최대 1회**이며 박스가 0개인 프레임에서는 드로우콜을 내지 않는다. 두께는 처리 해상도의 짧은 변에서 계산한다(720p 기준 4.0px). 🔴 **타깃이 FBO_A이고 glClear를 부르지 않는다** — 패스7(clahe apply)이 FBO_A에 썼고 패스9(present)가 그것을 읽으므로, FBO_B에 그리면 박스가 화면에 뜨지 않는데 overlay_boxes·stage_i_ms는 정상값이 나온다. clear하면 이 프레임의 ② 체인 결과가 통째로 사라진다. 계측 한계는 tile_reload_note. 🔴 박스는 **③ 탐지 결과**를 H칸(좌표 평활·hold)에 태운 것이며 정적 더미가 아니다 — 평활 정책과 좌표 사슬은 session.json의 overlay 블록",
+          "target": "FBO_A (처리 해상도. **clear하지 않고 ② 결과 위에 덧그린다**)"
+        },
+        {
+          "covered_by": "gpu_frame_ms",
+          "gpu_column": null,
+          "index": 9,
+          "instrumented": true,
+          "name": "present",
+          "shader": "단순 복사",
+          "target": "default framebuffer (surface 크기). **FBO_A**를 읽는다"
+        }
+      ],
+      "processing": {
+        "frames_fell_back_to_passthrough": 0,
+        "offscreen_status": "FBO 2장 준비 완료 1280x720 (RGBA8, 처리 해상도 = 협상된 카메라 해상도)",
+        "resolution": "1280x720",
+        "source": "SurfaceRequest.resolution (= camera_actual.resolution). 하드코딩이 아니다",
+        "stage2_status": "준비 완료 — ② 자리가 **6패스**(drago 3단 → clahe 3단 직렬)다. drago: 리덕션 컴퓨트 dispatch 1회 + 계수 컴퓨트 1스레드 + 적용 프래그먼트 1패스(FBO_A→FBO_B). clahe: 타일 히스토그램 dispatch 1회 + LUT dispatch 1회 + 적용 프래그먼트 1패스(FBO_B→FBO_A). SSBO binding: drago stats=0 / clahe hist=1 / clahe lut=2 (셋이 동시에 살아 있다). 중간 표현은 RGBA8 FBO다 — 상류 cv2 파이프라인의 8비트 왕복을 그대로 옮긴 **체인**이며 융합이 아니다. GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS=35(필요 1), GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS=70(필요 3), GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS=512. 통계를 CPU로 읽지 않는다(읽으면 GPU 동기화로 측정이 오염된다) ── ④ 오버레이 자원 상태는 overlay 블록(overlay.gpu_status)에 있다"
+      },
+      "render_mode": "RENDERMODE_WHEN_DIRTY (onFrameAvailable에서 requestRender)",
+      "shader_language": "GLSL ES 1.00 (패스1·패스8 오버레이·패스9) + GLSL ES 3.10 (패스2·3·5·6 컴퓨트, 패스4·7 적용). 적용 패스가 SSBO를 읽어야 해서 310으로 올렸고, ESSL은 한 프로그램 안에서 버전을 섞지 못하므로 그 패스의 정점 셰이더도 310이다. ④ 오버레이는 SSBO도 텍스처도 읽지 않으므로(색이 정점 속성이다) 1.00 그대로이며 정적 오버레이 arm과 **같은 셰이더 문자열**이다"
+    },
+    "render_arm": "detect_cpu_chain_highlight_1q",
+    "render_latency_meaning": "render_latency_ms(t_render_end - t_render_start)는 glDrawArrays가 즉시 반환하므로 **CPU 제출 비용이고 GPU 실행 시간이 아니다.** '렌더가 사실상 무료'로 읽으면 틀린다 — 실제 GPU 비용은 stage_*_ms / gpu_present_ms 열에 따로 있고 그건 **다른 시계(GPU)**다. 반면 output_interval_ms는 swapBuffers가 다음 사이클 앞에서 블록하므로 실제 표시 주기(=프레임타임)가 된다",
+    "schema_version": 7,
+    "source_kind": "camera",
+    "stage2_params": {
+      "algorithm": "drago_clahe_chain",
+      "bounds_note": "🔴 **②③④ 통합 세트에서 I의 상한과 하한은 서로 다른 arm에서 나온다 — 한 arm의 로그만 보고 둘을 다 얻을 수 없다.** **I 상한** = detect_cpu_chain_highlight의 stage_i_ms다. 패스별 계측이라 중복 계상하므로(알려진 이슈 21) 그 값이 상한이다. **I 하한** = detect_cpu_chain_highlight_1q − detect_cpu_chain_1q이며 **둘 다 프레임 단일 query일 때만** 뜻이 있다(GL_TIME_ELAPSED가 중첩되지 않아 패스별 계측과 섞을 수 없다). 🔴 **같은 세션·같은 빌드에서 잰다** — 다른 세션의 값과 빼면 발열·조명·AE 상태의 차이가 중복 계상량으로 둔갑한다. 🔴 **분모가 drago_clahe_chain_1q가 아닌 이유:** 거기엔 탐지 부하가 없다(그 arm은 ORT 세션을 열지 않고 detect.csv도 내지 않는다). 알려진 이슈 36이 그 부류다 — 분모를 잘못 고르면 하한이 0으로 나오고 그 0은 '오버레이가 공짜'가 아니라 **분모가 상한을 통째로 중복 계상했다**는 뜻이었다. 🔴 **H는 하한·상한의 대상이 아니다.** stage_h_ms는 CPU 벽시계 직접 측정이고 모든 GPU query **밖**에서 닫힌다(overlay.smoothing.scope) — gpu_frame_ms 차분에 H는 물리적으로 들어 있지 않으므로 'H의 하한'은 범주 오류다. H는 두 오버레이 arm(detect_cpu_chain_highlight / _1q)이 stage_h_ms 열로 **직접** 낸다. ⚠ 오버레이가 없는 두 arm(detect_cpu_chain / _1q)에는 stage_i_ms도 stage_h_ms도 없다 — 그 arm들의 자리는 **분모**이고 그것이 이 세트에서 그 arm의 뜻 전부다",
+      "color_transform_declared": {
+        "arm": "drago_clahe_chain",
+        "bilateral_taps_note": "bilateral_taps_per_pixel은 색공간 변환이 아니라 **bf의 텍스처 샘플 수**다(원형 이웃 29탭. 같은 표에 둔 이유는 bf 패스의 픽셀당 일을 이 표에서 함께 읽게 하려는 것이다). bf는 LabGlsl을 부르지 않으므로 위 색공간 변환 칸에는 **0을 더한다** — 그래서 base arm과 값이 같다",
+        "bilateral_taps_per_pixel": 0,
+        "drago_out_gamma_encode_per_pixel": 1,
+        "drago_pow_linearize_per_pixel": 2,
+        "drago_tonemap_evals_per_pixel": 1,
+        "fullscreen_passes": 6,
+        "intermediate_rgba8_materializations": 3,
+        "lab_f_forward_per_pixel": 4,
+        "lab_f_inverse_per_pixel": 3,
+        "linear_to_srgb_per_pixel": 1,
+        "passes_total": 8,
+        "provenance": "**셰이더 소스를 읽어 사람이 센 값이며 측정이 아니다.** 🔴 **두 층을 대조하는 방법:** 자동 계수(color_transform_sites)의 **entry_point_tokens**와 어긋나면 **자동 계수가 맞다** — 그쪽은 glShaderSource에 넘긴 문자열 자체를 세고 그 토큰들은 main()에서만 불리므로 셰이더 텍스트와 어긋날 수 없다. ⚠ **inner_tokens와는 대조하지 말 것** — 그쪽은 LabGlsl.FUNCTIONS가 통째로 삽입되면서 **죽은 본문까지 세므로 상한**이다(예: 융합의 srgbToLinear는 자동 계수 2 · 실제 실행 0). 픽셀당 실행 횟수는 **이 블록이 진입점에서 호출 그래프를 따라간 값**이며 그 목적에는 이쪽이 맞다. 단위: per_pixel은 **처리 해상도의 픽셀 하나당 프레임당** 횟수다(마지막 present 패스는 surface 해상도라 픽셀 수가 다르지만 색공간 변환이 없어 여기 기여가 0이다). 체인과 융합의 같은 칸을 나란히 놓으면 '변환 몇 회를 줄였는가'가 바로 읽힌다 — gpu_sum 차분을 그 감소에 귀속시킬 때 쓰는 표다",
+        "srgb_to_linear_per_pixel": 2
+      },
+      "color_transform_sites": {
+        "arm": "drago_clahe_chain",
+        "by_pass": [
+          {
+            "labF": 0,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 0,
+            "pass": "oes_to_fbo_a",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 0
+          },
+          {
+            "labF": 0,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 0,
+            "pass": "stage2_drago_analyze",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 0
+          },
+          {
+            "labF": 0,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 0,
+            "pass": "stage2_drago_build",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 0
+          },
+          {
+            "labF": 0,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 0,
+            "pass": "stage2_drago_apply",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 0
+          },
+          {
+            "labF": 4,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 1,
+            "pass": "stage2_clahe_analyze",
+            "srgbToLabF": 0,
+            "srgbToLabL": 1,
+            "srgbToLinear": 2
+          },
+          {
+            "labF": 0,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 0,
+            "pass": "stage2_clahe_build",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 0
+          },
+          {
+            "labF": 4,
+            "labFToSrgb": 1,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 1,
+            "pass": "stage2_clahe_apply",
+            "srgbToLabF": 1,
+            "srgbToLabL": 0,
+            "srgbToLinear": 2
+          },
+          {
+            "labF": 0,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 0,
+            "pass": "present",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 0
+          }
+        ],
+        "counted_at": "onSurfaceCreated 1회 (hot path 아님)",
+        "entry_point_tokens": [
+          "srgbToLabL",
+          "srgbToLabF",
+          "labFToSrgb",
+          "linearToLabL",
+          "linearToLabF"
+        ],
+        "inner_tokens": [
+          "srgbToLinear",
+          "linearToSrgb",
+          "labF"
+        ],
+        "method": "glShaderSource에 넘긴 String에서 토큰별 정적 호출 지점 수",
+        "note": "세는 대상은 glShaderSource에 실제로 넘기는 셰이더 문자열이며, **정적 호출 지점 수**다(함수 정의 줄은 뺐다). 읽을 때 단서 둘: (a) **실행 횟수가 아니다** — CLAHE analyze는 타일 픽셀 루프 **안에서** 부르므로 실제로는 픽셀당 1회 × 그 타일의 픽셀 수다. 픽셀당·프레임당 환산은 같은 블록의 color_transform_declared에 따로 있다. (b) **중첩을 이중 계상하지 말 것** — srgbToLinear는 srgbToLabL / srgbToLabF **안에서** 불린다. 그래서 srgbToLabF를 1번 부르는 패스에서도 srgbToLinear 계수가 따로 올라간다. 두 값을 더하면 같은 변환을 두 번 세는 것이다. 🔴 (c) **진입점 계수와 내부 헬퍼 계수를 같은 눈으로 읽지 말 것.** entry_point_tokens(srgbToLabL / srgbToLabF / labFToSrgb / linearToLabL / linearToLabF)는 main()에서만 불리므로 **계수가 곧 살아 있는 호출 수**다 — '이 패스가 무엇을 쓰는가'는 여기서 읽는다. 반면 inner_tokens(srgbToLinear / linearToSrgb / labF)는 진입점 **본문 안에서** 불리는데 LabGlsl.FUNCTIONS가 패스에 **통째로 삽입되므로 그 패스가 부르지도 않는 진입점의 본문까지 세어진다** — 즉 **살아 있는 호출 수의 상한**이다. 실제 예: 융합 arm은 srgbToLinear를 **한 번도 실행하지 않는데**(진입점 srgbToLabL·srgbToLabF 계수가 0이다) 죽은 본문 때문에 srgbToLinear 계수가 2로 나온다. 픽셀당 실제 횟수는 **color_transform_declared**를 볼 것 — 그쪽은 진입점에서 호출 그래프를 따라간 값이다. ⚠ drago 패스의 sRGB 선형화는 여기 잡히지 않는다 — LabGlsl의 piecewise 함수가 아니라 pow(x, uSrcGamma)라서다(그 자체가 '두 스테이지가 LAB 변환을 공유하지 않는다'는 증거다)",
+        "tokens": [
+          "srgbToLabL",
+          "srgbToLabF",
+          "labFToSrgb",
+          "srgbToLinear",
+          "linearToSrgb",
+          "labF",
+          "linearToLabL",
+          "linearToLabF"
+        ]
+      },
+      "color_transform_sites_note": "🔴 **위 color_transform_sites의 arm은 drago_clahe_chain이다**(이 arm의 id가 아니다). ② 6패스의 셰이더가 체인과 **글자 그대로 같으므로** 그 계수가 이 arm에도 그대로 성립하고, 이 arm에만 있는 패스8(④ 오버레이)의 색공간 변환은 **0**이다(오버레이 셰이더는 LabGlsl을 부르지 않는다 — 정적 오버레이 arm에서 기계로 세어 확증돼 있다). 즉 합은 같다. declared 표(color_transform_declared)의 passes_total은 **체인의 8**이며 이 arm은 9다 — 그 칸만 이 arm에서 성립하지 않는다",
+      "color_transform_sites_peer": {
+        "arm": "drago_clahe_fused",
+        "by_pass": [
+          {
+            "labF": 0,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 0,
+            "pass": "oes_to_fbo_a",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 0
+          },
+          {
+            "labF": 0,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 0,
+            "pass": "stage2_drago_analyze",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 0
+          },
+          {
+            "labF": 0,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 0,
+            "pass": "stage2_drago_build",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 0
+          },
+          {
+            "labF": 8,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 1,
+            "linearToSrgb": 1,
+            "pass": "stage2_fused_analyze",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 2
+          },
+          {
+            "labF": 0,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 0,
+            "pass": "stage2_clahe_build",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 0
+          },
+          {
+            "labF": 8,
+            "labFToSrgb": 1,
+            "linearToLabF": 1,
+            "linearToLabL": 0,
+            "linearToSrgb": 1,
+            "pass": "stage2_fused_apply",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 2
+          },
+          {
+            "labF": 0,
+            "labFToSrgb": 0,
+            "linearToLabF": 0,
+            "linearToLabL": 0,
+            "linearToSrgb": 0,
+            "pass": "present",
+            "srgbToLabF": 0,
+            "srgbToLabL": 0,
+            "srgbToLinear": 0
+          }
+        ],
+        "counted_at": "onSurfaceCreated 1회 (hot path 아님)",
+        "entry_point_tokens": [
+          "srgbToLabL",
+          "srgbToLabF",
+          "labFToSrgb",
+          "linearToLabL",
+          "linearToLabF"
+        ],
+        "inner_tokens": [
+          "srgbToLinear",
+          "linearToSrgb",
+          "labF"
+        ],
+        "method": "glShaderSource에 넘긴 String에서 토큰별 정적 호출 지점 수",
+        "note": "세는 대상은 glShaderSource에 실제로 넘기는 셰이더 문자열이며, **정적 호출 지점 수**다(함수 정의 줄은 뺐다). 읽을 때 단서 둘: (a) **실행 횟수가 아니다** — CLAHE analyze는 타일 픽셀 루프 **안에서** 부르므로 실제로는 픽셀당 1회 × 그 타일의 픽셀 수다. 픽셀당·프레임당 환산은 같은 블록의 color_transform_declared에 따로 있다. (b) **중첩을 이중 계상하지 말 것** — srgbToLinear는 srgbToLabL / srgbToLabF **안에서** 불린다. 그래서 srgbToLabF를 1번 부르는 패스에서도 srgbToLinear 계수가 따로 올라간다. 두 값을 더하면 같은 변환을 두 번 세는 것이다. 🔴 (c) **진입점 계수와 내부 헬퍼 계수를 같은 눈으로 읽지 말 것.** entry_point_tokens(srgbToLabL / srgbToLabF / labFToSrgb / linearToLabL / linearToLabF)는 main()에서만 불리므로 **계수가 곧 살아 있는 호출 수**다 — '이 패스가 무엇을 쓰는가'는 여기서 읽는다. 반면 inner_tokens(srgbToLinear / linearToSrgb / labF)는 진입점 **본문 안에서** 불리는데 LabGlsl.FUNCTIONS가 패스에 **통째로 삽입되므로 그 패스가 부르지도 않는 진입점의 본문까지 세어진다** — 즉 **살아 있는 호출 수의 상한**이다. 실제 예: 융합 arm은 srgbToLinear를 **한 번도 실행하지 않는데**(진입점 srgbToLabL·srgbToLabF 계수가 0이다) 죽은 본문 때문에 srgbToLinear 계수가 2로 나온다. 픽셀당 실제 횟수는 **color_transform_declared**를 볼 것 — 그쪽은 진입점에서 호출 그래프를 따라간 값이다. ⚠ drago 패스의 sRGB 선형화는 여기 잡히지 않는다 — LabGlsl의 piecewise 함수가 아니라 pow(x, uSrcGamma)라서다(그 자체가 '두 스테이지가 LAB 변환을 공유하지 않는다'는 증거다)",
+        "peer_note": "**이 런에서 돌지 않은 arm의 계수다.** 두 조합 arm의 변환 횟수 차이를 한 파일에서 계산할 수 있게 함께 싣는다 — 이 런의 값은 위 color_transform_sites다. 짝은 **bf 유무를 맞춘** 반대쪽 구성이다(체인 ↔ 융합)",
+        "tokens": [
+          "srgbToLabL",
+          "srgbToLabF",
+          "labFToSrgb",
+          "srgbToLinear",
+          "linearToSrgb",
+          "labF",
+          "linearToLabL",
+          "linearToLabF"
+        ]
+      },
+      "composition": "chain (중간 표현을 RGBA8 FBO로 materialize한다)",
+      "composition_note": "**체인이지 융합이 아니다.** 상류 cv2 파이프라인이 Drago 출력을 8비트 이미지로 내고 그것을 cvtColor(BGR2LAB)에 넣는 구조를 그대로 옮겼다. 중간 materialize를 없애는 융합(drago_clahe_fused)은 **알고리즘 변경이라 채택 여부가 팀장 판단 영역**이며, arm 자체는 이미 있고 실측도 끝났다 — 그 arm의 값과 이 arm의 값을 나란히 놓는 방법은 how_to_compare에 있다",
+      "cost_split_note": "🔴 **gpu_sum 차분을 통째로 '그 알고리즘의 비용'으로 읽지 말 것.** 정식 측정(2026-08-03, 지속 런)의 분해(blit_2pass 대비 증분, ms): drago = 알고리즘 고유(analyze+build) 3.482(55%) + 적용·present 증분 2.798 ; agcwd = 2.788(46%) + 3.308 ; clahe_gamma = **1.867(26%)** + **5.309(74%)**. 즉 **알고리즘 고유 통계 부분은 세 arm 중 clahe가 가장 싸다.** clahe 초과분의 74%는 적용 패스이고 그 지배 항은 **A1·A2가 공유하는 LAB 변환(pow 9회)**이다. 그러므로 'A1이 알고리즘 성질상 가장 비싸다'는 결론은 이 데이터에서 나오지 않으며, 경량화 레버도 통계 쪽이 아니라 **LAB 변환 쪽**을 봐야 한다. ⚠️ 고유부는 p50(analyze)+p50(build)라 **백분위의 합**이고 행별 합보다 0.04ms쯤 작다 — 대소 비교에만 쓰고 D칸에 더하지 말 것. ⚠️ drago 행은 08-01 세션(분모도 08-01)이고 나머지 둘은 08-03이다. 여기 적힌 수치는 **이 문자열이 쓰인 시점의 사본**이며, 최신 값의 출처는 FRAME_BUDGET.md §3 주3과 docs/baselines/README.md다",
+      "desaturation_note": "**L만 올리고 a,b를 그대로 두면 상대 채도가 떨어져 화면이 탈색돼 보인다** — 상류 문서가 A1·A2의 공통 결함으로 지목한 것과 같은 현상이고, 이 이식도 구조가 같으므로 그대로 재현된다(a,b는 절대 좌표라 L이 커질수록 채도비 C/L이 준다). 보정(예: L 증가분만큼 a,b 스케일)은 **상류에 없는 연산**이라 넣지 않았다 — 넣으면 상류 레퍼런스와 더 멀어지고, 색 왜곡은 INTERFACES.md §B-2가 '저시력 사용자에게 위험 신호를 흐릴 수 있다'고 규정한 항목이라 팀장 판단이다",
+      "detect_input_note": "🔴 **이 arm에서도 ③ 탐지 입력은 ② 개선을 거치지 않은 원본 프레임이다.** 표시 경로(OES → GL 9패스)와 탐지 경로(ImageAnalysis YUV → 전처리 → ORT)가 애초에 분리돼 있어 ②가 탐지 입력에 닿지 않는다. 우연이 아니라 상류 요구다: ②를 탐지 앞단에 붙이면 stairs 야간 오탐이 **0.1% → 5.7%(57배)**가 된다(models/0824/readme_c4e_640.md §6-4 · 같은 경고가 metadata.json의 warning). ⚠ 그러므로 이 arm의 boxes_out·overlay_boxes는 **② 적용 전 프레임의 탐지 결과**이고, ②가 탐지 품질에 준 영향을 이 런으로 말할 수 없다(그 실험이 아니다)",
+      "detect_round_scope": "이 arm의 프레임타임을 읽는 법: **detect_bind_only는 분석 use case 하나를 더 붙인 값**이고 추론이 없다(pipeline_stages에 detect 토큰이 없는 이유다). detect_cpu / detect_nnapi / detect_xnnpack · _prof 셋 · detect_parity_* 셋은 프레임 경로에서 **실제로 추론이 돈다** — 렌더 경로 자체는 blit_2pass와 글자 그대로 같으므로, 그 arm들의 프레임타임 차이는 GL 변경이 아니라 **같은 SoC를 탐지 스레드와 나눠 쓴 결과**다. 🔴 E·F·G의 분포는 프레임타임이 아니라 **detect.csv**에 있다",
+      "flicker_note": "통계를 **두 벌** 매 프레임 새로 구한다(stateless) — drago의 **전역** 통계와 clahe의 **타일별** 히스토그램. 그래서 출렁임의 성질이 단품과 다르다: 앞 스테이지(D1)의 전역 톤커브가 흔들리면 그 출력이 뒤 스테이지(A1)의 **입력 분포**를 통째로 밀어 타일 LUT까지 함께 흔든다(단품에서는 없던 연쇄다). INTERFACES.md §B-4(프레임 간 상태)가 ☐라 시간축 평활을 임의로 넣지 않았다 — 상류 `+ts`가 바로 그 평활이고 실측은 성공했지만(§7) 리셋 조건· 수렴 시간이 여전히 미정의다. 이 라운드에서는 **관측 대상**이며, 관측 결과는 보고에 남긴다",
+      "glare_note": "⚠ **이 arm(`D1A1`)은 상류 표시 1위 후보의 *부분집합*이다 — 1위는 `D1A1+bf`이고 여기에는 `bf`(bilateral)가 없다.** 표시 3축(글레어·대비·노이즈) 1위로 상류가 적은 것은 `D1A1+bf`이지 `D1A1`이 아니다(RESEARCH_20260803_UPSTREAM.md §6, §2). 그러니 이 arm의 결과를 '표시 1위 후보를 쟀다'로 옮기지 말 것. 그럼에도 **이 arm은 표시(④ 화면) 경로 후보이지 탐지(③) 입력 후보가 아니다.** A1·A2 단품과 달리 이 조합은 D1을 포함하므로 글레어를 실제로 누른다 — LAB_GLARE_NOTE('눈부심을 누르지 못한다')는 **이 arm에 해당하지 않는다.** 대신 상류 실측(§2, C7)이 다른 값을 매긴다: **arm이 강할수록 탐지의 `stairs` 오탐이 오른다**(무처리 0.1% → A1 0.4% → A1+bf 1.1% → D1A1 3.8% → D1A1+bf 5.7%). 오인 대상이 횡단보도·차선·차 지붕·포장 텍스처라 저시력 보행자가 반드시 지나는 곳이다. 그래서 상류 판정은 **탐지=원본 / 표시=D1A1+bf(+ts)의 경로 분리**이며(§3, 🗣️ 팀 추인 대기), 이 arm의 GPU 비용이 싸게 나오더라도 그것이 ③ 입력으로 쓸 근거가 되지는 않는다",
+      "gpu_column_note": "🔴 **gpu_frame_ms는 gpu_sum_ms와 다른 물리량이다.** 프레임 하나를 query 하나로 감싼 값이고, 패스별 열의 합이 아니다 — **둘을 더하지 말 것**(더하면 같은 프레임을 두 번 세는 것이다). 같은 이유로 D 계열도 아니고(stage_d_total_ms에 들어가지 않는다) **버짓 칸도 없다** — 단계 비용이 아니라 프레임 전체 GPU 시간이므로 칸 라벨을 붙이면 그 숫자가 D칸으로 인용된다. 한 런에 이 열과 패스별 열이 **함께 있을 수 없다**(GL_TIME_ELAPSED가 중첩되지 않는다) — 그래서 이 arm의 CSV에는 패스별 열이 아예 없다",
+      "gpu_status": "준비 완료 — ② 자리가 **6패스**(drago 3단 → clahe 3단 직렬)다. drago: 리덕션 컴퓨트 dispatch 1회 + 계수 컴퓨트 1스레드 + 적용 프래그먼트 1패스(FBO_A→FBO_B). clahe: 타일 히스토그램 dispatch 1회 + LUT dispatch 1회 + 적용 프래그먼트 1패스(FBO_B→FBO_A). SSBO binding: drago stats=0 / clahe hist=1 / clahe lut=2 (셋이 동시에 살아 있다). 중간 표현은 RGBA8 FBO다 — 상류 cv2 파이프라인의 8비트 왕복을 그대로 옮긴 **체인**이며 융합이 아니다. GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS=35(필요 1), GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS=70(필요 3), GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS=512. 통계를 CPU로 읽지 않는다(읽으면 GPU 동기화로 측정이 오염된다) ── ④ 오버레이 자원 상태는 overlay 블록(overlay.gpu_status)에 있다",
+      "how_to_compare": "🔴 **단품 arm의 숫자를 더해 이 arm의 값을 갈음하지 말 것.** 그 합이 맞는지가 이 측정의 질문이다 — 두 스테이지가 무엇을 공유하고 무엇을 두 번 하는지는 stage2_params.color_transform_sites(자동 계수)와 그 아래 선언 블록에 적어 두었으니 **인용은 그 값으로** 할 것. 상류 CPU 실측과 나란히 놓을 때: 상류 D1A1+bf 720p 101.2ms는 (a) PC CPU/NumPy 기준이고 (b) **`bf`를 포함**하는데 이 arm은 `D1A1`까지다 — 두 사실을 함께 옮길 것. 🔴 **stage_d_total_ms만 인용하지 말 것 — ② 증분을 과소로 낸다.** 상류 CPU 실측(720p A1 5.3ms / A2 6.2ms)과 비교할 숫자는 **gpu_sum_ms의 arm 간 차분**이다(이 arm − blit_2pass). 근거: 세 arm에서 **글자 그대로 같은 코드인** gpu_present_ms가 blit_2pass 1.881 → drago 3.582ms로 움직였다 — ② 증분의 약 27%가 D 열이 아니라 present에 앉는다. ⚠ **그 차분도 하한이다** — 마지막 패스의 타일 해결이 eglSwapBuffers에서 일어나 모든 query의 바깥이다(gpu_timer.attribution_note). ⚠ 그리고 상류 5.3/6.2ms는 PC CPU/NumPy 기준이라 조건이 다르다 — 나란히 놓을 때 그 사실을 함께 옮길 것. 🔴 **열을 명시하지 않은 인용은 정반대 결론을 만든다.** 정식 측정(2026-08-03, 지속 런)에서 순위가 실제로 뒤집혔다: stage_d_total_ms로 보면 clahe_gamma 5.369 < drago 5.757이라 **clahe가 싸고**, gpu_sum 차분(arm − blit_2pass)으로 보면 clahe +7.176 > drago +6.280이라 **clahe가 비싸다.** 둘 다 맞는 숫자이고 재는 대상이 다를 뿐이다(전자는 D 열 3개의 합, 후자는 present 번짐까지 포함한 프레임 전체 증분). 표·보고서로 옮길 때 **열 이름을 반드시 함께 옮길 것** — 숫자만 옮기면 읽는 사람이 반대 결론을 낸다. ⚠️ 여기 적힌 수치는 **이 문자열이 쓰인 시점의 사본**이다. 최신 값의 출처는 FRAME_BUDGET.md §3 주3과 docs/baselines/README.md이며, 어긋나면 그쪽이 맞다",
+      "how_to_compare_instrumentation": "🔴 **비교는 같은 세션·같은 빌드의 짝 arm과 나란히 놓고 한다.** gpu_frame_ms(이 arm) 대 gpu_sum_ms(짝 arm)의 **차가 곧 패스별 계측의 중복 계상량**이다 — 그것이 이 arm의 존재 이유다. ⚠ 짝은 렌더가 같은 arm 하나뿐이다: blit_2pass_1q↔blit_2pass · drago_clahe_chain_1q↔drago_clahe_chain · drago_clahe_chain_bf_1q↔drago_clahe_chain_bf · drago_clahe_fused_1q↔drago_clahe_fused · drago_clahe_fused_bf_1q↔drago_clahe_fused_bf · highlight_boxes_1q↔highlight_boxes · detect_cpu_highlight_1q↔detect_cpu_highlight · detect_cpu_1q↔detect_cpu · detect_cpu_chain_1q↔detect_cpu_chain · detect_cpu_chain_highlight_1q↔detect_cpu_chain_highlight. 다른 arm과 짝지으면 렌더가 달라 그 차분은 아무 뜻이 없다. 🔴 **I 하한의 분모는 세트마다 다르다 — 하나가 아니다.** ③→④ 세트(v7)는 `detect_cpu_highlight_1q − detect_cpu_1q`이고, ②③④ 통합 세트는 `detect_cpu_chain_highlight_1q − detect_cpu_chain_1q`다. 분모는 **분자에서 ④ 오버레이만 뺀 arm**이어야 하며(② 구성과 탐지가 같아야 한다), `blit_2pass_1q`나 `drago_clahe_chain_1q`를 분모로 쓰면 **거기에 탐지 부하가 없어서** 차이에 탐지 비용이 섞인다. 알려진 이슈 36이 그 부류다(`highlight_boxes_1q`가 분모와 소수점 셋째 자리까지 같아 I 하한이 0으로 나왔고, 그 0은 '오버레이가 공짜'가 아니라 분모가 상한을 통째로 중복 계상했다는 뜻이었다). 🔴 **H는 이 차분의 대상이 아니다** — stage_h_ms는 CPU 벽시계이고 모든 GPU query 밖에서 닫히므로(overlay.smoothing.scope) gpu_frame_ms 차분에 들어 있지 않다. H는 오버레이 arm이 그 열로 직접 낸다. 🔴 **부풀림 비율을 arm 사이에서 옮기지 말 것** — 중복 계상량은 마지막 전체화면 패스의 비용을 따라가므로 패스 구성마다 다르다(같은 라운드에서 ④ 오버레이 arm +2% / 9패스 arm +43%). 하한이 필요하면 **그 arm의 `_1q` 짝을 직접 재는 수밖에 없다** — 뒤의 세 짝이 생긴 이유가 그것이다. ⚠ **다른 세션의 짝과 비교하지 말 것** — 발열·조명·AE 상태가 다르면 그 차이가 중복 계상량으로 둔갑한다. ⚠ 이 arm은 **패스별 분해를 낼 수 없다.** 어느 패스가 비싼지는 짝 arm의 열이 말하고, 그 열들이 얼마나 부풀어 있는지는 이 arm이 말한다 — 둘 다 필요하다",
+      "instrumentation": "single_frame_query",
+      "instrumentation_note": "🔴 **이 arm은 알고리즘이 아니라 계측 방식이 다르다.** 렌더 경로는 짝 arm과 **글자 그대로 같다** — 같은 draw 함수를 타고(RenderArm.uses* 판별식에 이 arm을 함께 넣었다) 셰이더·패스 수·파라미터가 전부 같다. 다른 것은 GPU timer query를 거는 방식 하나뿐이다: 패스마다 하나씩(짝 arm) 대신 **프레임 전체를 query 하나로** 감싼다(GL_TIME_ELAPSED는 중첩되지 않아 둘을 같이 걸 수 없다 — 그래서 arm으로 갈랐다). 그러므로 두 arm의 프레임타임·지연 분포는 **같아야 하고**, 다르면 그것 자체가 계측 오버헤드의 증거다. 왜 만들었는가: 직전 라운드의 패스별 계측에서 gpu_sum(패스별 query의 합)이 **물리적으로 불가능한 값**을 냈다 — chain_bf가 29.92fps × 43.794ms = 1초에 1.31초의 GPU 작업이고, 30fps는 스톨·드롭 없이 유지됐으며 행 단위로 95.8%의 행에서 gpu_sum이 그 프레임의 출력 간격을 넘었다. 원인 후보는 **gpu_present_ms가 마지막 전체화면 패스의 타일 해결을 흡수해 중복 계상**하는 것이다(present는 전 arm에서 같은 셰이더인데 query 값이 1.862 → 15.078로 부풀었고, 부풀림이 마지막 전체화면 패스 비용의 73~88%다. 마지막 패스가 얇은 quad인 ④ 오버레이 arm은 +0.010(2%)로 대조군이 된다). ⚠️ 여기 적힌 수치는 **이 문자열이 쓰인 시점의 사본**이며 출처는 그 런의 summary.json과 그 라운드 팀 보고서다 — 어긋나면 그쪽이 맞다",
+      "levers_not_pulled": "확인됐지만 **당기지 않은** 레버 3개(독립 검증 지목, 이번 라운드 미적용): (1) **sRGB 텍스처 포맷** — FBO를 sRGB로 두면 셰이더의 srgbToLinear/linearToSrgb를 샘플러·ROP가 대신한다(위 비용 분해의 지배 항이 그 pow다). (2) **타일 LUT를 SSBO 대신 텍스처로** — 적용 패스의 LUT 랜덤 읽기가 텍스처 캐시와 이중선형 보간 하드웨어를 탄다. (3) **mediump** — LAB 경로가 전부 highp다. 당기지 않은 이유: 게이트(FRAME_BUDGET.md §1)가 걸리지 않았고, 지금 건드리면 이번 라운드의 실측을 **전부 다시 재야 하며**, arm 판정은 속도가 아니라 눈부심으로 갈린다(glare_note). 예산이 급해지면 FRAME_BUDGET.md §5 레버 목록의 후보가 여기 있다 ── 조합에서 추가로 **당기지 않은** 레버 3개: (4) **처리 해상도 640×360 축소** — 상류가 검토 중인 레버지만 (RESEARCH_20260803_UPSTREAM.md §6: CPU 720p 101.2ms / 640×360 33.1ms) **이번 측정의 목적이 그 레버가 불필요함을 보이는 것**이라 당기면 재는 의미가 사라진다. 게다가 상류 실측상 글레어 지표가 해상도에 크게 의존한다(D1 광원 코어 원본 10 / 720p 151 / 640 158 / 480 161) — 해상도는 속도만의 문제가 아니라 표시 품질 자체를 바꾼다. (5) **float/half FBO로 선형 중간값 보존** — 중간 RGBA8 왕복(8비트 양자화 + 0..1 클리핑)이 없어진다. 당기지 않은 이유는 두 가지다: 이번 라운드가 **상류 충실(체인)**이고, float 포맷은 기기 의존성을 늘린다(FBO를 RGBA8로만 쓰는 기존 규약). (6) **`bf`·`ts` 미포함** — 상류 잠정 1위는 `D1A1+bf(+ts)`이고 이 arm은 `D1A1`까지다. `bf`는 그 뒤 **별 arm으로 실제로 쟀다**(`drago_clahe_chain_bf` 9패스. GpuTimerRing.MAX_PASS_COUNT를 8→12로 올려 슬롯을 만들었으므로 '슬롯을 넘는다'는 더 이상 이유가 아니다). **이 arm에는 여전히 bf가 없으므로** 여기 숫자는 `D1A1`의 값으로만 읽어야 한다. `ts`는 양쪽 arm 모두 없다 — INTERFACES.md §B-4가 ☐다",
+      "lower_bound_note": "🔴 **프레임 단일 query로도 이 값은 여전히 하한이다.** 마지막 패스는 기본 프레임버퍼에 그리는데 그 타일 해결은 eglSwapBuffers에서 일어나고 GLSurfaceView는 그것을 onDrawFrame 반환 **후에** 부른다 — 프레임 단일 query의 **바깥**이다(GLSurfaceView를 쓰는 한 옮길 수 없다. 패스별 계측의 attribution_note와 같은 이유다). 그러므로 이 실험이 재는 것은 **'중복 계상량의 하한'이지 '진짜 GPU 시간'이 아니다** — gpu_frame_ms를 '이 arm의 실제 프레임 GPU 시간'으로 옮겨 적지 말 것",
+      "not_a_product_decision": "🔴 **이 arm은 ②③④를 한 프레임에서 돌려 보기 위한 측정용 추가이며 제품 구성 확정이 아니다.** 팀 결정 4건이 아직 미결이다: (1) 융합 채택 여부(drago_clahe_fused는 알고리즘 변경이라 팀장 판단이다 — fused_deviation), (2) bf 포함 여부, (3) INTERFACES.md §B-4의 시간축(ts)이 ☐, (4) 탐지 주기 N이 ☐(FRAME_BUDGET.md §7 질문 3). 그러므로 이 arm은 **상류 잠정 1위(D1A1+bf+ts)와 같은 구성이 아니다** — ② 자리는 D1A1까지이고 bf도 ts도 없다. 이 런의 숫자를 '제품 구성의 프레임타임'으로 옮겨 적지 말 것",
+      "note": "② 자리가 **6패스**(3단 × 2벌)이고 그 뒤에 ④ 오버레이 패스가 하나 더 붙어 **전체 9패스**다(체인 arm은 8패스다). 하위 패스를 합치지 않고 D 계열 슬롯 6개에 그대로 낸다(docs/FRAME_LOG_SCHEMA.md §2). ④의 서술은 session.json의 overlay 블록에 있다. 🔴 이 arm은 **측정용 추가이며 제품 구성 확정이 아니다** — not_a_product_decision을 함께 읽을 것",
+      "provenance": "상류(모델링 담당 kty2001/KDT_Hackathon) scripts/lowlight.py의 D1·A1 탐색 구현값을 **그대로** 직렬로 이은 것이며 **계약 확정값이 아니다** — INTERFACES.md §B-5는 여전히 전부 ☐다. 두 스테이지의 파라미터는 단품 arm(drago / clahe_gamma)과 같은 상수를 쓰고 전부 uniform으로 노출했으므로, 팀장이 값을 확정하면 셰이더를 고치지 않고 교체한다. 조합의 출처는 docs/research/RESEARCH_20260803_UPSTREAM.md §6(잠정 1위 D1A1+bf)이다",
+      "render_arm_peer": "detect_cpu_chain_highlight",
+      "ssbo_binding_note": "단품 arm은 drago stats=0 / clahe hist=0 / clahe lut=1이라 **조합에서는 첫 둘이 충돌한다.** 그래서 조합만 clahe를 1·2로 밀었다. 셰이더 텍스트를 복사하지 않고 binding을 인자로 받는 소스 함수를 공유하므로 산식은 여전히 한 곳에만 있고, 단품 arm의 셰이더 생성 문자열은 바이트 단위로 그대로다",
+      "stage_order": [
+        "drago_tonemap",
+        "clahe_gamma"
+      ],
+      "stages": [
+        {
+          "algorithm": "drago_tonemap",
+          "bias": 0.8500000238418579,
+          "gamma": 2.200000047683716,
+          "index": 1,
+          "luma_weights": "0.299 R + 0.587 G + 0.114 B (OpenCV COLOR_RGB2GRAY)",
+          "operates_on": "선형 RGB 3채널 전부. sRGB를 pow(x, src_gamma)로 선형화한 뒤 오퍼레이터에 넣고 pow(x, 1/gamma)로 되씌운다. **LabGlsl을 쓰지 않는다**",
+          "saturation": 1,
+          "src_gamma": 2.200000047683716,
+          "ssbo_binding": "stats=0",
+          "uniforms": [
+            "uSrcGamma",
+            "uOutGamma",
+            "uSaturation",
+            "uBias"
+          ],
+          "upstream_reference": "scripts/lowlight.py D1 (OpenCV TonemapDrago)"
+        },
+        {
+          "algorithm": "clahe_gamma",
+          "clip_limit": 2,
+          "gamma": 0.75,
+          "histogram_bins": 256,
+          "index": 2,
+          "operates_on": "CIE LAB의 L* 채널만 (a,b는 그대로 둔다). 입력은 **drago가 적용된 RGBA8 중간 이미지**이지 카메라 원본이 아니다",
+          "ssbo_binding": "hist=1, lut=2",
+          "tile_grid": 8,
+          "uniforms": [
+            "uClipLimit",
+            "uTiles",
+            "uClaheGamma"
+          ],
+          "upstream_reference": "scripts/lowlight.py A1 (OpenCV createCLAHE + 감마)"
+        }
+      ],
+      "temporal_state": "none (stateless) — INTERFACES.md §B-4 미확정(☐)이라 상태를 두지 않는다",
+      "upstream_deviation": "🔴 **상류의 조합 합성 방식이 이 저장소에 기록돼 있지 않다.** 기록된 것은 순서(Drago → CLAHE → bilateral)뿐이고, **중간 dtype · 클리핑 · 정규화 유무는 어디에도 없다**(docs/research/RESEARCH_20260803_UPSTREAM.md §6). 이 이식이 중간 표현을 **RGBA8 FBO**로 둔 것은 cv2 파이프라인의 통상 동작(톤맵 결과를 8비트 이미지로 내고 그것을 cvtColor(BGR2LAB)에 넣는다)에서 온 **추론이지 상류 코드 인용이 아니다.** 그러므로 다음 두 가지가 상류와 다를 수 있고 우리는 어느 쪽인지 모른다: (1) 중간값의 **8비트 양자화**(상류가 float로 이었다면 없다), (2) Drago 출력의 **0..1 클리핑**(이 이식은 clamp한다). 두 스테이지 각각의 이탈은 upstream_deviation_drago / upstream_deviation_lab에 그대로 실었으며 **조합에서도 전부 그대로 성립한다.** ⚠ 이번 라운드는 **체인(상류 충실)**이다 — 중간 materialize를 없애는 융합은 알고리즘 변경이라 팀장 판단 영역이고 여기서 하지 않았다",
+      "upstream_deviation_drago": "이 이식은 상류 OpenCV TonemapDrago와 **세 곳이 다르다.** 독립 검증이 opencv-python 5.0.0으로 4조합을 재구현해 대조한 결과다(front+back 조합만 cv2와 max|diff|=0.000000으로 일치). (1) **앞 정규화 없음** — OpenCV는 오퍼레이터 앞에 기반 클래스의 min/max 선형 정규화를 돌린다. (2) **뒤 정규화도 없음** — OpenCV는 오퍼레이터 **뒤에도** 한 번 더 돌린다. 화면의 다이내믹 레인지를 정하는 쪽이 이 뒤 정규화다(출력 max를 정확히 1.0으로 늘린다). (3) **mapLuminance 분모가 다름** — OpenCV는 gray/mean(평균정규화 휘도)으로 나누는데 이 이식은 원시 lum으로 나눈다. saturation=1에서 이건 ×mean 상수배이고, OpenCV에서는 뒤 정규화가 그걸 지운다. 🔴 **(2)와 (3)이 서로 거의 상쇄되어 결과가 우연히 그럴듯해 보인다 — 하나만 복원하면 화면이 크게 틀어진다.** 셋을 함께 다뤄야 한다. 실측 이탈 폭: 실기기 실내 프레임 23.5 LSB, 합성 야간+클리핑 광원 55.6 LSB. 이 이식이 계통적으로 더 밝다 — 골든 이미지 대조(INTERFACES.md §B-6)를 하면 여기서 걸린다. 왜 지금 재현하지 않는가: 뒤 정규화는 매 프레임 전역 오토레벨이라 §B-4가 안전 문제로 규정한 프레임 간 출렁임을 하나 더 얹는다. ⚠ 예전에 여기 함께 적혀 있던 '전체 화면 리덕션 두 번이 GPU 타이머 슬롯을 초과한다'는 **이제 근거가 아니다**(GpuTimerRing.MAX_PASS_COUNT를 12로 올렸다). 남는 이유는 위 안전 문제 하나다. **'상류를 픽셀 단위로 재현할 것인가'는 알고리즘 결정이므로 팀장 판단이다** (FRAME_BUDGET.md §5 레버 3). 덤: 검증 중 상류 쪽 결함이 나왔다 — OpenCV는 앞 정규화가 만든 정확한 0을 mapLuminance가 나눠 **실제 8비트 프레임에서 NaN을 낸다**(재현됨). 이 이식은 max(lum, 1e-4)로 막고 있어 그 입력에서는 상류보다 낫다",
+      "upstream_deviation_lab": "🔴 **동작 채널이 INTERFACES.md §B-2 제안값과 다르다.** 계약서 제안값은 **YUV의 Y**(그리고 그 칸은 여전히 ☐)인데 이 이식은 상류 구현을 따라 **CIE LAB의 L***에서 돈다. **둘은 다른 값이다** — Y는 감마 인코딩된 신호의 선형 가중합이고 L*은 선형 휘도의 세제곱근 척도라, 같은 픽셀에서 서로 다른 히스토그램과 서로 다른 LUT가 나온다. 상류를 따른 이유는 A1·A2의 CPU 레퍼런스가 cv2.cvtColor(BGR2LAB)의 L에서 돌기 때문이며(RESEARCH_20260731_UPSTREAM.md §2-2), **계약 확정이 아니라 레퍼런스 일치를 택한 것**이다. §B-2가 Y로 확정되면 LabGlsl의 변환 하나만 바꾸면 된다(팀에 올린 항목 U-4). 그 밖에 상류와 다른 곳: (1) **a,b를 8비트로 양자화하지 않는다** — a,b를 그대로 두는 것은 f(X/Xn)-f(Y/Yn)와 f(Y/Yn)-f(Z/Zn)를 보존하는 것과 같아 ×500/÷500 왕복을 생략했다(대수적으로 동일, 양자화가 없어 상류보다 정밀하다). (2) **LUT 출력을 uchar로 반올림하지 않는다**(float 그대로 보간한다). (3) CLAHE에서 해상도가 타일 격자로 나눠떨어지지 않을 때 **OpenCV의 BORDER_REFLECT_101 패딩 대신 실재 픽셀만 균등 분할**한다 — 720p(1280x720)는 8로 나눠떨어져 이번 측정 프레임에서는 차이가 없다. (4) **CLAHE 타일 보간 좌표의 원점이 반 픽셀 다르다.** 셰이더는 p = vTexCoord*uTiles - 0.5 라 **픽셀 중심**((x+0.5)/size) 기준인데 OpenCV CLAHE_Interpolation_Body는 x/tileSize - 0.5 라 **픽셀 좌상단** 기준이다. 독립 검증 실측 이탈: **max 1.86 LSB, 픽셀의 1.03%가 >1 LSB**(원점을 OpenCV와 맞추면 max 0.993 LSB로 떨어진다 — 즉 나머지 이탈은 여기서 나온다). 고치지 않은 이유: 픽셀 중심이 표본 위치의 표준 정의라 **이쪽이 오히려 옳고**, 이번 라운드에서 검증이 끝난 산식을 건드리지 않는다. §B-6 골든 대조에서 1~2 LSB급 차이가 보이면 **먼저 이 항목을 의심할 것**. (5) **clipLimit <= 0의 의미가 정반대다.** OpenCV는 그 값을 '클립 없음'으로 처리하는데 이 이식은 clip = max(clipI, 1)이라 **빈당 1픽셀 극단 클립**이 된다. 지금 값이 2.0이라 이번 측정에서는 걸리지 않지만 uClipLimit은 uniform이라 값만 바꿔도 그 경로에 들어간다 — 값을 바꾸는 사람이 알아야 한다. ⚠ 골든 이미지(§B-6)가 아직 없어 **픽셀 단위 대조는 미수행**이다. 다만 독립 검증이 opencv-python 5.0.0 재구현과 대조해 CLAHE 0.993 LSB · AGCWD 1.7e-13 · LAB L 1 LSB까지 맞췄다((4)의 원점을 맞춘 조건에서다)",
+      "upstream_reference": "scripts/lowlight.py의 D1 → A1 **직렬**(상류 조합 D1A1). 상류 잠정 1위는 D1A1+bf(+ts)이고 이 arm은 D1A1까지다 — **이 arm에는 bf가 없다.** bf는 별 arm(drago_clahe_chain_bf)으로 따로 재 두었으니 그쪽 값과 나란히 볼 것. ⚠ `ts`는 **어느 arm에도 없다**(INTERFACES.md §B-4가 ☐라 임의로 넣지 않았다) — 그러므로 상류 잠정 1위 후보 **전체**는 아직 재지 못했다"
+    },
+    "surface_frames_available": 19835,
+    "timestamp_sites": {
+      "t_capture_ns": "SurfaceTexture.getTimestamp() 원본. 앱이 보정하지 않는다",
+      "t_recv_ns": "SurfaceTexture.OnFrameAvailableListener.onFrameAvailable 진입 직후 (전용 신호 스레드). 2-C에는 분석 콜백이 없어 이것이 프레임 도착 신호다",
+      "t_render_end_ns": "onDrawFrame 반환 직전(드로우콜 제출 완료). swapBuffers는 프레임워크가 onDrawFrame 반환 후에 하므로 우리가 잴 수 없다",
+      "t_render_start_ns": "GLSurfaceView.Renderer.onDrawFrame 진입 직후, updateTexImage 전 (도착 시각 AtomicLong을 먼저 소비한 뒤 찍는다 — 순서를 뒤집으면 t_recv > t_render_start 가 되어 하네스 교차검사 A가 거짓 위반을 낸다). ⚠ **v7부터 이 스탬프 앞에 한 줄이 더 있다**: ④ 게시 스냅샷 읽기다(t_render_start_ns보다 **먼저** 읽어야 어떤 프레임도 자기 렌더 시작보다 미래에 게시된 결과를 쓰지 않는다 — overlay.publish.clock). 🔴 그 줄은 **arm과 무관하게 실행되지만**(오버레이 arm이 아니면 조건이 false여서 참조 읽기조차 하지 않는다) **할당·GL 호출·syscall이 없고 계측 창 밖이다** — 즉 passthrough arm의 승격 베이스라인 동등성은 유지된다(그 arm은 query를 하나도 걸지 않으므로 GPU 동작이 그대로이고, 이 줄이 t_render_start_ns 앞에 있어 render_latency_ms에도 들어가지 않는다)"
+    }
+  },
+  "source": {
+    "capture_clock_base_contradicted": false,
+    "capture_clock_base_declared": "boottime",
+    "clock_check": {
+      "consistent": true,
+      "dwell_vs_interval": {
+        "consistent": true,
+        "ratio": 0.142,
+        "ratio_limit": 20.0,
+        "recv_to_render_p50_ms": 4.673,
+        "reference_p50_ms": 32.945,
+        "reference_series": "output_interval_ms",
+        "rule": "p50(recv_to_render_ms) <= 20x p50(output_interval_ms) — 진단용 임계이며 판정선(lib/targets.py)이 아니다"
+      },
+      "render_start_after_recv": {
+        "checked": 18937,
+        "consistent": true,
+        "rule": "render_latency_ms <= recv_to_render_ms (t_render_start_ns >= t_recv_ns)",
+        "violations": 0
+      },
+      "suspect_columns": []
+    },
+    "discarded_samples": {
+      "gpu_frame_ms": {
+        "below_min": 3
+      }
+    },
+    "discarded_total": 3,
+    "dropped_total": 0,
+    "frames_csv": "C:\\dev\\side\\night-walk\\outputs\\poc_pull\\20260825_170021\\20260825_154840\\frames.csv",
+    "gpu_timer_contradicted": false,
+    "gpu_timer_supported_declared": true,
+    "lighting_condition": "indoor_bright",
+    "lighting_condition_comparable": true,
+    "pipeline_stages_contradicted": false,
+    "pipeline_stages_measured_columns": [
+      "gpu_frame_ms"
+    ],
+    "pipeline_stages_unknown_tokens": [],
+    "pipeline_stages_vocab_ok": true,
+    "rows_accounted": true,
+    "rows_read": 19835,
+    "rows_skipped": {
+      "before_t0": 0,
+      "unparsable_t_recv": 0,
+      "warmup": 898
+    },
+    "rows_skipped_anomalous": 0,
+    "rows_skipped_total": 898,
+    "rows_used": 18937,
+    "schema_version_declared": 7,
+    "schema_version_harness": 7,
+    "schema_version_matches_harness": true,
+    "session_json": "C:\\dev\\side\\night-walk\\outputs\\poc_pull\\20260825_170021\\20260825_154840\\session.json",
+    "unknown_columns": [],
+    "warmup_sec": 30.0
+  },
+  "stages": {
+    "budget_cell": {
+      "gpu_frame_ms": null,
+      "gpu_present_ms": null,
+      "stage_b_ms": "B",
+      "stage_d_analyze2_ms": "D",
+      "stage_d_analyze_ms": "D",
+      "stage_d_apply2_ms": "D",
+      "stage_d_apply_ms": "D",
+      "stage_d_build2_ms": "D",
+      "stage_d_build_ms": "D",
+      "stage_d_denoise_ms": "D",
+      "stage_d_ms": "D",
+      "stage_d_total_ms": "D",
+      "stage_i_ms": "I"
+    },
+    "clock": "GPU 시계 (GL_EXT_disjoint_timer_query). t_*_ns(CLOCK_BOOTTIME)와 다른 시계이므로 frametime 값과 더하거나 빼지 않으며, 시계 교차검사(A/B) 대상도 아니다",
+    "columns_present": [
+      "gpu_frame_ms"
+    ],
+    "gpu_frame_column": "gpu_frame_ms",
+    "gpu_frame_conflict": false,
+    "gpu_frame_ms": {
+      "count": 18934,
+      "max": 28.8,
+      "mean": 12.394,
+      "min": 11.292,
+      "p50": 12.025,
+      "p95": 14.761,
+      "p99": 16.595
+    },
+    "gpu_frame_note": "gpu_frame_ms은 **프레임 하나를 GL_TIME_ELAPSED query 하나로 감싼 값**이다. 패스별 값이 아니므로 gpu_sum_ms에도 stage_d_total_ms에도 들어가지 않고 버짓 칸도 없다(budget_cell=null). 같은 런에 패스별 열과 함께 있을 수 없다 — GL_TIME_ELAPSED는 중첩되지 않는다. ⚠ 이 값도 **하한**이다: 마지막 전체화면 패스의 타일 해결이 eglSwapBuffers에서 일어나 이 query 바깥이다(알려진 이슈 2)",
+    "gpu_frame_present": true,
+    "gpu_present_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "gpu_sum_columns": [],
+    "gpu_sum_columns_defined": [
+      "stage_b_ms",
+      "stage_d_ms",
+      "stage_d_analyze_ms",
+      "stage_d_build_ms",
+      "stage_d_apply_ms",
+      "stage_d_denoise_ms",
+      "stage_d_analyze2_ms",
+      "stage_d_build2_ms",
+      "stage_d_apply2_ms",
+      "stage_i_ms",
+      "gpu_present_ms"
+    ],
+    "gpu_sum_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "gpu_sum_note": "gpu_sum_columns는 이 런에서 실제로 더해진 열이다(헤더에 있는 것만). 행별로 유효한 값을 먼저 더한 뒤 백분위를 냈다(p50(B)+p50(D) != p50(B+D)). 유효한 열이 하나도 없는 행은 기여하지 않는다. ⚠ gpu_frame_ms은 **더하지 않는다** — 프레임 하나를 query 하나로 감싼 값이라 패스별 합에 더하면 같은 프레임을 두 번 센다",
+    "gpu_sum_partial_rows": 0,
+    "has_gpu_timings": true,
+    "render_arm": "detect_cpu_chain_highlight_1q",
+    "render_arm_known": true,
+    "render_arm_note": "budget_cell은 '이 열이 어느 칸을 채울 열인가'라는 스키마 사실이지, 이 arm이 그 단계를 실제로 돌렸다는 주장이 아니다. 어느 패스에 무엇이 들어갔는지는 render_arm이 정한다 — 아래 분포를 FRAME_BUDGET.md의 칸에 옮길 때 arm을 함께 옮길 것. render_arm_known=false면 그 숫자는 인용 대상이 아니다",
+    "skipped_ring_full_frames": 0,
+    "stage_b_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_ambiguous": false,
+    "stage_d_analyze2_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_analyze_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_apply2_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_apply_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_build2_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_build_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_columns": [],
+    "stage_d_columns_defined": [
+      "stage_d_ms",
+      "stage_d_analyze_ms",
+      "stage_d_build_ms",
+      "stage_d_apply_ms",
+      "stage_d_denoise_ms",
+      "stage_d_analyze2_ms",
+      "stage_d_build2_ms",
+      "stage_d_apply2_ms"
+    ],
+    "stage_d_denoise_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_total_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "stage_d_total_note": "stage_d_total_ms = stage_d_columns의 **행별 합**이며 이 런의 D칸이다(감마 arm은 stage_d_ms 하나, 다패스 arm은 하위 슬롯들 — 어느 쪽이든 이 키가 D다). 백분위의 합이 아니다: p50(hist)+p50(cdf) != p50(hist+cdf). ⚠ gpu_sum_ms와 다르다 — gpu_sum_ms는 모든 GPU 열(B + D계열 + I + present)의 합이고 이 값은 D 계열만의 합이다. stage_d_ambiguous=true면 stage_d_ms가 합계일 가능성이 남아 있어 이 값이 D를 두 번 셌을 수 있다(warnings 참고)",
+    "stage_d_total_partial_rows": 0,
+    "stage_i_ms": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    }
+  },
+  "targets": {
+    "frame_budget_ms": 66.7,
+    "p95_budget_ms": 80.0,
+    "target_fps": 15.0
+  },
+  "verdict": {
+    "clock_consistent": true,
+    "data_complete": false,
+    "fps_mean": 29.87,
+    "meets_fps_target": true,
+    "meets_p95_target": true,
+    "primary_samples_discarded": 0,
+    "rows_skipped_anomalous": 0,
+    "samples_discarded": 3
+  },
+  "warnings": [
+    "gpu_frame_ms: 샘플 3개를 폐기했다 (-1 또는 0 이하 — disjoint로 버려졌거나 query가 해소되지 않았다 (시계 역행이 아니다) 3개). 폐기된 샘플이 그 측정의 최악 프레임일 수 있으므로 분포는 낙관적으로 치우친다",
+    "프레임타임이 카메라 공급에 묶여 있다 — p50(output_interval_ms)=32.945ms가 p50(recv_interval_ms)=32.657ms와 사실상 같다(차이 0.88%, 진단 임계 5%) [참고: 카메라 요청 주기 33.3ms]. 처리 단계 ['blit_2pass', 'stage2_drago', 'stage2_clahe', 'detect', 'stage4_highlight', 'stage4_smoothing']가 붙어 있는데도 그렇다. tail도 마찬가지다(p95: 40.146 vs 39.249ms, 차이 2.29%). 이는 단계 비용의 합이 공급 주기보다 **작다**는 뜻일 뿐, 그 비용이 0이라는 뜻이 아니다. 이 런에서 프레임타임은 단계 비용의 **미터가 아니라 임계 검출기**다 — '단계를 얹었는데 프레임타임 회귀가 없다'는 관측은 'D=0'이 아니라 'D < 공급 주기'로만 읽어야 한다. 단계 비용은 stages 블록(GPU timer)으로만 말할 것. ⚠ 이 임계는 진단용이며 판정선(lib/targets.py)이 아니다",
+    "capture_to_render_ms는 t_render_end_ns 기준인데, 이 시각은 드로우콜 **제출** 시점이지 GPU가 그 프레임을 다 그린 시점이 아니다(glDrawArrays는 즉시 반환한다). 즉 이 지연에는 GPU 실행 시간이 **들어 있지 않다** — ② 저조도 패스를 얹은 뒤 '지연이 그대로다'라고 읽으면 틀린다. 셰이더를 얹어 늘어난 GPU 비용은 여기가 아니라 stages 블록(GL_EXT_disjoint_timer_query)에 나타난다. render_latency_ms에도 같은 한계가 있다"
+  ]
+}

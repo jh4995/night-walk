@@ -46,6 +46,11 @@ python scripts/baseline_diff.py \
 
 | 파일 | 무엇 | 조건 |
 |---|---|---|
+| `20260825_indoor_chain_highlight_s2chain_a34.json` | 🏆 **②+③+④ 통합 arm의 첫 정식 측정 — 세션 `s2chain`**(08-25). I **상한** `stage_i_ms` p50 **3.435** · D칸 `stage_d_total` **12.849** · `gpu_sum` **22.014** · H `stage_h_ms` **0.006**(CPU 벽시계 직접 측정). 🔴 **박스가 0개인 조건이다**(`boxes_pre_nms`도 0, `max_conf` ≤ 0.005) — "빈 오버레이"의 바닥이고 제품 상태가 아니다 | A34 / release / **`fe6b03b`** / `detect_cpu_chain_highlight` / `indoor_bright` / warmup 30s / 분석 창 **632.4s** |
+| `20260825_indoor_chain_highlight_1q_noiseA_s2chain_a34.json` | **I 하한의 분자 A** — `gpu_frame_ms` p50 **12.017**. B와 쌍이 이 arm의 **노이즈 바닥 0.008ms**(`gpu_frame_ms` p50)다 | 〃 `s2chain` / `detect_cpu_chain_highlight_1q` / **635.5s** |
+| `20260825_indoor_chain_highlight_1q_noiseB_s2chain_a34.json` | **I 하한의 분자 B (반복)** — `gpu_frame_ms` p50 **12.025**. 🔴 분모(`chain_1q` 12.051)와의 차가 **−0.026ms**라 **I 하한을 양수로 세울 수 없다**(박스 0개 조건). 이슈 36의 0과 달리 **분모가 옳아서 나온 답**이다 | 〃 `s2chain` / 〃 / **634.0s** |
+| `20260825_indoor_chain_1q_s2chain_a34.json` | **I 하한의 분모 — 탐지 부하가 있는 8패스**(② 체인 + present, ④ 없음). `gpu_frame_ms` p50 **12.051**. `drago_clahe_chain_1q`를 분모로 쓸 수 없다(탐지 부하가 없다 — 이슈 36) | 〃 `s2chain` / `detect_cpu_chain_1q` / **636.4s** |
+| `20260825_indoor_detect_cpu_s2chain_a34.json` | **3클래스 모델의 F 기준선** — F p50 **263.759** · `gpu_sum` 3.696. 08-07 승격본(2클래스) 262.854 / 263.607과 **+0.9ms 이내**로 그 반복 폭(0.753) 안이다 → **새 모델은 F를 재지 않았다** | 〃 `s2chain` / `detect_cpu` / **634.3s** |
 | `20260807_indoor_blit2pass_s11rot_a34.json` | **패스별 분모 — 세션 `s11rot`** (08-07 저녁, ③ 회전 라운드). `gpu_sum` p50 **3.452** | A34 / release / **`5bb42d0`** / `blit_2pass` / `indoor_bright` / warmup 30s / 분석 창 **663.085s** |
 | `20260807_indoor_gamma_only_s11rot_a34.json` | 🏆 **② `gamma_only`의 지속 런 — 알려진 이슈 7을 닫았다.** `gpu_sum` p50 3.927 → ② 증분 **+0.475ms**(같은 세션 분모 차분). 기존 +0.44는 **158.9초 런**이라 지속 판정선을 통과한 적이 없었다 | 〃 `s11rot` / `gamma_only` / **668.460s** |
 | `20260807_indoor_detect_cpu_noiseA_s11rot_a34.json` | **③ 회전 적용 A** — E p50 **16.589** · F **262.854** · G **0.362**(🔴 **박스 1개 기준**, `boxes_pre_nms` 10) | 〃 `s11rot` / `detect_cpu` / **671.185s** |
