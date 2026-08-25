@@ -1018,7 +1018,7 @@ id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통
 |---|---|---|
 | `stage2_params.not_a_product_decision` · `overlay.not_a_product_decision` | 통합 arm(`detect_cpu_chain_highlight`) | **측정용 추가이며 제품 구성 확정이 아니다**(팀 결정 4건 미결)의 기계 기록. **두 자리**에 실린다 — ② 서술만 떼 읽는 소비자와 ④ 블록만 떼 읽는 소비자 양쪽에 보여야 한다. 값의 출처는 상수 하나(`RenderArm.CHAIN_HIGHLIGHT_NOT_A_PRODUCT_DECISION`) |
 | `stage2_params.detect_input_note` | 〃 | 🔴 **이 arm에서도 ③ 탐지 입력은 ② 개선을 거치지 않은 원본 프레임이다.** 결함이 아니라 상류 요구다 — ②를 탐지 앞단에 붙이면 `stairs` 야간 오탐이 크게 늘어난다(모델 패키지가 같은 경고를 `metadata.json`의 `warning`에 싣는다). 그러므로 이 arm의 `boxes_out`·`overlay_boxes`로 "②가 탐지 품질에 준 영향"을 말할 수 없다 |
-| `stage2_params.no_lower_bound_note` · `overlay.no_lower_bound_note` | 〃 | 🔴 **I칸·H칸의 하한을 낼 수 없다(상한만 나온다)** — `_1q` 짝이 없어 차분 분모가 이 런에 없다. 위 통합 arm 절의 산문이 가리키는 키가 이것이다. **두 자리**에 실린다 |
+| `stage2_params.bounds_note` · `overlay.bounds_note` | 🔴 **오버레이가 있는 두 arm에서만**: `detect_cpu_chain_highlight` · `detect_cpu_chain_highlight_1q`. 오버레이 없는 `detect_cpu_chain` · `detect_cpu_chain_1q`에는 **일부러 없다**(`SessionWriter.kt`의 그 분기 주석: *오버레이가 없으므로 통합 arm의 ④ 관련 키는 넣지 않는다*) — 그 두 런에서 키가 없는 것은 결함이 아니다 | 🔴 **I칸의 상한·하한을 어느 두 arm으로 내는가, 그리고 H칸은 그 대상이 아니라는 사실.** 상한 = `detect_cpu_chain_highlight`의 `stage_i_ms`(패스별 계측은 중복 계상한다 — 알려진 이슈 21). 하한 = `detect_cpu_chain_highlight_1q` − `detect_cpu_chain_1q`(**둘 다 프레임 단일 query**여야 뜻이 있다). 분모가 `drago_clahe_chain_1q`가 아닌 이유는 **거기에 탐지 부하가 없다**는 것이다(앱 `usesDetectSession=false`, `detect.csv`도 없다). 🔴 **H는 하한·상한의 대상이 아니다** — `stage_h_ms`는 CPU 벽시계이고 구간이 `gpuTimer.beginFrame`보다 앞에서 닫히므로(`OVERLAY_STAGE_H_SCOPE`) `gpu_frame_ms` 차분에 물리적으로 들어 있지 않다. 직접 측정되는 값이고 차분으로 유도할 대상이 아니다. **arm 중립 문장**이라 그 두 arm 중 어느 쪽이 실어도 참이며(계측 방식을 특정하지 않는다), **두 자리**에 실린다. 값의 출처는 상수 하나(`RenderArm.CHAIN_HIGHLIGHT_BOUNDS_NOTE`). ⚠️ 이 키의 이전 이름은 `no_lower_bound_note`이고 폐기됐다 — 그 이름이 담았던 "하한을 낼 수 없다"는 서술은 `_1q` 짝이 생기면서 거짓이 됐고, H를 하한의 대상으로 적은 부분은 처음부터 범주 오류였다. **옛 이름으로 grep하면 08-25 이전 런만 걸린다** |
 | `stage2_params.color_transform_sites_note` | 〃 | 같은 블록의 `color_transform_sites`·`color_transform_declared` 계수가 **어느 arm 기준인지**. 그 계수는 체인 arm(8패스) 기준이고 이 arm은 9패스다 — 범위를 떼고 읽으면 "9패스 arm을 8패스로 셌다"가 된다 |
 | `render.pass_column_count_mismatch` | ⚠️ **어긋났을 때만** (패스별 계측 arm에서 서술 패스 수 ≠ CSV 열 수) | 🔴 **정상이면 이 키가 아예 없다** — 그러므로 **키의 존재 자체가 신호**다(값을 읽기 전에 키가 있는지를 본다). 앱이 일부러 그렇게 만들었다: *"일치하면 키가 없다 — '확인했다'와 '어긋났다'를 섞지 않는다."* 있으면 같은 블록 `render.passes[].gpu_column` 매핑을 신뢰할 수 없고, 앱 쪽에서는 `beginPass` 수와 열 수가 어긋나 프레임이 통째로 버려진다. ⚠️ 경로가 `render.gpu_timer.*`가 **아니다** — `render.passes`의 형제다 |
 | `detect.postprocess.class_wise_conf_reason` | ③ 런 | `class_wise_conf = null`의 사유. **별 키다** → 위 `detect.postprocess` 표 |
@@ -1085,8 +1085,17 @@ id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통
 | `drago_clahe_fused_1q` | `drago_clahe_fused` | 〃 |
 | `drago_clahe_fused_bf_1q` | `drago_clahe_fused_bf` | 〃 |
 | `highlight_boxes_1q` | `highlight_boxes` | 〃 |
+| `detect_cpu_highlight_1q` | `detect_cpu_highlight` | 〃. ③→④ 연결 세트 → 아래 "③→④ 연결 arm" 절 (v7) |
+| `detect_cpu_1q` | `detect_cpu` | 〃. 🔴 ③→④ 세트의 **하한의 분모** → 아래 "③→④ 연결 arm" 절 (v7) |
+| `detect_cpu_chain_1q` | `detect_cpu_chain` | 〃. **탐지가 도는 8패스**(② 체인 + present, 오버레이 없음) → 🔴 통합 계열 **I 하한의 분모** (v7, 2026-08-25) |
+| `detect_cpu_chain_highlight_1q` | `detect_cpu_chain_highlight` | 〃. 9패스 본진과 **글자 그대로 같은 렌더**이고 오버레이 3열(`stage_h_ms`·`overlay_boxes`·`t_overlay_source_ns`)을 **싣는다** → I 하한의 **분자** (v7, 2026-08-25) |
 
-🔴 **아래 셋(`drago_clahe_fused_1q` · `drago_clahe_fused_bf_1q` · `highlight_boxes_1q`)이
+🔴 **이 표는 `_1q` arm의 전수 목록이다** — 앱 `RenderArm.singleFrameQueryPeer`의 항목 수와
+같아야 한다(현재 **10개**). `_1q`를 하나 더할 때 여기 행을 더하고 그 등록도 함께 확인한다.
+다른 절(③→④ 연결 / ②+③+④ 통합)에도 같은 arm이 **역할과 함께** 다시 나오지만, **세는 자리는
+여기 하나**다. 두 표가 갈리면 `singleFrameQueryPeer` 등록 확인 대상을 놓친다.
+
+🔴 **그 셋(`drago_clahe_fused_1q` · `drago_clahe_fused_bf_1q` · `highlight_boxes_1q`)이
 생긴 이유는 "하한이 없는 arm 계열이 셋 남아 있다"는 것이다**(알려진 이슈 22). 단일 query
 짝을 실제로 잰 것은 위 셋뿐이라 나머지 세 계열에는 **패스별 계측의 상한만 있다.**
 ⚠️ **부풀림 비율을 다른 arm에서 옮겨 보정할 수 없다** — 중복 계상량은 마지막 전체화면
@@ -1149,18 +1158,27 @@ id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통
 `singleFrameQueryPeer`·`renderPassCount` 대응 항목에 **반드시** 등록돼야 한다. 빠뜨리면
 `GpuTimerRing`이 프레임 전체가 아니라 **첫 패스만** 감싸고, 그러면 `gpu_frame_ms`가 "프레임
 하나의 GPU 시간"이 아닌 채로 하한 계산에 들어간다 — **로그만 보면 그럴듯하다.**
-기존 `_1q` arm 6개가 어떻게 등록돼 있는지 확인하고 같은 모양으로 넣는다.
+이미 등록된 `_1q` arm이 어떻게 돼 있는지 확인하고 같은 모양으로 넣는다 — **전수 목록은
+위 `_1q` 접미사 절의 표 하나**이고 현재 **10개**다(`singleFrameQueryPeer`의 항목 수와 같다).
 
 
-##### ②+③+④ 통합 arm (v7) — **`stage2_*`와 `stage4_*`를 동시에 갖는 첫 arm**
+##### ②+③+④ 통합 arm (v7) — **네 arm이 한 세트**다
+
+🔴 **2026-08-25에 셋이 늘었다.** 처음에는 9패스 본진 하나뿐이었고 그래서 상한만 나왔다.
+아래 넷을 **같은 세션에서** 재야 I칸의 상한과 하한이 둘 다 나온다.
 
 | 값 | 렌더 | 계측 | 무엇을 재는가 |
 |---|---|---|---|
-| `detect_cpu_chain_highlight` | **9패스** (② Drago→CLAHE 체인 + ④ 오버레이) | 패스별 GPU query 9열 + `stage_h_ms` + `overlay_boxes` + `t_overlay_source_ns` | ② 개선된 화면 **위에** 박스를 얹은 구성의 D·I·H (상한만) |
+| `detect_cpu_chain_highlight` | **9패스** (② Drago→CLAHE 체인 + ④ 오버레이) | 패스별 GPU query 9열 + `stage_h_ms` + `overlay_boxes` + `t_overlay_source_ns` | **본진.** ② 개선된 화면 **위에** 박스를 얹은 구성의 D·I·H. I는 **상한** |
+| `detect_cpu_chain_highlight_1q` | **위와 글자 그대로 같은 9패스** | 프레임 단일 query → `gpu_frame_ms` **한 열** + 오버레이 3열(`stage_h_ms`·`overlay_boxes`·`t_overlay_source_ns`)은 **싣는다** | I **하한의 분자** |
+| `detect_cpu_chain_1q` | 아래 arm과 **글자 그대로 같은 8패스** (② 체인 7 + present, ④ 없음) | 프레임 단일 query → `gpu_frame_ms` **한 열**. 오버레이 열 **없음** | 🔴 I **하한의 분모** |
+| `detect_cpu_chain` | **8패스.** 렌더는 `drago_clahe_chain`과 같고 **탐지가 돈다**. 오버레이 없음 | 패스별 GPU query **8열** + `detect.csv` | 패스7↔8 병합 진단(탐지 부하 아래의 ② 체인)이며 `detect_cpu_chain_1q`의 **패스별 짝** |
 
-`pipeline_stages` = `["blit_2pass", "stage2_drago", "stage2_clahe", "detect", "stage4_highlight", "stage4_smoothing"]`
+`pipeline_stages`(9패스 짝) = `["blit_2pass", "stage2_drago", "stage2_clahe", "detect", "stage4_highlight", "stage4_smoothing"]`
 — **기존 토큰 6개를 나열한다. 새 토큰을 만들지 않는다**(조합 arm 규칙과 같은 이유 → 아래
 `pipeline_stages` 절). 여섯 토큰은 v7까지 전부 이미 등록돼 있다.
+오버레이 없는 8패스 짝은 `stage4_*` 토큰 둘이 빠진 나열이다 — **앱이 내는 문자열이 정답**이고
+하네스는 그것을 해석하지 않는다.
 
 **패스 순서와 GPU 열 (9개. 표의 순서가 패스 순서다)**
 
@@ -1177,7 +1195,13 @@ id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통
 | 9 | present | 화면 | `gpu_present_ms` |
 
 `frames.csv` 오버레이 열 3개(`stage_h_ms` · `overlay_boxes` · `t_overlay_source_ns`)는
-`detect_cpu_highlight`와 같다 → §2 "④ 오버레이 열".
+`detect_cpu_highlight`와 같다 → §2 "④ 오버레이 열". **`detect_cpu_chain_highlight_1q`도 이 3열을
+싣는다**(계측이 다른 것은 GPU 쪽뿐이고 H는 CPU 벽시계라 단일 query와 무관하다).
+
+⚠️ **위 표는 9패스 짝의 것이다.** 오버레이 없는 8패스 짝(`detect_cpu_chain` ·
+`detect_cpu_chain_1q`)은 **패스8이 빠지고** 패스7의 타깃이 그대로 FBO_A, present가 8번째다 —
+`stage_i_ms` 열도 오버레이 3열도 없다. `_1q` 두 arm은 패스가 몇 개든 GPU 열이
+`gpu_frame_ms` **하나**다.
 
 🔴 **이 저장소 최초로 `stage2_*`와 `stage4_*`를 동시에 갖는 arm이다.** 전수 확인 결과 기존
 arm 중 `stage2_*` 보유 **12개** · `stage4_*` 보유 **5개**인데 **교집합이 0**이었다
@@ -1185,17 +1209,54 @@ arm 중 `stage2_*` 보유 **12개** · `stage4_*` 보유 **5개**인데 **교집
 만든 결과이고, 그 격리 덕에 D칸과 I칸이 각각 나왔다. 그러나 **제품은 저조도 개선된 화면 위에
 박스가 얹힌 화면**이고 그 구성은 한 번도 측정된 적이 없다 — 그것이 이 arm의 이유다.
 
-🔴 **`_1q` 짝이 없다 → 이 arm에서 I칸·H칸의 하한을 낼 수 없다.** 하한은 "같은 계측 방식의 두
-arm 차"로만 나오는데(위 `_1q` 절) 이 arm에는 프레임 단일 query 판도, 오버레이만 뺀 9패스
-분모도 없다. **알려진 이슈 36과 같은 부류**다 — 분모를 잘못 골라(`blit_2pass_1q`) I 하한이
-`0`으로 나왔고 그 `0`은 "④가 공짜"가 아니라 "분모가 상한을 통째로 중복 계상했다"였다.
-⚠️ 다른 arm의 부풀림 비율을 옮겨 보정할 수 없다(패스 구성마다 다르다: ④ 오버레이 arm 39.9%
-vs 9패스 arm 43.3%, 알려진 이슈 21). **하한 arm 추가는 다음 세션 항목이다.**
+🔴 **`_1q` 짝이 생겼다 → 이 계열에서 I칸의 하한이 나온다. 그런데 H칸은 애초에 하한·상한의
+대상이 아니다.** 앞서 이 자리에는 *"I칸·H칸의 하한을 낼 수 없다"*고 적혀 있었는데, 앞의 절반은
+`_1q` 짝이 생기면서 낡았고 **뒤의 절반은 처음부터 범주 오류**였다. 정정한다:
+
+- **I 상한** = `detect_cpu_chain_highlight`의 `stage_i_ms`. 패스별 계측은 마지막 전체화면
+  패스의 비용을 **중복 계상**하므로(알려진 이슈 21: ④ 오버레이 arm 39.9% vs 9패스 arm 43.3%)
+  그 값이 위쪽 경계다.
+- **I 하한** = `detect_cpu_chain_highlight_1q` − `detect_cpu_chain_1q`.
+  🔴 **둘 다 프레임 단일 query여야 뜻이 있다** — 계측 방식이 다른 짝을 빼면 그 차가 arm 비용도
+  중복 계상량도 아니게 된다(위 `_1q` 절).
+- 🔴 **분모가 `drago_clahe_chain_1q`가 아닌 이유: 거기에는 탐지 부하가 없다.** 앱에서
+  `usesDetectSession=false`이고 `detect.csv`도 나오지 않는다. ③이 돌면 SoC 전체가 다른 상태이므로
+  그 분모에 빼면 차이에 탐지 비용이 섞인다. **알려진 이슈 36이 정확히 이 부류다** —
+  `highlight_boxes_1q`의 `gpu_frame_ms`가 분모와 소수점 셋째 자리까지 같아 I 하한이 `0`으로
+  나왔고, 그 `0`은 "④가 공짜"가 아니라 **분모가 상한을 통째로 중복 계상했다**는 뜻이었다.
+  **분모를 잘못 고르면 하한이 0으로 나오고, 그 0은 값이 아니라 분모의 고발이다.**
+- 🔴 **H는 하한·상한의 대상이 아니다 — `stage_h_ms` 열로 직접 측정된다.** 앱의
+  `RenderArm.OVERLAY_STAGE_H_SCOPE`가 그 구간이 **`gpuTimer.beginFrame`보다 앞에서 닫힌다**고
+  못 박고 있다: H는 CPU 벽시계이고 모든 GPU query의 **밖**이다. 그러므로 `gpu_frame_ms` 차분에
+  H는 **물리적으로 들어 있지 않다.** 차분으로 유도할 대상이 아니고, 그렇게 유도한 값을
+  "H의 하한"이라 부르면 안 된다.
+- 🔴 **상한 쪽 차분도 계측 방식을 맞춘다**: `detect_cpu_chain_highlight` − `detect_cpu_chain`
+  (둘 다 패스별 query), 같은 세션 안에서 잰다. 패스별 arm을 `_1q` arm에 빼지 않는다.
+- ⚠️ 부풀림 비율을 다른 arm에서 옮겨 보정할 수 없다(패스 구성마다 다르다, 위 이슈 21 수치).
+  하한은 **그 계열에서 직접 재는 수밖에 없다** — 그것이 arm 셋을 늘린 이유다.
+
+이 사실은 `session.json`의 **`bounds_note`** 키로 나간다(`stage2_params`·`overlay` 두 자리,
+값의 출처는 상수 하나 `RenderArm.CHAIN_HIGHLIGHT_BOUNDS_NOTE`) → 위 v7 신설 키 표.
+🔴 **키를 내는 arm은 오버레이가 있는 둘뿐이다** — `detect_cpu_chain_highlight` ·
+`detect_cpu_chain_highlight_1q`. 오버레이 없는 `detect_cpu_chain` · `detect_cpu_chain_1q`에는
+**일부러 없다**(`SessionWriter.kt`의 그 분기 주석이 *오버레이가 없으므로 ④ 관련 키는 넣지
+않는다*고 적는다) — **그 두 런에서 키가 없는 것은 결함이 아니다.** 문장은 **arm 중립**이라 그
+둘 중 어느 쪽이 실어도 참이다(계측 방식을 특정하지 않는다). 옛 키 이름 `no_lower_bound_note`는
+폐기됐다.
+
+🔴 **앱 쪽 요구가 새 `_1q` 둘에도 그대로 걸린다**(위 ③→④ 절의 같은 요구). `detect_cpu_chain_1q`
+· `detect_cpu_chain_highlight_1q`가 `RenderArm.kt`의 `singleFrameQueryPeer`·`renderPassCount`에
+등록되지 않으면 `GpuTimerRing`이 프레임 전체가 아니라 **첫 패스만** 감싸고, 그러면 위 하한 식의
+두 항이 둘 다 "패스1의 시간"이 된다 — **로그만 보면 그럴듯하다.** 하네스는 이것을 검증하지
+않는다(어휘 등록은 "이 문자열을 안다"는 뜻일 뿐이다).
 
 ⚠️ **패스7과 패스8의 타깃이 같은 FBO_A다.** CLAHE apply가 A에 쓰고 오버레이가 `glClear` 없이
 같은 A에 덧그리므로, 드라이버가 두 렌더패스를 병합하면 **`stage_d_apply2_ms`와 `stage_i_ms`의
 경계가 흐려진다.** 알려진 이슈 3(개별 D 열이 한 패스 밀려 있다)과 같은 부류의 귀속 문제이며
 하네스가 갈라낼 수단은 없다 — **두 열을 따로 인용할 때 이 사실을 함께 옮긴다.**
+🔴 **`_1q` 짝은 프레임 총량은 갈라 주지만 열 경계는 갈라 주지 못한다** — 단일 query는 애초에
+열이 하나다. 그러므로 위 I 하한은 "④가 프레임 GPU 시간에 더한 양"이고 **"패스8의 시간"이
+아니다.** 패스7↔8 귀속은 이 계열에서 미해결로 남는다.
 
 ⚠️ **측정용 추가이며 제품 구성 확정이 아니다.** 팀 결정 4건(② 융합 채택 여부 · `bf` 여부 ·
 `INTERFACES.md` §B-4 `ts` · 탐지 주기 `N`)이 미결이라 이 arm은 **상류 잠정 1위와 같은 구성이
@@ -1205,6 +1266,11 @@ vs 9패스 arm 43.3%, 알려진 이슈 21). **하한 arm 추가는 다음 세션
 - **`frames.csv`·`detect.csv` 열이 하나도 늘지 않았다.** GPU 열 9개는 v2~v4에, 오버레이 열
   3개는 v7에 이미 들어와 있다(`COLUMN_ADDED_IN`). 열이 늘지 않으면 `check_schema_version`이
   낼 문장도 없다.
+- **2026-08-25에 arm 셋을 더한 라운드도 같다 — `SCHEMA_VERSION`은 7 그대로다.** `_1q` 짝 둘은
+  이미 있는 `gpu_frame_ms` 열을 쓰고, 오버레이 없는 8패스 arm은 이미 있는 열의 **부분집합**을
+  쓴다. **새 열이 0개**이므로 버전을 올릴 근거가 없다. 바뀐 것은 어휘 3개
+  (`lib/frame_log.py`의 `RENDER_ARMS`)와 `session.json` 키 이름 하나
+  (`no_lower_bound_note` → `bounds_note`)뿐이다.
 - **`session.json` 키 추가는 additive다.** 하네스에는 세션 키 화이트리스트가 없고(미지 키
   경고 경로 자체가 없다) 위 `detect.postprocess`·`overlay.*` 신설 키는 **하네스가 읽지
   않는다** — `summary.json`의 `session`에 그대로 실려 나갈 뿐이다.

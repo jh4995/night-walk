@@ -965,43 +965,92 @@ RENDER_ARM_DETECT_CPU_1Q = "detect_cpu_1q"
 #   id를 뒤이어 등록한 것이고(어휘 등록의 정상 순서다), 등록은 "이 문자열을 안다"는 뜻일
 #   뿐이다. 하네스는 여기서도 arm의 의미를 해석하지 않는다.
 #
+# **네 arm이 한 세트다** (2026-08-25에 셋이 늘었다. 셋을 같은 세션에서 재야 상한과 하한이
+# 둘 다 나온다):
+#
+#   detect_cpu_chain_highlight     9패스(② Drago→CLAHE 체인 + ④ 오버레이) + 패스별 GPU
+#                                  query 9열 + stage_h_ms · overlay_boxes ·
+#                                  t_overlay_source_ns → **본진**. I 상한 · H
+#   detect_cpu_chain_highlight_1q  **위와 글자 그대로 같은 렌더**, 프레임 단일 query →
+#                                  gpu_frame_ms 한 열. 오버레이 3열은 **싣는다**
+#                                  → I 하한의 **분자**
+#   detect_cpu_chain_1q            아래 arm과 **글자 그대로 같은 렌더**(8패스: 체인 7 +
+#                                  present, 오버레이 없음), 프레임 단일 query →
+#                                  gpu_frame_ms 한 열. 오버레이 열 없음
+#                                  → 🔴 **I 하한의 분모**
+#   detect_cpu_chain               8패스. 렌더는 drago_clahe_chain과 같고 **탐지가 돈다**.
+#                                  오버레이 없음. 패스별 GPU 8열 + detect.csv
+#                                  → 패스7↔8 병합 진단(탐지 부하 아래의 ② 체인)이며
+#                                  detect_cpu_chain_1q의 패스별 짝이다
+#
 # **무엇인가:** ② 조합(Drago→CLAHE 체인) 출력 **위에** ③ 탐지 결과를 ④ 오버레이로 덧그리는
-#   9패스 arm이다. 패스 순서는
+#   9패스 arm이 이 계열의 본진이다. 패스 순서는
 #     1 OES→FBO_A / 2 drago analyze / 3 drago build / 4 drago apply(A→B) /
 #     5 clahe analyze / 6 clahe build / 7 clahe apply(B→**A**) /
 #     8 ④ 오버레이 → **A**(clear 없이 덧그림) / 9 present(A→화면)
 #   이고, GPU 열도 그 순서로 9개다(stage_b / d_analyze / d_build / d_apply /
 #   d_analyze2 / d_build2 / d_apply2 / stage_i / gpu_present) + CSV 오버레이 열 3개
 #   (stage_h_ms · overlay_boxes · t_overlay_source_ns).
-#   🔴 **새 토큰도 새 열도 만들지 않는다.** `pipeline_stages`는 기존 토큰 6개를 **나열**하고
-#     (["blit_2pass","stage2_drago","stage2_clahe","detect","stage4_highlight",
-#       "stage4_smoothing"])
+#   오버레이 없는 짝(detect_cpu_chain)은 패스8이 빠진 8패스이고 GPU 열도 8개다.
+#   🔴 **새 토큰도 새 열도 만들지 않는다.** `pipeline_stages`는 기존 토큰을 **나열**하고
+#     (9패스 arm은 ["blit_2pass","stage2_drago","stage2_clahe","detect",
+#       "stage4_highlight","stage4_smoothing"])
 #     열은 위 12개가 이미 v7까지 다 등록돼 있다 — 조합 arm에 합성 토큰을 만들지 않는 규칙과
 #     **같은 이유**다(같은 구조가 두 이름으로 갈리면 모든 비교가 "조건 다름"이 된다).
-#     그래서 이 라운드는 **CSV 열이 하나도 늘지 않고 `SCHEMA_VERSION`도 7 그대로다.**
+#     그래서 이 라운드도 **CSV 열이 하나도 늘지 않고 `SCHEMA_VERSION`도 7 그대로다** —
+#     `_1q` arm은 이미 있는 `gpu_frame_ms` 열을, 오버레이 없는 arm은 이미 있는 열의
+#     부분집합을 쓴다.
 #
-# 🔴 **이 저장소 최초로 `stage2_*`와 `stage4_*`를 동시에 갖는 arm이다.** 전수 확인 결과
-#   기존 arm 중 `stage2_*` 보유 12개 · `stage4_*` 보유 5개인데 **교집합이 0**이었다
-#   (앱 `RenderArm.kt`의 `pipelineStages` 전수). 측정 arm을 "한 번에 하나만 바꾼다"는
+# 🔴 **이 저장소 최초로 `stage2_*`와 `stage4_*`를 동시에 갖는 arm이다**(9패스 짝 둘).
+#   전수 확인 결과 기존 arm 중 `stage2_*` 보유 12개 · `stage4_*` 보유 5개인데 **교집합이 0**
+#   이었다 (앱 `RenderArm.kt`의 `pipelineStages` 전수). 측정 arm을 "한 번에 하나만 바꾼다"는
 #   원칙으로 만든 결과이고 그 격리 덕에 D칸·I칸이 각각 나왔지만, **제품은 저조도 개선된
 #   화면 위에 박스가 얹혀야 한다** — 그 구성을 한 번도 재지 않았다는 사실이 이 arm의 이유다.
 #
-# 🔴 **`_1q` 짝이 없다 → 이 arm에서 I칸·H칸의 하한을 낼 수 없다.** 하한은 "같은 계측 방식의
-#   두 arm 차"로만 나오는데(위 `_1q` 블록) 이 arm에는 프레임 단일 query 판도, 오버레이만 뺀
-#   9패스 분모도 없다. **알려진 이슈 36과 같은 부류**이며(분모를 잘못 골라 I 하한이 0으로
-#   나온 그 실패), 다른 arm의 부풀림 비율을 옮겨 보정할 수도 없다 — 중복 계상량은 패스
-#   구성마다 다르다. **다음 세션 작업 항목이다.**
+# 🔴 **`_1q` 짝이 생겼다 → 이 계열에서 I칸의 하한이 나온다. 그런데 H칸은 애초에 하한·상한의
+#   대상이 아니다 — "I칸·H칸의 하한"은 범주 오류였고 여기서 정정한다.**
+#   - I **상한** = `detect_cpu_chain_highlight`의 `stage_i_ms`. 패스별 계측은 마지막
+#     전체화면 패스의 비용을 **중복 계상**하므로(알려진 이슈 21) 그 값이 상한이다.
+#   - I **하한** = `detect_cpu_chain_highlight_1q` − `detect_cpu_chain_1q`.
+#     🔴 **둘 다 프레임 단일 query여야 뜻이 있다.** 계측 방식이 다른 짝을 빼면 그 차가 arm
+#     비용도 중복 계상량도 아니게 된다(위 `_1q` 블록).
+#   - 🔴 **분모가 `drago_clahe_chain_1q`가 아닌 이유: 거기에는 탐지 부하가 없다**
+#     (앱에서 `usesDetectSession=false`이고 `detect.csv`도 나오지 않는다). ③이 돌면 SoC
+#     전체가 다른 상태이므로 그 분모에 빼면 차이에 탐지 비용이 섞인다. **알려진 이슈 36이
+#     정확히 이 부류다**: `highlight_boxes_1q`의 `gpu_frame_ms`가 분모와 소수점 셋째 자리까지
+#     같아 I 하한이 0으로 나왔고, 그 0은 "④가 공짜"가 아니라 **분모가 상한을 통째로 중복
+#     계상했다**는 뜻이었다. 분모를 잘못 고르면 하한이 0으로 나오고 그 0은 분모가 상한을
+#     중복 계상했다는 뜻이다 — 값이 아니라 분모의 고발이다.
+#   - 🔴 **H는 하한·상한의 대상이 아니다.** 앱의 `OVERLAY_STAGE_H_SCOPE`가 `stage_h_ms`
+#     구간이 **`gpuTimer.beginFrame`보다 앞에서 닫힌다**고 못 박고 있다 — H는 CPU 벽시계이고
+#     모든 GPU query의 **밖**이다. 그러므로 `gpu_frame_ms` 차분에 H는 물리적으로 들어 있지
+#     않다. H는 `stage_h_ms` 열로 **직접 측정**되며 차분으로 유도할 대상이 아니다.
+#   - 🔴 **상한의 분모는 패스별 계측끼리다**: `detect_cpu_chain_highlight` −
+#     `detect_cpu_chain`, 같은 세션 안에서 잰다. 패스별 arm을 `_1q` arm에 빼지 않는다.
+#   ⚠ 이 사실은 `session.json`의 **`bounds_note`** 키로 나간다(`stage2_params`·`overlay`
+#     두 자리. 앱 상수는 `CHAIN_HIGHLIGHT_BOUNDS_NOTE`). 🔴 **키를 내는 arm은 오버레이가
+#     있는 둘뿐이다** — `detect_cpu_chain_highlight` · `detect_cpu_chain_highlight_1q`.
+#     오버레이 없는 `detect_cpu_chain` · `detect_cpu_chain_1q`에는 **일부러 없고**(앱이 그
+#     분기에서 ④ 관련 키를 넣지 않는다) 그 런에 키가 없는 것은 결함이 아니다.
+#     **arm 중립 문장**이라 그 둘 중 어느 쪽이 실어도 참이다(계측 방식을 특정하지 않는다).
+#     이전 이름 `no_lower_bound_note`는 폐기됐다 — "하한을 낼 수 없다"는 서술이 더 이상
+#     참이 아니고, H를 하한의 대상으로 적은 부분은 범주 오류였다.
 #
 # ⚠ **패스7과 패스8의 타깃이 같은 FBO_A다.** clahe apply가 A에 쓰고 오버레이가 clear 없이
 #   같은 A에 덧그리므로, 드라이버가 두 렌더패스를 병합하면 `stage_d_apply2_ms`와
 #   `stage_i_ms`의 **경계가 흐려진다.** 알려진 이슈 3(개별 D 열이 한 패스 밀려 있다)과 같은
 #   부류의 귀속 문제이며, 하네스가 갈라낼 수단은 없다 — 두 열을 따로 인용하기 전에 이 사실을
-#   함께 옮긴다.
+#   함께 옮긴다. 🔴 **`_1q` 짝은 프레임 총량은 갈라 주지만 열 경계는 갈라 주지 못한다** —
+#   단일 query는 애초에 열이 하나다. 위 하한은 "④가 프레임 GPU 시간에 더한 양"이고
+#   "패스8의 시간"이 아니다.
 #
 # ⚠ **측정용 추가이며 제품 구성 확정이 아니다.** 팀 결정 4건(② 융합 채택 여부 · bf 여부 ·
 #   §B-4 ts · 탐지 주기 N)이 미결이라 이 arm은 상류 잠정 1위와 **같은 구성이 아니다.**
 #   이 arm의 숫자를 "제품 성능"으로 인용하지 않는다.
+RENDER_ARM_DETECT_CPU_CHAIN = "detect_cpu_chain"
+RENDER_ARM_DETECT_CPU_CHAIN_1Q = "detect_cpu_chain_1q"
 RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT = "detect_cpu_chain_highlight"
+RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT_1Q = "detect_cpu_chain_highlight_1q"
 
 RENDER_ARMS = (
     RENDER_ARM_PASSTHROUGH,
@@ -1046,9 +1095,13 @@ RENDER_ARMS = (
     RENDER_ARM_DETECT_CPU_HIGHLIGHT,
     RENDER_ARM_DETECT_CPU_HIGHLIGHT_1Q,
     RENDER_ARM_DETECT_CPU_1Q,
-    # ②+③+④ 통합(v7). **stage2_*와 stage4_*를 동시에 갖는 첫 arm**이고 `_1q` 짝이
-    # 아직 없다(I·H 하한 불가) — 위 블록 참고.
+    # ②+③+④ 통합(v7). 넷이 한 세트다 — 본진(9패스) / 그 `_1q` 짝(I 하한의 분자) /
+    # 오버레이 없는 `_1q`(**I 하한의 분모**) / 그 패스별 짝. **stage2_*와 stage4_*를
+    # 동시에 갖는 첫 arm**은 9패스 짝 둘이다. H는 하한의 대상이 아니다 — 위 블록 참고.
+    RENDER_ARM_DETECT_CPU_CHAIN,
+    RENDER_ARM_DETECT_CPU_CHAIN_1Q,
     RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT,
+    RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT_1Q,
     RENDER_ARM_SYNTHETIC,
 )
 
