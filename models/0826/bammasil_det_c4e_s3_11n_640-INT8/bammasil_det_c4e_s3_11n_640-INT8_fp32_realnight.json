@@ -1,0 +1,172 @@
+{
+  "imgsz": 640,
+  "letterbox": "square",
+  "n_negative": 5,
+  "rows": [
+    {
+      "run": "bammasil_det_c4e_s3_11n_640 (FP32 원본)",
+      "nc": 3,
+      "conf": 0.25,
+      "conf_label": "0.25",
+      "class_conf": {
+        "person": 0.25,
+        "stairs": 0.25,
+        "bollard": 0.25
+      },
+      "brightness": "원본",
+      "letterbox": "square",
+      "negative": {
+        "n_img": 5,
+        "hit_img": 2,
+        "box": {
+          "person": 0,
+          "stairs": 2,
+          "bollard": 0
+        },
+        "maxconf": {
+          "person": null,
+          "stairs": 0.495,
+          "bollard": null
+        }
+      },
+      "bollard_scene": {
+        "n_img": 1,
+        "hit_img": 1,
+        "box": {
+          "person": 0,
+          "stairs": 0,
+          "bollard": 2
+        },
+        "maxconf": {
+          "person": null,
+          "stairs": null,
+          "bollard": 0.845
+        }
+      },
+      "stairs_scene": {
+        "n_img": 1,
+        "hit_img": 1,
+        "box": {
+          "person": 0,
+          "stairs": 1,
+          "bollard": 0
+        },
+        "maxconf": {
+          "person": null,
+          "stairs": 0.759,
+          "bollard": null
+        }
+      }
+    },
+    {
+      "run": "bammasil_det_c4e_s3_11n_640 (FP32 원본)",
+      "nc": 3,
+      "conf": 0.25,
+      "conf_label": "0.25",
+      "class_conf": {
+        "person": 0.25,
+        "stairs": 0.25,
+        "bollard": 0.25
+      },
+      "brightness": "gain0.35",
+      "letterbox": "square",
+      "negative": {
+        "n_img": 5,
+        "hit_img": 1,
+        "box": {
+          "person": 0,
+          "stairs": 1,
+          "bollard": 0
+        },
+        "maxconf": {
+          "person": null,
+          "stairs": 0.497,
+          "bollard": null
+        }
+      },
+      "bollard_scene": {
+        "n_img": 1,
+        "hit_img": 1,
+        "box": {
+          "person": 0,
+          "stairs": 0,
+          "bollard": 2
+        },
+        "maxconf": {
+          "person": null,
+          "stairs": null,
+          "bollard": 0.841
+        }
+      },
+      "stairs_scene": {
+        "n_img": 1,
+        "hit_img": 1,
+        "box": {
+          "person": 0,
+          "stairs": 1,
+          "bollard": 0
+        },
+        "maxconf": {
+          "person": null,
+          "stairs": 0.74,
+          "bollard": null
+        }
+      }
+    },
+    {
+      "run": "bammasil_det_c4e_s3_11n_640 (FP32 원본)",
+      "nc": 3,
+      "conf": 0.25,
+      "conf_label": "0.25",
+      "class_conf": {
+        "person": 0.25,
+        "stairs": 0.25,
+        "bollard": 0.25
+      },
+      "brightness": "gain0.20",
+      "letterbox": "square",
+      "negative": {
+        "n_img": 5,
+        "hit_img": 2,
+        "box": {
+          "person": 0,
+          "stairs": 2,
+          "bollard": 0
+        },
+        "maxconf": {
+          "person": null,
+          "stairs": 0.544,
+          "bollard": null
+        }
+      },
+      "bollard_scene": {
+        "n_img": 1,
+        "hit_img": 1,
+        "box": {
+          "person": 0,
+          "stairs": 1,
+          "bollard": 2
+        },
+        "maxconf": {
+          "person": null,
+          "stairs": 0.309,
+          "bollard": 0.824
+        }
+      },
+      "stairs_scene": {
+        "n_img": 1,
+        "hit_img": 1,
+        "box": {
+          "person": 0,
+          "stairs": 1,
+          "bollard": 0
+        },
+        "maxconf": {
+          "person": null,
+          "stairs": 0.691,
+          "bollard": null
+        }
+      }
+    }
+  ]
+}

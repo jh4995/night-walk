@@ -46,19 +46,30 @@ val ortVersion = "1.28.0"
 // ── ③ 모델의 **선언값**을 커밋된 metadata.json에서 읽어 BuildConfig에 박는다 ──────
 // `.onnx`는 gitignore라 APK에 동봉하지 않고 adb push로 배포한다. 그러면 "앱이 연 파일이
 // 정말 그 모델인가"를 대조할 기준값이 필요한데, 그 기준값의 출처는 **git이 추적하는 계약
-// 문서**여야 나중에 되물을 수 있다 — `models/0824/bammasil_det_c4e_s3_11n_640/metadata.json`이
-// 그 문서다 (README.md와 함께 커밋돼 있다). BuildConfig.GIT_COMMIT이 이미 박히므로 "어느
-// 시점의 metadata.json이었나"까지 추적된다.
+// 문서**여야 나중에 되물을 수 있다 — 아래 `detectMetadataRelPath`가 그 문서다 (README.md와
+// 함께 커밋돼 있다). BuildConfig.GIT_COMMIT이 이미 박히므로 "어느 시점의 metadata였나"까지
+// 추적된다.
 //
 // ⚠ 읽지 못해도 **빌드를 죽이지 않는다**(위 git 블록과 같은 규약). "unknown"으로 남기고,
 //   그 상태에서는 앱이 sha256을 대조할 수 없으므로 **③ arm의 런 자체를 거부한다**
 //   (DetectRuntime). 거짓값을 넣는 것보다 런이 안 도는 쪽이 낫다.
 //
-// ⚠ 경로는 **인수분 원본 배치 그대로**다(`models/0824/<모델명>/`). 우리 편의로 옮기지
+// ⚠ 경로는 **인수분 원본 배치 그대로**다(`models/<인수일>/<패키지명>/`). 우리 편의로 옮기지
 //   않는다 — 옮기면 상류가 준 패키지와 이 저장소의 경로가 갈리고, 인수 시점의 배치가
 //   무엇이었는지 되물을 수 없다(직전 커밋 41f385e의 선례).
-val detectModelDir = "models/0824/bammasil_det_c4e_s3_11n_640"
-val detectMetadataRelPath = "$detectModelDir/metadata.json"
+//
+// ⚠ **파일명도 인수분 그대로다.** INT8 패키지의 metadata는 파일명에 패키지 접두어가 붙어
+//   있다(`<패키지명>_metadata.json`). 우리가 `metadata.json`으로 복사해 오면 같은 계약값이
+//   두 파일에 있게 되고 어느 쪽이 원본인지 갈린다 — 그래서 **복사하지 않고 파일명을 변수로
+//   받는다.** 파일명이 패키지마다 다른 것은 인수분의 사실이고 우리가 고칠 것이 아니다.
+//
+// 🔴 **③ arm이 어느 모델로 도는지는 아래 두 줄이 정한다.** FP32↔INT8을 겨루려면 값을 바꿔
+//   각각 release 빌드를 낸다 — 한 빌드에 두 모델을 담는 경로는 없다. 배선 이력:
+//     FP32  models/0824/bammasil_det_c4e_s3_11n_640       + metadata.json
+//     INT8  models/0826/bammasil_det_c4e_s3_11n_640-INT8  + <패키지명>_metadata.json  ← 현재
+val detectModelDir = "models/0826/bammasil_det_c4e_s3_11n_640-INT8"
+val detectMetadataFileName = "bammasil_det_c4e_s3_11n_640-INT8_metadata.json"
+val detectMetadataRelPath = "$detectModelDir/$detectMetadataFileName"
 val detectMetadataFile = File(repoDir.parentFile, detectMetadataRelPath)
 
 @Suppress("UNCHECKED_CAST")
@@ -114,9 +125,13 @@ val detectConfOverrideSource =
         "검증용 기본값이다'**라고 명시했다(models/0824/readme_c4e_640.md §6-2). " +
         "0.35는 상류의 어느 판정 표에도 없는 argparse 기본값이며 **야간 볼라드를 놓치는 " +
         "임계**다(같은 리서치 §4-2). " +
-        "🔴 **그런데 metadata.json을 고치지 않았다** — 고치면 계약값의 출처가 둘로 갈린다" +
-        "(CLAUDE.md 규칙 3). 재발행 요청은 알려진 이슈 44로 유효하다. 그래서 선언값은 " +
-        "선언값대로 남기고(DETECT_CONF_DECLARED) 앱이 쓰는 값을 여기서 따로 선언한다. " +
+        "🆕 **INT8 패키지(0826)는 선언값이 이미 0.25다** — 재발행으로 이슈 44가 그 패키지에서는 " +
+        "해소됐고 이 오버라이드와 값이 같다. 🔴 **그래도 비우지 않는다**: 오버라이드는 모델 " +
+        "디렉토리와 무관하게 전역인데 FP32 패키지(0824)의 선언값은 여전히 0.35다. 비우면 " +
+        "FP32 arm만 0.35로 돌아 **두 arm의 임계가 갈리고 FP32↔INT8 비교가 무효가 된다.** " +
+        "⚠ 우리가 metadata를 고쳐 맞추지는 않는다 — 계약값의 출처가 둘로 갈린다" +
+        "(CLAUDE.md 규칙 3). 그래서 선언값은 선언값대로 남기고(DETECT_CONF_DECLARED) 앱이 " +
+        "쓰는 값을 여기서 따로 선언한다. " +
         "⚠ **클래스별 conf(bollard 하향)는 적용하지 않았다.** 상류가 그것을 1순위 카드로 " +
         "적었지만(같은 리서치 §4-3 · U-18) **임계값 자체가 어느 계약 문서에도 없고** " +
         "metadata에 클래스별 임계 항목도 없다 — 지어내지 않는다. 그리고 이 모델(11n 계열)은 " +
