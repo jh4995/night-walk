@@ -797,6 +797,8 @@ class PassthroughRenderer(
     fun overlaySmootherFacts(): OverlaySmootherFacts = OverlaySmootherFacts(
         tracksCreated = overlaySmoother.tracksCreated,
         tracksExpired = overlaySmoother.tracksExpired,
+        pendingPromoted = overlaySmoother.pendingPromoted,
+        pendingDiscarded = overlaySmoother.pendingDiscarded,
         droppedOverCap = overlaySmoother.droppedOverCap,
         mapFailedFrames = overlaySmoother.mapFailedFrames,
     )

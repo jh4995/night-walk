@@ -1596,8 +1596,10 @@ object SessionWriter {
                     "note",
                     "상한(smoothing.box_cap)을 넘어 **세고 버린** 박스 수다 — 조용히 버리지 " +
                         "않는다. `publish`는 탐지 워커가 게시할 때, `smoothing`은 GL 스레드가 " +
-                        "hold 중인 트랙까지 합쳐 셀 때 넘친 수다(후자는 **프레임마다** 세므로 " +
-                        "같은 초과가 여러 번 계상될 수 있다 — 두 수를 더하지 말 것). " +
+                        "살아 있는 트랙까지 합쳐 셀 때 넘친 수다. ⚠ **후자는 새 게시를 소비한 " +
+                        "프레임에서만 센다 — 매 표시 프레임마다가 아니다**(옛 서술은 " +
+                        "프레임 단위 hold를 전제한 것이라 지금은 거짓이다). 그래도 두 수는 " +
+                        "세는 자리가 달라 같은 박스를 두 번 셀 수 있으므로 **더하지 말 것**. " +
                         "🔴 0이 아니면 그 런의 화면에 실제로 있던 위험물 일부가 그려지지 " +
                         "않았다는 뜻이고, 그때는 상한을 올려 다시 재야 한다(임의 측정값이다)"
                 )
@@ -1733,14 +1735,25 @@ object SessionWriter {
         return json
     }
 
-    /** ④ H칸의 정책값과 그 출처. 🔴 **정책값 넷은 전부 임의 측정값이다.** */
+    /** ④ H칸의 정책값과 그 출처. 🔴 **정책값 여섯은 전부 임의 측정값이다.** */
     private fun buildOverlaySmoothing(facts: SessionFacts): JSONObject {
         val json = JSONObject()
         json.put("stage", "④ 좌표 평활·hold (버짓 H칸)")
         json.put("cpu_column", "stage_h_ms")
         json.put("pipeline_stage_token", "stage4_smoothing")
         json.put("scope", RenderArm.OVERLAY_STAGE_H_SCOPE)
-        json.put("hold_frames", RenderArm.OVERLAY_HOLD_FRAMES_MEASUREMENT_VALUE)
+        // 🔴 **hold_frames 키는 사라졌다** — TTL의 단위가 표시 프레임에서 **게시**로 바뀌었고,
+        //    프레임 단위 만료라는 동작 자체가 코드에 더 이상 없다. 없는 정책을 이름으로 남겨
+        //    두면 session.json이 거짓을 선언한다.
+        json.put(
+            "entry_window_publishes",
+            RenderArm.OVERLAY_ENTRY_WINDOW_PUBLISHES_MEASUREMENT_VALUE
+        )
+        json.put(
+            "entry_hits_required",
+            RenderArm.OVERLAY_ENTRY_HITS_REQUIRED_MEASUREMENT_VALUE
+        )
+        json.put("hold_publishes", RenderArm.OVERLAY_HOLD_PUBLISHES_MEASUREMENT_VALUE)
         json.put("match_iou", RenderArm.OVERLAY_MATCH_IOU_MEASUREMENT_VALUE.toDouble())
         json.put("iir_alpha", RenderArm.OVERLAY_IIR_ALPHA_MEASUREMENT_VALUE.toDouble())
         json.put("box_cap", RenderArm.OVERLAY_BOX_CAP_MEASUREMENT_VALUE)
@@ -1748,16 +1761,67 @@ object SessionWriter {
         json.put("provenance", RenderArm.OVERLAY_SMOOTHING_PROVENANCE)
         json.put("hold_cadence_note", RenderArm.OVERLAY_HOLD_CADENCE_NOTE)
         json.put("no_flicker_design", RenderArm.OVERLAY_NO_FLICKER_DESIGN)
+        // 🔴 상태 기계 블록. **무엇을 그렸는지의 정의가 여기 있다** — overlay_boxes를 읽는
+        //    쪽이 PENDING을 셌는지 아닌지를 추측하지 않게 한다.
+        json.put(
+            "state_machine",
+            JSONObject()
+                .put("states", "PENDING / ACTIVE")
+                .put(
+                    "pending",
+                    "확인 중 — 🔴 **그리지 않는다.** 새로 잡힌 측정은 전부 여기서 시작한다. " +
+                        "최근 entry_window_publishes게시 중 entry_hits_required회 지지받으면 " +
+                        "ACTIVE로 승격하고, 그 창을 다 쓰고도 못 채우면 **한 번도 그려지지 " +
+                        "않은 채** 버려진다(run_facts.pending_discarded)"
+                )
+                .put(
+                    "active",
+                    "그린다. 연속 hold_publishes회 미지지에 해제된다" +
+                        "(run_facts.tracks_expired)"
+                )
+                .put(
+                    "unit",
+                    "🔴 **전이의 단위는 게시(publish)이지 표시 프레임이 아니다.** 새 게시를 " +
+                        "소비한 프레임에서만 전이가 돈다 — 그래서 이 정책은 표시 FPS와 탐지 " +
+                        "주기 N에 무관하다(ms 환산에는 detect_cadence_ms가 필요하다)"
+                )
+                .put(
+                    "scope_note",
+                    "🔴 **해제(hold_publishes)는 ACTIVE에만, 진입창은 PENDING에만 건다.** " +
+                        "해제를 PENDING에도 걸면 PENDING이 1회 미지지에 죽어 '3게시 중 2회'가 " +
+                        "'연속 2회'와 같아지고 진입 규칙이 사문화된다"
+                )
+                .put(
+                    "overlay_boxes_note",
+                    "🔴 **frames.csv의 overlay_boxes는 ACTIVE만 센다 — PENDING 박스는 " +
+                        "그리지 않았으므로 들어가지 않는다.** 0은 정상값이다. " +
+                        "boxes_published(게시된 박스 총계)와 다른 물리량이며, 진입이 " +
+                        "PENDING만큼 늦으므로 **게시된 박스가 그 프레임에 반드시 그려진 것은 " +
+                        "아니다**"
+                )
+                .put(
+                    "no_fade",
+                    "🚫 페이드아웃·알파 변조 없음 — 해제는 **즉시**다(no_flicker_design (1))"
+                )
+        )
         json.put(
             "discard_condition",
-            "match_iou 이상인 측정이 hold_frames 프레임 **연속으로** 없으면 폐기한다. " +
-                "🔴 **TTL은 새 게시가 왔을 때만 다시 찬다** — 같은 스냅샷을 다시 보는 " +
-                "프레임에서는 깎인다(게시 슬롯은 새 게시가 올 때까지 직전 스냅샷을 " +
-                "보존하므로, 프레임마다 재충전하면 탐지가 멈춰도 낡은 박스가 무한히 " +
-                "그려진다). 게시 주기가 실측 ≈9프레임이고 hold가 " +
-                "${RenderArm.OVERLAY_HOLD_FRAMES_MEASUREMENT_VALUE}프레임이므로 **탐지가 " +
-                "정상인 동안은 만료되지 않고**, 사라지는 것은 새 게시에서 그 박스가 빠졌거나 " +
-                "게시가 끊긴 경우다(no_flicker_design 참고). " +
+            "🔴 **단위가 게시(publish)다 — 표시 프레임이 아니다.** 한 게시 안에서 " +
+                "match_iou 이상인 측정이 그 트랙에 붙으면 '지지', 아니면 '미지지'다. " +
+                "**ACTIVE**는 미지지가 hold_publishes회 **연속**되면 해제된다(값 1 = 즉시). " +
+                "**PENDING**은 최근 entry_window_publishes게시 중 entry_hits_required회를 " +
+                "채우면 ACTIVE로 승격하고, 그 창을 다 쓰고도 못 채우면 **한 번도 그려지지 " +
+                "않은 채** 버려진다. 🔴 **해제는 ACTIVE에만, 진입창은 PENDING에만 건다** — " +
+                "해제를 PENDING에도 걸면 '3중 2회'가 '연속 2회'와 같아져 진입 규칙이 " +
+                "사문화된다. " +
+                "🔴 **상태 기계는 새 게시가 왔을 때만 돈다** — 같은 스냅샷을 다시 보는 " +
+                "프레임에서는 아무 전이도 없다(게시 슬롯은 새 게시가 올 때까지 직전 스냅샷을 " +
+                "보존하므로, 프레임마다 지지로 세면 탐지가 멈춰도 낡은 박스가 무한히 " +
+                "그려진다). 그래서 **게시 하나가 아무리 오래 머물러도 그것을 쓰는 중에 박스가 " +
+                "사라지지 않는다** — 옛 프레임 단위 hold에서는 그 일이 실제로 있었다(08-24 " +
+                "런 20260824_212554 재분석, run_ts=20260828_185222: excess<0 35프레임). " +
+                "사라지는 것은 새 게시에서 그 박스가 빠진 경우다 " +
+                "(게시가 아예 끊기면 전이가 없어 박스는 남는다 — no_flicker_design 참고). " +
                 "🔴 연결은 **같은 클래스끼리만** 한다(사람과 계단이 겹쳤을 때 색이 서로 " +
                 "뒤바뀌는 것을 막는다)"
         )
@@ -1777,18 +1841,30 @@ object SessionWriter {
                 JSONObject()
                     .put("tracks_created", s.tracksCreated)
                     .put("tracks_expired", s.tracksExpired)
+                    .put("pending_promoted", s.pendingPromoted)
+                    .put("pending_discarded", s.pendingDiscarded)
                     .put("dropped_over_cap", s.droppedOverCap)
                     .put("map_failed_frames", s.mapFailedFrames)
                     .put(
                         "note",
-                        "🔴 **관측값이지 판정이 아니다.** tracks_expired가 0이 아닌 것은 " +
-                            "결함일 수도 있고 '장면에서 위험물이 실제로 사라졌다'일 수도 " +
+                        "🔴 **관측값이지 판정이 아니다.** " +
+                            "🔴 **tracks_expired의 뜻이 바뀌었다** — 예전에는 'hold(표시 " +
+                            "프레임)가 만료돼 폐기된 트랙 수'였고, 지금은 **ACTIVE가 연속 " +
+                            "hold_publishes회 미지지로 해제된 수**(= 그리던 박스가 사라진 " +
+                            "횟수)다. 옛 런의 같은 이름과 **직접 비교하지 말 것.** " +
+                            "PENDING이 진입창을 못 채우고 버려진 것은 여기가 아니라 " +
+                            "pending_discarded로 간다. " +
+                            "⚠ tracks_created는 **PENDING으로 태어난 수**라 그린 트랙 수가 " +
+                            "아니다 — 그린 것은 pending_promoted이고, " +
+                            "created ≈ promoted + discarded + (아직 PENDING인 것)이다. " +
+                            "그 값이 0이 아닌 것은 결함일 수도 있고 '장면에서 위험물이 " +
+                            "실제로 사라졌다/1회짜리 오탐을 올리지 않았다'일 수도 " +
                             "있는데, 가르려면 정답 라벨이 필요하다(하네스의 " +
                             "safety_regression이 evaluated=false인 이유와 같다). " +
                             "🔴 map_failed_frames가 0이 아니면 그 프레임들은 좌표를 만들 " +
                             "치수가 없어(FBO가 아직 없거나 분석 치수가 0) **새 게시를 " +
                             "소비하지 못했다** — 값을 지어내지 않고 다음 프레임에 다시 " +
-                            "시도한다. 그 프레임에도 hold 중인 트랙은 그대로 그려지므로 " +
+                            "시도한다. 그 프레임에도 ACTIVE 트랙은 그대로 그려지므로 " +
                             "overlay_boxes가 반드시 0인 것은 아니다(런 앞자락에서는 트랙이 " +
                             "없어 0이다). ⚠ 이 수가 크면 그 런의 앞자락에서 게시가 여러 번 " +
                             "버려졌다는 뜻이고, t_overlay_source_ns가 그만큼 낡은 값에 " +
