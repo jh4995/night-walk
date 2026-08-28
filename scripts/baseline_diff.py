@@ -41,6 +41,21 @@ CONDITION_KEYS = (
     #   그 옛 로그는 자기가 어떤 arm이었는지 실제로 기록하지 않았고, "passthrough 상당"은
     #   우리의 추론이다. comparable은 exit code를 바꾸지 않는다.
     ("session", "render_arm"),
+    # ④ 오버레이의 **fill 알파**. 🔴 이 파일이 :32-38에서 실증한 실패 양식이 지금 fill에서
+    # 재현되기 직전이라 넣는다: 박스 안을 채우기 시작하면서 **정적 더미 arm 3개
+    # (highlight_boxes / _stress / _1q)의 렌더가 달라졌는데 arm id는 그대로다.** arm이
+    # 조건을 담아 주던 자리(render_arm)가 이번에는 담지 못하므로, 그 위 주석의 blit_2pass ↔
+    # clahe_gamma 사례처럼 **다른 렌더를 '조건 동일'로 판정한 채** 비교하게 된다.
+    # 값의 출처는 앱의 자진 신고(session.json의 overlay.fill_alpha)이고 측정 결과가 아니다 —
+    # 아래 detect.ep.resolved를 뺀 기준(선언 vs 결과)에 그대로 부합한다.
+    # ⚠ **키 부재의 처리는 이 파일의 기존 관행 그대로다**(새 관행을 만들지 않는다): `_dig`가
+    #   None을 돌려주므로 v7 승격 베이스라인(fill 이전 빌드)은 새 v8 런과 "조건 다름"으로 뜬다.
+    #   render_arm을 넣을 때 적어 둔 대가와 **글자 그대로 같은 것**이며 버그가 아니라 정직한
+    #   표시다 — 그 옛 로그는 자기가 어떤 알파로 그렸는지 실제로 기록하지 않았고, "fill이
+    #   없었다"는 우리의 추론이다. comparable은 exit code를 바꾸지 않는다.
+    # ⚠ 오버레이를 안 그리는 arm(passthrough 등)은 session.json에 overlay 블록 자체가 없어
+    #   양쪽 다 None이 되고, 그때는 조건이 실제로 같으므로 경고가 뜨지 않는다.
+    ("session", "overlay", "fill_alpha"),
     # 야간 앱에서 조명은 **공급 fps를 직접 바꾸는 조건**이다. 저조도에서 카메라 AE가 노출을
     # 늘리면 프레임 간격 자체가 벌어져, 밝은 방 런과 야간 런을 비교하면 코드가 그대로여도
     # "회귀"로 보인다. 어휘는 lib/frame_log.py의 LIGHTING_CONDITIONS.

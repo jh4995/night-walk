@@ -302,7 +302,8 @@ object SessionWriter {
         "stage4_highlight",
         "FBO_A (처리 해상도. **clear하지 않고 ② 결과 위에 덧그린다**)",
         "④ 이중 스트로크 박스 **프레임마다 다른 개수**(frames.csv의 overlay_boxes)" +
-            "(검정 밑선 + 대비색 본선, 비채움). ${HighlightOverlay.GL_PRIMITIVE_NAME} " +
+            "(검정 밑선 + 대비색 본선 + **박스 안쪽 반투명 fill** — 상류 '비채움' 명세로부터의 " +
+            "이탈이며 사유는 overlay.fill_deviation). ${HighlightOverlay.GL_PRIMITIVE_NAME} " +
             "**드로우콜 최대 1회**이며 박스가 0개인 프레임에서는 드로우콜을 내지 않는다. " +
             "두께는 처리 해상도의 짧은 변에서 계산한다" +
             "(720p 기준 ${RenderArm.HIGHLIGHT_STROKE_PX_AT_720P}px). " +
@@ -368,8 +369,20 @@ object SessionWriter {
      * v7이었고(`docs/FRAME_LOG_SCHEMA.md` §6대로 하네스가 먼저 들어간다), 앱이 6을 선언한 채
      * v7 열을 실으면 "앱이 하네스보다 뒤처졌다"는 **거짓 경고**가 그 열이 실제로 있는 로그에
      * 붙는다(v4→v5 때와 같은 논거다).
+     *
+     * v8에서 ④ **면적** 열 하나가 늘었다: `overlay_fill_frac`
+     * (`FrameLogRecorder.OVERLAY_HEADER`). 값은 **Σ(박스 면적) ÷ 화면 면적**이고 겹침을
+     * 보정하지 않는 float다(0은 정상값 = 박스가 없었다). 🔴 **개수 열 `overlay_boxes`와 짝을
+     * 이룬다** — 박스 안쪽을 채우기 시작해서 I칸의 설명 변수가 개수에서 면적으로 바뀌었기
+     * 때문이다(`overlay.fill_deviation` (b)). 시간이 아니라 비율이므로 GPU 열이 아니고
+     * `gpu_sum_ms`에 들어가지 않는다.
+     *
+     * 🔎 **이번에는 앱이 먼저 올라갔다** — 위 v5·v7 사례와 방향이 반대이므로 적어 둔다:
+     * 이 앱이 실제로 내기 시작한 열이라 버전을 올리지 않으면 CSV에 있는 열을 세션이
+     * 부인하게 된다. 하네스(`lib/frame_log.py`)는 **같은 라운드에서 뒤이어 v8로 승급했고**,
+     * v7 로그는 양쪽 모두에서 그대로 읽힌다(누락 열을 이름으로 지목하는 경고만 붙는다).
      */
-    const val SCHEMA_VERSION = 7
+    const val SCHEMA_VERSION = 8
 
     /**
      * ④ 좌표 매핑에서 **분석 치수와 처리 치수의 종횡비가 같다고 볼 허용치**.
@@ -1391,18 +1404,61 @@ object SessionWriter {
                     "⚠ ③ 결과를 그리는 arm은 detect_cpu_highlight / _1q이며 이 arm이 아니다"
             }
         )
-        json.put("shape", "이중 스트로크 (검정 밑선 + 대비색 본선)")
+        json.put(
+            "shape",
+            "이중 스트로크(검정 밑선 + 대비색 본선) + **박스 안쪽 반투명 fill**. 박스당 정점 " +
+                "${HighlightOverlay.VERTS_PER_BOX}개 = fill ${HighlightOverlay.VERTS_PER_FILL} + " +
+                "스트로크 ${HighlightOverlay.VERTS_PER_RING} × 2벌이며 **드로우콜은 여전히 " +
+                "프레임당 1회다**"
+        )
         json.put(
             "fill",
-            "비채움 — 박스 **내부**(스트로크보다 더 안쪽)는 한 픽셀도 건드리지 않는다. " +
-                "⚠ 다만 이 문장은 **내부에 대한 것뿐이다**: 스트로크 자체는 경계선 위에 가운데 " +
+            "🔴 **채운다 — 상류 명세('비채움')로부터의 이탈이다**(전문은 fill_deviation). " +
+                "박스 **내부**를 클래스 색으로 알파 " +
+                "${RenderArm.OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE}만큼 칠한다. fill 사각형은 " +
+                "박스 원 좌표 그대로이며 안쪽 인셋이 없다(두께보다 얇은 박스에서 스트로크의 " +
+                "클램프와 규칙이 갈라져 틈이 생기는 것을 막는다). " +
+                "⚠ 스트로크 자체는 경계선 위에 가운데 " +
                 "맞춤이라 **경계 밖 " +
                 "${(RenderArm.HIGHLIGHT_STROKE_PX_AT_720P + 2f * RenderArm.HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P) / 2f}" +
-                "px(720p 기준)을 덮는다** — 스펙 문구('경계선 밖은 일절 안 건드림')와 어긋나는 " +
-                "지점이고, 전문은 upstream_deviation에 있다"
+                "px(720p 기준)을 덮는다** — 그것은 별개의 이탈이고 전문은 upstream_deviation에 " +
+                "있다"
+        )
+        json.put(
+            "fill_alpha",
+            RenderArm.OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE.toDouble()
+        )
+        json.put("fill_alpha_provenance", RenderArm.HIGHLIGHT_FILL_PROVENANCE)
+        json.put(
+            "fill_blend",
+            "glEnable(GL_BLEND) ; glBlendFuncSeparate(GL_SRC_ALPHA, " +
+                "GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE) ; glDrawArrays ; " +
+                "glDisable(GL_BLEND). " +
+                "🔴 **알파 채널만 GL_ZERO/GL_ONE으로 분리한 이유**: 통상 블렌드는 FBO의 " +
+                "**dst 알파**를 1 미만으로 떨어뜨리는데 그 FBO를 present 패스가 다시 " +
+                "샘플링한다. 컬러만 섞고 알파는 보존하면 present가 읽는 값이 블렌딩 OFF 때와 " +
+                "같다. " +
+                "🔴 **glDisable을 같은 함수 안에서 부른다** — 상태가 present 패스까지 남으면 " +
+                "다른 arm과 조건이 달라지고 그 차이는 로그 어디에도 남지 않는다. 박스가 " +
+                "0개인 프레임은 드로우콜 자체를 내지 않으므로 glEnable도 부르지 않는다. " +
+                "⚠ 스트로크의 알파는 1.0이라 검정 밑선·본선 픽셀은 블렌딩 OFF 때와 **비트 " +
+                "단위로 같다**(src·1 + dst·0). " +
+                "🔴 **정적 상수 알파이며 시간 변조가 없다** — 알파는 정점에 실린 빌드 상수이고 " +
+                "프레임 간에도 시간에 따라서도 변하지 않는다(overlay_no_flicker_design (1))"
+        )
+        json.put(
+            "fill_draw_order",
+            "🔴 **fill 전량 → 스트로크 전량**(박스별 인터리브가 아니다). 한 드로우콜 안에서도 " +
+                "프리미티브 순서는 보장되므로 이 배치가 그대로 그리기 순서가 된다. " +
+                "이유: 알파 fill이 뒤에 그려지면 **앞 박스의 스트로크를 물들여** 겹친 박스에서 " +
+                "대비가 깎인다 — 저시력 사용자에게 스트로크는 마지막 방어선이다. " +
+                "⚠ 대가는 없다: 루프를 두 번 돌 뿐 **할당도 GL 호출도 늘지 않는다**"
         )
         // 🔴 스펙 문구와 기하가 다르다는 사실. 이것이 없으면 픽셀 대조하는 날 막힌다.
         json.put("upstream_deviation", RenderArm.HIGHLIGHT_DEVIATION)
+        // 🔴 upstream_deviation **옆자리**다(no_red_reason ↔ person_color_deviation과 같은
+        //    논거) — 그 문장만 읽으면 "내부는 안 건드린다"로 오독하므로 이탈을 바로 옆에 둔다.
+        json.put("fill_deviation", RenderArm.HIGHLIGHT_FILL_DEVIATION)
         json.put("stroke_px_at_720p", RenderArm.HIGHLIGHT_STROKE_PX_AT_720P.toDouble())
         json.put(
             "underline_margin_px_at_720p",
@@ -1443,12 +1499,21 @@ object SessionWriter {
         json.put("blink_not_a_perf_claim", RenderArm.HIGHLIGHT_BLINK_NOT_A_PERF_CLAIM)
         json.put(
             "geometry",
-            "얇은 사각형 스트로크 quad(${HighlightOverlay.GL_PRIMITIVE_NAME}). 박스당 정점 " +
-                "${HighlightOverlay.VERTS_PER_BOX}개(띠 4개 × 삼각형 2개 × 3정점 × 스트로크 2벌)" +
-                "이고 드로우콜은 프레임당 **1회**다. " +
+            "사각형 quad(${HighlightOverlay.GL_PRIMITIVE_NAME}). 박스당 정점 " +
+                "${HighlightOverlay.VERTS_PER_BOX}개 = **fill " +
+                "${HighlightOverlay.VERTS_PER_FILL}**(삼각형 2개 × 3정점) + **스트로크 " +
+                "${HighlightOverlay.VERTS_PER_RING * 2}**(띠 4개 × 삼각형 2개 × 3정점 × 2벌)" +
+                "이고 🔴 **드로우콜은 fill이 들어온 뒤에도 프레임당 1회 그대로다** — 패스도 " +
+                "드로우콜도 늘리지 않고 정점에 알파 속성 하나를 더했다(fill_draw_order). " +
+                "정점 속성은 aPosition(vec2) · aColor(vec3) · aAlpha(float)이며 " +
+                "🔴 **aColor를 vec4로 바꾸지 않았다** — 색의 출처(OverlayClassColors)와 " +
+                "평활기의 색 배열이 3-stride이고, 별도 float 속성이 색 소유권을 건드리지 않는 " +
+                "유일한 길이다. " +
                 "🔴 전체화면 프래그먼트 SDF로 그리지 않았다 — 그러면 픽셀 셰이더가 화면 전체를 " +
                 "돌아 오버레이 비용이 화면 전체 비용으로 부풀고 I칸이 **다른 물리량**이 된다" +
-                "(FRAME_BUDGET.md §5가 I칸을 GL 드로우콜 계측으로 못 박았다)"
+                "(FRAME_BUDGET.md §5가 I칸을 GL 드로우콜 계측으로 못 박았다). ⚠ fill이 " +
+                "칠하는 것은 **박스 면적의 합**이지 화면 전체가 아니다 — 박스가 0개인 " +
+                "프레임에서는 한 픽셀도 칠하지 않으므로 그 판단은 여전히 유효하다"
         )
         // 🔴 통합 arm은 패스 번호도 타깃 FBO도 다르다(패스8/FBO_A) — 4패스 arm의 문장을
         //    그대로 내면 "패스2와 패스3" 같은 **없는 패스**를 가리킨다.
@@ -3446,7 +3511,8 @@ object SessionWriter {
                         "${HighlightOverlay.GL_PRIMITIVE_NAME}, 0, " +
                         "${facts.arm.highlightBoxCount * HighlightOverlay.VERTS_PER_BOX}) " +
                         "**1회**다 — 박스 " +
-                        "${facts.arm.highlightBoxCount}개의 스트로크 quad를 한 버퍼에 담는다"
+                        "${facts.arm.highlightBoxCount}개의 fill quad와 스트로크 quad를 " +
+                        "한 버퍼에 담는다(fill 전량 → 스트로크 전량 — overlay.fill_draw_order)"
                 else -> "패스당 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)"
             }
         )
@@ -3569,8 +3635,9 @@ object SessionWriter {
                                 } else {
                                     "${facts.arm.highlightBoxCount}개"
                                 }) +
-                                "(검정 밑선 + 대비색 본선, 비채움). " +
-                                "얇은 사각형 스트로크 quad를 " +
+                                "(검정 밑선 + 대비색 본선 + **박스 안쪽 반투명 fill** — " +
+                                "상류 '비채움' 명세로부터의 이탈이며 사유는 " +
+                                "overlay.fill_deviation). 사각형 quad를 " +
                                 "${HighlightOverlay.GL_PRIMITIVE_NAME} **드로우콜 1회**로 " +
                                 "그린다. 두께는 처리 해상도의 짧은 변에서 계산한다" +
                                 "(720p 기준 ${RenderArm.HIGHLIGHT_STROKE_PX_AT_720P}px). " +

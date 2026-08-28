@@ -442,6 +442,16 @@ class PassthroughRenderer(
      */
     private var frameOverlayBoxes = FrameLogRecorder.OVERLAY_BOXES_UNRECORDED
 
+    /**
+     * 이번 프레임의 `overlay_fill_frac`을 [FrameLogRecorder.FILL_FRAC_SCALE]배 한 정수.
+     * `0`은 정상값(채운 면적이 없었다)이고
+     * [FrameLogRecorder.OVERLAY_FILL_FRAC_UNRECORDED]만 "기록 안 함"이다.
+     *
+     * 🔴 값의 출처는 [HighlightOverlay.overlayFillFrac] **하나**이고 여기서 다시 계산하지
+     * 않는다 — 면적을 두 곳에서 재면 두 값이 갈리는 날 어느 쪽이 그린 것인지 알 수 없다.
+     */
+    private var frameOverlayFillFracScaled = FrameLogRecorder.OVERLAY_FILL_FRAC_UNRECORDED
+
     /** [0]=FBO_A, [1]=FBO_B. 0이면 미생성. GL 스레드 전용. */
     private val fbos = IntArray(FBO_COUNT)
     private val fboTextures = IntArray(FBO_COUNT)
@@ -661,6 +671,7 @@ class PassthroughRenderer(
             if (arm.usesDynamicHighlightBoxes) overlayPublisher.latest() else null
         frameStageHNs = FrameLogRecorder.MISSING_NS
         frameOverlayBoxes = FrameLogRecorder.OVERLAY_BOXES_UNRECORDED
+        frameOverlayFillFracScaled = FrameLogRecorder.OVERLAY_FILL_FRAC_UNRECORDED
         val tRenderStartNs = SystemClock.elapsedRealtimeNanos()
         val hasNewFrame = tRecvNs != NO_FRAME
 
@@ -689,6 +700,7 @@ class PassthroughRenderer(
                 //    박스가 있는 프레임 쪽으로만 치우친다(스키마 v7).
                 tOverlaySourceNs =
                     frameOverlaySnapshot?.publishedNs ?: FrameLogRecorder.MISSING_NS,
+                overlayFillFracScaled = frameOverlayFillFracScaled,
             )
             // 이번 프레임에 건 query가 어느 행을 채워야 하는지 여기서 확정한다.
             // 계측하지 않은 프레임에서 불러도 안전하다(링이 스스로 걸러 낸다).
@@ -788,6 +800,7 @@ class PassthroughRenderer(
         frameOverlaySnapshot = null
         frameStageHNs = FrameLogRecorder.MISSING_NS
         frameOverlayBoxes = FrameLogRecorder.OVERLAY_BOXES_UNRECORDED
+        frameOverlayFillFracScaled = FrameLogRecorder.OVERLAY_FILL_FRAC_UNRECORDED
     }
 
     /**
@@ -1309,6 +1322,8 @@ class PassthroughRenderer(
         val drawn = overlaySmoother.update(frameOverlaySnapshot, fboWidth, fboHeight)
         // 정점 재기록도 H 안이다 — 이 CPU 비용을 stage_i_ms(GPU 시계) 쪽에 두면 사라진다.
         highlightOverlay.setDynamicGeometry(overlaySmoother)
+        // 면적 축도 H 안에서 확정한다 — 정점을 쓰면서 이미 센 값을 고정소수로 옮길 뿐이다.
+        frameOverlayFillFracScaled = scaleFillFrac(highlightOverlay.overlayFillFrac)
         frameStageHNs = SystemClock.elapsedRealtimeNanos() - hStart
         frameOverlayBoxes = drawn
 
@@ -1706,7 +1721,10 @@ class PassthroughRenderer(
      * 🔴 **③ 결과 arm에서는 패스1보다 앞에 H칸(좌표 평활·hold)이 하나 더 있다** — GPU 패스가
      * 아니라 **GL 스레드의 CPU 구간**이고 `stage_h_ms`로 나간다. GPU query 안에 두지 않는
      * 이유는 [RenderArm.OVERLAY_STAGE_H_SCOPE]에 있다.
-     * ⚠ 정적 더미 arm 셋은 그 블록을 타지 않는다 — 그 arm의 GL 호출 열은 이전과 같아야 한다.
+     * ⚠ 정적 더미 arm 셋은 그 블록을 타지 않는다 — 그 arm의 박스는 프레임마다 같아 평활할
+     * 것이 없기 때문이다. 🔴 예전에 여기 적혀 있던 사유("그 arm의 GL 호출 열은 이전과 같아야
+     * 한다")는 fill이 들어오면서 **거짓이 됐다**: 오버레이 패스에 블렌딩 상태와 알파 속성이
+     * 붙어 정적 더미 arm의 GL 호출 열도 바뀌었다([RenderArm.HIGHLIGHT_FILL_DEVIATION]).
      */
     private fun drawHighlightOverlay(
         oes: QuadProgram,
@@ -1718,14 +1736,20 @@ class PassthroughRenderer(
         // stage_h_ms는 **CPU 벽시계**다. GPU timer query 안에 넣으면 (a) 그 열은 GPU 시간을
         // 재므로 이 CPU 일이 어디에도 계상되지 않고, (b) 두 시계가 섞인 값이 나가면 하네스
         // 자기검사가 잡는다. 구간의 정확한 범위는 RenderArm.OVERLAY_STAGE_H_SCOPE에 있다.
-        // ⚠ **정적 더미 arm은 이 블록을 타지 않는다** — 그 arm들의 렌더는 이전과 바이트 단위로
-        //   같아야 하고(승격 비교), H 열도 싣지 않는다.
+        // ⚠ **정적 더미 arm은 이 블록을 타지 않는다** — 그 arm의 박스는 프레임마다 같아
+        //   평활할 것이 없고, H 열도 싣지 않는다.
+        //   🔴 예전 사유("그 arm들의 렌더는 이전과 바이트 단위로 같아야 한다 — 승격 비교")는
+        //   더 이상 성립하지 않는다: fill이 들어오면서 정적 더미 arm도 그리는 픽셀이 바뀌었다
+        //   (RenderArm.HIGHLIGHT_FILL_DEVIATION). 그 arm의 이전 stage_i_ms 승격 숫자는
+        //   이 빌드의 값이 아니다.
         val dynamicBoxes = arm.usesDynamicHighlightBoxes
         if (dynamicBoxes) {
             val hStart = SystemClock.elapsedRealtimeNanos()
             val drawn = overlaySmoother.update(frameOverlaySnapshot, fboWidth, fboHeight)
             // 정점 재기록도 H 안이다 — 이 CPU 비용을 stage_i_ms(GPU 시계) 쪽에 두면 사라진다.
             highlightOverlay.setDynamicGeometry(overlaySmoother)
+            // 면적 축도 H 안에서 확정한다(위 통합 arm과 같은 자리·같은 값).
+            frameOverlayFillFracScaled = scaleFillFrac(highlightOverlay.overlayFillFrac)
             frameStageHNs = SystemClock.elapsedRealtimeNanos() - hStart
             frameOverlayBoxes = drawn
         }
@@ -1767,6 +1791,19 @@ class PassthroughRenderer(
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
         if (timing) gpuTimer.endPass()
+    }
+
+    /**
+     * `overlay_fill_frac`(비율) → 로그 청크에 담을 **고정소수 정수**.
+     * 청크가 `LongArray`라 float를 그대로 담을 수 없다([FrameLogRecorder.FILL_FRAC_SCALE]).
+     *
+     * ⚠ 곱셈을 Double로 한다 — 겹침 미보정이라 비율이 1을 크게 넘을 수 있고, float 가수로는
+     * 그 자릿수에서 소수 6자리가 남지 않는다. 할당은 없다(원시형 산술뿐이다).
+     */
+    private fun scaleFillFrac(frac: Float): Long {
+        // 🔴 0은 **정상값**이다("채운 면적이 없었다"). 없음의 표식은 호출자가 따로 둔다.
+        if (frac <= 0f) return 0L
+        return (frac.toDouble() * FrameLogRecorder.FILL_FRAC_SCALE + 0.5).toLong()
     }
 
     /** 프레임당 객체를 만들지 않는다 — 인자는 전부 원시형이고 프로그램은 미리 만들어 둔다. */

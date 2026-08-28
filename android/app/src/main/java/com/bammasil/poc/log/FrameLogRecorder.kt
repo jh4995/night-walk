@@ -43,15 +43,15 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
     private var gpuHeader = ""
 
     /**
-     * 이 런이 ④ 오버레이 열 3개(`stage_h_ms` / `overlay_boxes` / `t_overlay_source_ns`)를
-     * 싣는가. **③ 결과를 그리는 arm에서만** true다(`RenderArm.usesDynamicHighlightBoxes`).
+     * 이 런이 ④ 오버레이 열 [OVERLAY_VALUE_COUNT]개([OVERLAY_HEADER])를 싣는가.
+     * **③ 결과를 그리는 arm에서만** true다(`RenderArm.usesDynamicHighlightBoxes`).
      *
      * 🔴 **정적 더미 arm에는 싣지 않는다.** 재지 않은 열을 헤더에 넣고 -1로 채우면 하네스가
      * "쟀는데 못 얻었다"로 읽는데 그건 다른 뜻이다 — [CSV_HEADER]의 같은 규약이다.
      */
     private var overlayColumns = false
 
-    /** [overlayColumns]가 true면 3, 아니면 0. [stride] 계산과 오프셋에 함께 쓴다. */
+    /** [overlayColumns]가 true면 [OVERLAY_VALUE_COUNT], 아니면 0. [stride]와 오프셋에 쓴다. */
     private var overlayValueCount = 0
 
     @Volatile
@@ -86,7 +86,7 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
      * @param gpuColumns 이 런이 실을 GPU 패스 시간 열 이름 — **패스 순서 그대로**이며
      *   출처는 `RenderArm.gpuColumns` 하나다. 비어 있으면(패스스루) 청크에 그 칸 자체가
      *   없고 [setGpuTiming]은 무시된다.
-     * @param overlayColumns ④ 오버레이 열 3개를 실을 것인가. 🔴 **③ 결과를 그리는 arm에서만
+     * @param overlayColumns ④ 오버레이 열([OVERLAY_HEADER])을 실을 것인가. 🔴 **③ 결과를 그리는 arm에서만
      *   true다** — 그렇지 않은 런에 이 열을 -1로 채워 내면 "쟀는데 못 얻었다"가 된다.
      */
     fun start(
@@ -147,6 +147,12 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
          * 🔴 **박스가 0개(빈 결과)여도 적는다** — [MISSING_NS]는 첫 추론 완료 전만이다.
          */
         tOverlaySourceNs: Long = MISSING_NS,
+        /**
+         * 🔴 그 프레임의 **fill 면적 비율을 [FILL_FRAC_SCALE]배 한 정수**(청크가 LongArray라
+         * float를 그대로 못 담는다). `0`은 정상값이고
+         * [OVERLAY_FILL_FRAC_UNRECORDED]만 "기록하지 않았다"다.
+         */
+        overlayFillFracScaled: Long = OVERLAY_FILL_FRAC_UNRECORDED,
     ): Int {
         if (!isRecording) return NO_SLOT
         var chunk = if (chunks.isEmpty()) null else chunks[chunks.size - 1]
@@ -173,6 +179,7 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
             chunk[o] = stageHNs
             chunk[o + 1] = overlayBoxes.toLong()
             chunk[o + 2] = tOverlaySourceNs
+            chunk[o + 3] = overlayFillFracScaled
         }
         cursor += stride
         val slot = recordedFrames
@@ -251,6 +258,12 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
                         line.append(',').append(chunk[o + 1])
                         // t_overlay_source_ns — 정수 ns 그대로.
                         line.append(',').append(chunk[o + 2])
+                        // overlay_fill_frac — **비율**이다(시간이 아니다). 저장은
+                        // FILL_FRAC_SCALE(=1e6)배 정수이고, appendMs가 하는 일이 정확히
+                        // "1e6으로 나눠 소수 6자리로 쓴다"라 그대로 재사용한다. 음수(-1)도
+                        // 같은 규약으로 나간다. 🔴 자릿수를 줄이면 작은 박스가 0.0이 되고
+                        // 하네스가 그 샘플을 "면적 0"으로 읽는다.
+                        appendMs(line.append(','), chunk[o + 3])
                     }
                     line.append('\n')
                     out.write(line.toString())
@@ -290,8 +303,12 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
         /** GPU 칸의 "아직/영영 없음". CSV에는 `-1`로 나간다. */
         const val MISSING_NS = -1L
 
-        /** ④ 오버레이 칸 수(`stage_h_ms` / `overlay_boxes` / `t_overlay_source_ns`). */
-        const val OVERLAY_VALUE_COUNT = 3
+        /**
+         * ④ 오버레이 칸 수(`stage_h_ms` / `overlay_boxes` / `t_overlay_source_ns` /
+         * `overlay_fill_frac`). 🔴 [OVERLAY_HEADER]의 이름 개수와 **반드시 같다** — 다르면
+         * 열이 한 칸씩 밀린 채 그럴듯해 보인다.
+         */
+        const val OVERLAY_VALUE_COUNT = 4
 
         /**
          * 🔴 `overlay_boxes`의 **"이 프레임을 기록하지 않았다"**. `0`은 "그 프레임에 그린
@@ -301,7 +318,23 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
         const val OVERLAY_BOXES_UNRECORDED = -1
 
         /**
-         * ④ 오버레이 열 헤더(스키마 v7). 이름은 `lib/frame_log.py`의 `OPTIONAL_COLUMNS`와
+         * `overlay_fill_frac`을 long 칸에 담기 위한 **고정소수 배율**. 청크가 [LongArray]라
+         * float를 그대로 못 넣으므로 `round(frac * 이 값)`으로 저장하고 CSV에서 소수 6자리로
+         * 되돌린다([appendMs]와 **같은 자릿수**라 같은 함수가 쓴다).
+         *
+         * ⚠ 배율을 바꾸면 CSV의 자릿수도 함께 바뀐다 — 두 사실이 한 상수에 묶여 있다.
+         */
+        const val FILL_FRAC_SCALE = 1_000_000L
+
+        /**
+         * 🔴 `overlay_fill_frac`의 **"이 프레임을 기록하지 않았다"**. `0.0`은 "그 프레임에 채운
+         * 면적이 없었다"는 **정상값**이므로 없음의 표식으로 쓸 수 없다 —
+         * [OVERLAY_BOXES_UNRECORDED]와 같은 논거다. CSV에는 `-1`로 나간다.
+         */
+        const val OVERLAY_FILL_FRAC_UNRECORDED = -1L
+
+        /**
+         * ④ 오버레이 열 헤더(스키마 v8). 이름은 `lib/frame_log.py`의 `OPTIONAL_COLUMNS`와
          * **글자까지** 같아야 한다.
          *
          * 🔴 **GPU 열이 아니다.** `stage_h_ms`는 CPU 벽시계(`elapsedRealtimeNanos`, GL 스레드)라
@@ -310,8 +343,17 @@ class FrameLogRecorder(private val chunkFrames: Int = 4096) {
          *
          * 🔴 **신선도(`t_render_start_ns − t_overlay_source_ns`)를 싣지 않는다** — 유도값이라
          * PC가 계산한다. 같은 이름의 열을 앱이 내면 하네스가 미지 열 경고를 낸다.
+         *
+         * 🔴 **v8에서 `overlay_fill_frac`이 늘었다** — 단위는 **비율(float)**이고 값은
+         * Σ(박스 면적) ÷ 화면 면적이다(겹침 미보정이라 1을 넘을 수 있다). 시간이 아니므로
+         * ms 열과 섞지 말 것. 개수 축인 `overlay_boxes`와 **짝을 이룬다**: 스트로크 비용은
+         * 개수·둘레가, fill 비용은 이 면적이 설명한다
+         * (`RenderArm.HIGHLIGHT_FILL_DEVIATION` (b)).
+         * 🟢 하네스(`lib/frame_log.py`)도 v8로 승급했다 — 이 열 이름과 **위치(④ 묶음 맨 뒤)**가
+         * 그쪽 `FRAME_OVERLAY_COLUMNS`와 한 글자도 어긋나면 안 된다.
          */
-        const val OVERLAY_HEADER = "stage_h_ms,overlay_boxes,t_overlay_source_ns"
+        const val OVERLAY_HEADER =
+            "stage_h_ms,overlay_boxes,t_overlay_source_ns,overlay_fill_frac"
 
         /**
          * 헤더 규칙 (스키마 v4):
