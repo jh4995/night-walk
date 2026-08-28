@@ -2,8 +2,8 @@
 
     python scripts/overlay_ghost.py --frames <런디렉토리|frames.csv> [--frames ...]
 
-**왜 이 스크립트가 있나.** ④ 오버레이는 hold TTL을 **표시 프레임** 단위로 깎는다
-(`session.json`의 `overlay.smoothing.hold_frames`). 사용자는 "박스가 물체보다 늦게 사라진다"고
+**왜 이 스크립트가 있나.** ④ 오버레이는 hold TTL을 깎아 박스를 잠시 더 남긴다. 사용자는
+"박스가 물체보다 늦게 사라진다"고
 보고했지만 **그것을 재는 지표가 없었다** — 눈으로 본 것은 계측이 아니고 재현 절차도 없다
 (CLAUDE.md 규칙 7). 이 스크립트는 **앱을 한 줄도 고치지 않고** 기존 v7 열만으로 그 지표를
 만든다(CSV 열을 늘리지 않았고 `SCHEMA_VERSION`도 그대로다).
@@ -15,6 +15,20 @@
       excess > 0  →  잔상    (게시에 없는 박스를 그리고 있다)
       excess < 0  →  결손    (게시에 있는 박스를 안 그리고 있다. 아래 분류를 볼 것)
       excess = 0  →  게시와 화면이 일치
+
+🔴 **`excess < 0`의 귀속은 그 런의 정책 단위에 딸린다** — `session.json`에서 읽는다
+(`resolve_policy`). 스키마 버전으로는 가를 수 없다(전환에서 `SCHEMA_VERSION`이 오르지 않았다).
+
+    overlay.smoothing.hold_frames    있음 → **프레임 단위**(옛 빌드). 표시 프레임마다 TTL이
+                                            깎이므로 게시를 쓰는 중에도 박스가 사라질 수 있고,
+                                            그 결손은 `hold_expiry`로 귀속한다
+    overlay.smoothing.hold_publishes 있음 → **게시 단위**(PENDING/ACTIVE FSM 빌드). 전이가 새
+                                            게시를 소비한 프레임에서만 도므로 그룹 중간 결손은
+                                            **구조적으로 불가능**하고, 남는 것은 진입 지연
+                                            (`pending`)뿐이다
+    둘 다 / 둘 다 아님                    → **귀속하지 않는다.** 값을 지어내지 않고 사유를 낸다
+
+🔴 **정책이 다른 런을 한 표에 합치지 않는다** — 같은 `excess < 0` 열이 다른 물리량이 된다.
 
 **조인:** `t_overlay_source_ns` 값이 바뀔 때마다 새 게시 그룹이고, 그 값 **이하의 최대**
 `t_detect_end_ns`를 가진 detect 행에 붙인다. 둘 다 `CLOCK_BOOTTIME`
@@ -60,11 +74,18 @@ from lib.frame_log import (  # noqa: E402
     OVERLAY_BOXES_PUBLISHED_PATH,
     OVERLAY_DROPPED_OVER_CAP_PUBLISH_PATH,
     OVERLAY_DROPPED_OVER_CAP_SMOOTHING_PATH,
+    OVERLAY_ENTRY_HITS_REQUIRED_PATH,
+    OVERLAY_ENTRY_WINDOW_PUBLISHES_PATH,
     OVERLAY_EXCESS_SERIES,
     OVERLAY_HOLD_FRAMES_PATH,
+    OVERLAY_HOLD_PUBLISHES_PATH,
     OVERLAY_MAP_FAILED_FRAMES_PATH,
+    OVERLAY_PENDING_DISCARDED_PATH,
+    OVERLAY_PENDING_PROMOTED_PATH,
     OVERLAY_PUBLISH_COUNT_PATH,
     OVERLAY_REJECTED_INVERTED_PATH,
+    OVERLAY_TRACKS_CREATED_PATH,
+    OVERLAY_TRACKS_EXPIRED_PATH,
     FrameLogError,
     read_detect,
     read_frames,
@@ -96,6 +117,17 @@ CLASS_PENDING = "pending"          # 게시 첫 프레임부터 게시보다 적
 CLASS_HOLD_EXPIRY = "hold_expiry"  # 다 그리고 있다가 **같은 게시 안에서** 줄었다 (프레임 단위 TTL)
 CLASS_UNEXPLAINED = "unexplained"  # 같은 게시 안에서 줄었는데 그 자리가 hold 선언값이 아니다
 NEGATIVE_CLASSES = (CLASS_PENDING, CLASS_HOLD_EXPIRY, CLASS_UNEXPLAINED)
+
+# ── 정책 단위 ─────────────────────────────────────────────────────────────
+# 🔴 **`excess < 0`의 뜻이 정책마다 다르다.** 프레임 단위(옛 빌드)에서는 게시 하나를 보는
+#   동안 hold TTL이 깎여 **그 게시를 아직 쓰는 중에** 박스가 사라질 수 있다. 게시 단위
+#   (PENDING/ACTIVE FSM 빌드)에서는 전이가 **새 게시를 소비한 프레임에서만** 돌기 때문에 그
+#   일이 구조적으로 불가능하고, 남는 결손은 진입 지연(PENDING)뿐이다.
+# 🔴 그래서 정책은 **session.json에서 읽는다.** 스키마 버전으로는 가를 수 없고(전환에서
+#   SCHEMA_VERSION이 오르지 않았다), 값을 지어내면 안전 회귀 숫자가 조용히 오염된다.
+POLICY_PUBLISH = "publish"
+POLICY_FRAME = "frame"
+POLICY_UNKNOWN = "unknown"
 
 # ── 상수 자기검사 ─────────────────────────────────────────────────────────
 # 데이터와 무관한 불변식이므로 import 시점에 닫는다(overlay_cost_by_boxes.py와 같은 부류).
@@ -143,14 +175,47 @@ NOTES = {
     ),
     "negative_split": (
         "🔴 **`excess < 0`을 한 통에 담지 않는다.** 게시 첫 프레임부터 모자란 것(pending = 진입 "
-        "지연)과, 다 그리다가 **같은 게시 안에서** 줄어든 것(hold_expiry = 프레임 단위 TTL 만료)은 "
-        "원인이 다르다. FSM 도입 뒤 pending은 곧 '위험물 표시가 얼마나 늦었나'이고 그것이 규칙 6의 "
-        "안전 회귀 숫자가 된다 — 여기 오염이 남으면 그 숫자를 믿을 수 없다."
+        "지연)과, 다 그리다가 **같은 게시 안에서** 줄어든 것은 원인이 다르다. 게시 단위 FSM "
+        "빌드에서 pending은 곧 '위험물 표시가 얼마나 늦었나'이고 그것이 규칙 6의 안전 회귀 숫자가 "
+        "된다 — 여기 오염이 남으면 그 숫자를 믿을 수 없다. ⚠ **뒤쪽의 귀속은 정책 단위에 딸린다**: "
+        "프레임 단위 정책에서는 `hold_expiry`(프레임 단위 TTL 만료)이고, 게시 단위 정책에서는 그 "
+        "부류가 구조적으로 불가능하므로 `unexplained`로 남는다(`policy_unit_not_pooled`)."
     ),
     "episode_ms_span": (
         "⚠ 에피소드의 ms는 그 구간 **첫 프레임과 마지막 프레임의 `t_recv_ns` 차**다(창 길이를 "
         "재는 방식과 같다). 1프레임짜리 에피소드는 0.0ms가 되며 '0ms였다'가 아니라 '차분을 만들 "
         "프레임이 하나뿐'이라는 뜻이다 — 그래서 프레임 수 분포를 항상 함께 낸다."
+    ),
+    "policy_unit_not_pooled": (
+        "🔴 **정책 단위가 다른 런을 한 표에 합치지 않는다.** `excess < 0`은 프레임 단위 정책"
+        "(`overlay.smoothing.hold_frames`)에서는 '게시를 쓰는 중에 hold TTL이 만료됐다'를 "
+        "포함하지만, 게시 단위 정책(`overlay.smoothing.hold_publishes` + PENDING/ACTIVE FSM)"
+        "에서는 그것이 **구조적으로 불가능**하고 남는 것은 진입 지연(pending)뿐이다 — 같은 열이 "
+        "다른 물리량이 된다. 두 정책의 런을 섞은 분포는 비교가 아니라 착시다"
+        "(`cross_run_not_pooled`와 같은 결의 함정이며, 이쪽은 커밋이 같아도 걸린다)."
+    ),
+    "publish_unit_midgroup_impossible": (
+        "🔴 **게시 단위 정책에서 그룹 중간의 결손은 구조적으로 불가능하다.** 트랙 상태는 새 "
+        "게시를 소비한 프레임에서만 바뀌므로(OverlaySmoother.update의 `consumedPublish` 가드), "
+        "같은 게시를 다시 보는 프레임에서 그린 개수가 줄어들 길이 없다. 그런데도 나왔다면 그것은 "
+        "**분류 실패가 아니라 진짜 발견이다** — 앱이 선언한 정책과 실제 동작이 어긋났거나, "
+        "조인이 한 게시씩 밀렸거나, 로그가 프레임 순서를 잃었다는 신호다. `unexplained`로 남기고 "
+        "설명된 것과 섞지 않는다."
+    ),
+    "fsm_no_promotion": (
+        "🔴 **`pending_promoted == 0`은 '승격이 한 번도 없었다' = 그 런이 박스를 하나도 그리지 "
+        "않았다는 지목이다.** PENDING은 정확히 그 실패 모드를 만들 수 있다(진입창을 못 채우면 "
+        "**한 번도 그려지지 않은 채** 버려진다). 08-24에 '로그는 정상인데 화면에 박스가 없던' "
+        "무음 실패가 실제로 있었다 — `overlay_boxes`가 0인 것을 '장면에 위험물이 없었다'로 읽기 "
+        "전에 이 수를 본다. ⚠ 0이 곧 결함이라는 뜻은 아니다(정말 아무것도 탐지되지 않았을 수 "
+        "있다 — `no_ground_truth`와 같은 사유)."
+    ),
+    "tracks_expired_renamed": (
+        "🔴 **`tracks_expired`의 뜻이 바뀌었다.** 옛 빌드에서는 'hold(표시 프레임)가 만료돼 "
+        "폐기된 트랙 수'였고, 게시 단위 FSM 빌드에서는 '**ACTIVE가 연속 hold_publishes회 "
+        "미지지로 해제된 수**(= 그리던 박스가 사라진 횟수)'다. 옛 런의 같은 이름과 **직접 "
+        "비교하지 않는다.** PENDING이 진입창을 못 채우고 버려진 것은 여기가 아니라 "
+        "`pending_discarded`로 간다."
     ),
     "cross_run_not_pooled": (
         "🔴 런을 **합치지 않는다.** 줄마다 런·커밋이 붙는다. 서로 다른 빌드의 잔상 분포를 하나로 "
@@ -253,7 +318,18 @@ def _overlay_facts(session: dict) -> dict:
         ("dropped_over_cap_publish", OVERLAY_DROPPED_OVER_CAP_PUBLISH_PATH),
         ("dropped_over_cap_smoothing", OVERLAY_DROPPED_OVER_CAP_SMOOTHING_PATH),
         ("map_failed_frames", OVERLAY_MAP_FAILED_FRAMES_PATH),
+        # ── 정책 단위를 가르는 두 키. **하나만 있어야 한다**(resolve_policy) ──
         ("hold_frames", OVERLAY_HOLD_FRAMES_PATH),
+        ("hold_publishes", OVERLAY_HOLD_PUBLISHES_PATH),
+        # 게시 단위 정책의 진입 조건. 귀속에 쓰지는 않지만 **어느 정책으로 읽었는지의 근거**로
+        # 표에 싣는다(값을 지어내지 않았다는 증거다).
+        ("entry_window_publishes", OVERLAY_ENTRY_WINDOW_PUBLISHES_PATH),
+        ("entry_hits_required", OVERLAY_ENTRY_HITS_REQUIRED_PATH),
+        # ── FSM 런 카운터 ──
+        ("pending_promoted", OVERLAY_PENDING_PROMOTED_PATH),
+        ("pending_discarded", OVERLAY_PENDING_DISCARDED_PATH),
+        ("tracks_created", OVERLAY_TRACKS_CREATED_PATH),
+        ("tracks_expired", OVERLAY_TRACKS_EXPIRED_PATH),
     ):
         value, present = session_field(session, path)
         out[name] = value if isinstance(value, int) and not isinstance(value, bool) else None
@@ -267,6 +343,109 @@ def _overlay_facts(session: dict) -> dict:
         "같은 박스를 두 번 셀 수 있다). 조인 검산은 **둘 다 0**을 요구한다"
     )
     return out
+
+
+def resolve_policy(facts: dict) -> dict:
+    """`session.json`에서 **hold TTL의 단위**를 읽는다. 🔴 값을 지어내지 않는다.
+
+    귀속 규칙이 정책마다 다르므로(NOTES['policy_unit_not_pooled']) 이것이 먼저다.
+
+      - `overlay.smoothing.hold_publishes`만 있다  → 게시 단위 (PENDING/ACTIVE FSM 빌드)
+      - `overlay.smoothing.hold_frames`만 있다     → 프레임 단위 (옛 빌드)
+      - 둘 다 없다 → **귀속 불가.** pending을 내지 않고 사유를 낸다
+      - 둘 다 있다 → **모순.** session.json이 서로 다른 단위의 정책 둘을 동시에 선언했다.
+        어느 쪽이 실제로 돈 정책인지 로그만으로 알 수 없으므로 역시 내지 않는다
+
+    🔴 **판별 축은 값이 아니라 키의 존재다.** 이 전환에서 `SCHEMA_VERSION`은 오르지 않았고
+    CSV 열도 늘지 않았다 — 버전으로는 가를 수 없다. 그리고 명시적 `null`과 "키가 없다"는 다른
+    사실이므로(`session_field`의 규약) 존재 여부를 그대로 쓴다.
+    """
+    hf_present = bool(facts.get("hold_frames_key_present"))
+    hp_present = bool(facts.get("hold_publishes_key_present"))
+    hf = facts.get("hold_frames")
+    hp = facts.get("hold_publishes")
+
+    if hf_present and hp_present:
+        unit, basis, ok = POLICY_UNKNOWN, None, False
+        reason = (
+            f"🔴 **모순이다** — session.json이 `{facts['hold_frames_path']}`(프레임 단위)와 "
+            f"`{facts['hold_publishes_path']}`(게시 단위)를 **둘 다** 선언했다. 두 값은 단위가 "
+            "다른 서로 다른 정책이고 한 런에서 동시에 돌 수 없다. 어느 쪽이 실제로 돈 정책인지 "
+            "로그만으로 알 수 없으므로 `excess < 0`을 귀속하지 않는다 — 하나를 골라 짚으면 그 "
+            "추측이 곧 안전 회귀 숫자가 된다"
+        )
+    elif hp_present:
+        unit, basis, ok = POLICY_PUBLISH, facts["hold_publishes_path"], True
+        reason = (
+            f"게시 단위 정책 — `{facts['hold_publishes_path']}`가 있다(hold_publishes={hp}). "
+            "전이는 **새 게시를 소비한 프레임에서만** 돌므로 같은 게시를 다시 보는 프레임에서 그린 "
+            "개수가 줄 수 없다. 그래서 `excess < 0`은 **그룹 첫 프레임의 결손(pending = 진입 "
+            "지연)** 하나뿐이고, `hold_expiry`는 구조적으로 불가능하다"
+        )
+    elif hf_present:
+        unit, basis, ok = POLICY_FRAME, facts["hold_frames_path"], True
+        reason = (
+            f"프레임 단위 정책(옛 빌드) — `{facts['hold_frames_path']}`가 있다(hold_frames={hf}). "
+            "게시 하나를 보는 동안 표시 프레임마다 TTL이 깎이므로 **그 게시를 아직 쓰는 중에** "
+            "박스가 사라질 수 있고, 그 결손은 `hold_expiry`로 귀속한다"
+        )
+    else:
+        unit, basis, ok = POLICY_UNKNOWN, None, False
+        reason = (
+            f"🔴 **정책 단위를 알 수 없다** — session.json에 `{facts['hold_frames_path']}`도 "
+            f"`{facts['hold_publishes_path']}`도 없다. 어느 단위로 TTL이 깎였는지 모르면 "
+            "`excess < 0`을 진입 지연과 TTL 만료로 가를 수 없다. **값을 지어내지 않는다** — "
+            "'재지 못했다'가 틀린 귀속보다 낫다"
+        )
+
+    return {
+        "policy_unit": unit,
+        "policy_basis_key": basis,
+        "attribution_available": ok,
+        "reason": reason,
+        "hold_frames_declared": hf,
+        "hold_frames_key_present": hf_present,
+        "hold_publishes_declared": hp,
+        "hold_publishes_key_present": hp_present,
+        "entry_window_publishes_declared": facts.get("entry_window_publishes"),
+        "entry_hits_required_declared": facts.get("entry_hits_required"),
+        # 🔴 이 정책에서 hold_expiry가 나올 수 있는가. 게시 단위면 **구조적으로 불가능**하다.
+        "hold_expiry_possible": unit == POLICY_FRAME,
+        "note": NOTES["policy_unit_not_pooled"],
+        "midgroup_note": NOTES["publish_unit_midgroup_impossible"],
+    }
+
+
+def fsm_run_facts(facts: dict, policy: dict) -> dict:
+    """FSM 런 카운터(`overlay.smoothing.run_facts`)를 **있으면** 싣는다.
+
+    🔴 `pending_promoted == 0`은 '아무것도 안 그렸다'의 지목이다(NOTES['fsm_no_promotion']).
+    🔴 `tracks_expired`는 뜻이 바뀌었다(NOTES['tracks_expired_renamed']) — 옛 런과 직접 비교 금지.
+    """
+    promoted = facts.get("pending_promoted")
+    present = bool(facts.get("pending_promoted_key_present"))
+    return {
+        "available": present or bool(facts.get("pending_discarded_key_present")),
+        "pending_promoted": promoted,
+        "pending_promoted_key_present": present,
+        "pending_discarded": facts.get("pending_discarded"),
+        "pending_discarded_key_present": bool(facts.get("pending_discarded_key_present")),
+        "tracks_created": facts.get("tracks_created"),
+        "tracks_expired": facts.get("tracks_expired"),
+        # ── 불리언 (사람이 표를 읽고 판단하게 두지 않는다) ──
+        "no_promotion": present and promoted == 0,
+        "no_promotion_note": NOTES["fsm_no_promotion"],
+        "tracks_expired_note": NOTES["tracks_expired_renamed"],
+        "policy_unit": policy["policy_unit"],
+        "reason": (
+            None
+            if present
+            else (
+                "FSM 런 카운터가 없다 — 옛 빌드의 session.json이거나 run_facts가 null이다. "
+                "**'승격이 0회였다'가 아니라 '그 수를 낸 적이 없다'다**"
+            )
+        ),
+    }
 
 
 def read_frame_rows(csv_path: Path, warmup_sec: float) -> dict:
@@ -453,20 +632,34 @@ def join_groups(groups: list[dict], detect: dict) -> dict:
     }
 
 
-def classify_negative(frames: list[dict], groups: list[dict], hold_frames) -> dict:
+def classify_negative(
+    frames: list[dict], groups: list[dict], hold_frames, policy_unit: str
+) -> dict:
     """`excess < 0`인 프레임을 **원인별로 가른다**(NOTES['negative_split']).
 
     분류의 축은 **결손이 시작된 자리**(deficit onset = 그룹 안에서 excess가 `>= 0`에서
     `< 0`으로 넘어간 인덱스)다. 한 게시 안에서 published_count는 상수이므로 excess가 내려가는
-    유일한 경로는 **그린 개수가 줄어든 것**이고, 같은 게시를 다시 보는 프레임에는 새 측정이
-    오지 않으므로 개수가 줄 수 있는 경로는 **TTL 만료뿐이다**
-    (`OverlaySmoother.update`: `isNewPublish`가 false면 `trackMatched`가 전부 false이고
-    그 프레임마다 `trackTtl`이 1씩 깎인다).
+    유일한 경로는 **그린 개수가 줄어든 것**이다.
+
+    🔴 **그 다음이 정책마다 다르다**(`resolve_policy`). 아래 괄호 안이 정책 서술이며, 한쪽
+    문장을 다른 정책의 런에 적용하면 귀속이 조용히 틀린다:
+
+      - **프레임 단위**(`hold_frames`, 옛 빌드): 같은 게시를 다시 보는 프레임에서도 TTL이 깎인다
+        (`OverlaySmoother.update`가 매 프레임 돌고, 매칭되지 않은 트랙의 `trackTtl`이 1씩
+        줄었다). 그래서 그룹 중간에서 박스가 사라질 수 있고 그 자리는 선언값 `hold_frames`다.
+      - **게시 단위**(`hold_publishes`, PENDING/ACTIVE FSM 빌드): 전이 전체가
+        `consumedPublish` 가드 안에 있어 **새 게시를 소비한 프레임에서만** 돈다. 같은 게시를
+        다시 보는 프레임에서는 매칭도 TTL 감소도 승격도 일어나지 않으므로 **그룹 중간에서 그린
+        개수가 줄어드는 것이 구조적으로 불가능**하다.
+
+    분류:
 
       - onset == 0            → `pending` (그 게시의 **첫 프레임부터** 모자랐다 = 진입 쪽)
-      - onset == hold_frames  → `hold_expiry` (게시를 소비한 프레임에서 TTL이 선언값으로 차고
-                                 그 수만큼 깎여 만료된 자리 — 프레임 단위 TTL의 정의 그대로다)
-      - 그 밖                 → `unexplained` (설명된 것과 **섞지 않는다**)
+      - onset == hold_frames  → `hold_expiry` — **프레임 단위 정책에서만.** 게시를 소비한
+                                 프레임에서 TTL이 선언값으로 차고 그 수만큼 깎여 만료된 자리다
+      - 그 밖                 → `unexplained` (설명된 것과 **섞지 않는다**). 게시 단위 정책에서
+                                 그룹 중간 결손이 여기로 오면 그것은 **진짜 발견**이다
+                                 (NOTES['publish_unit_midgroup_impossible'])
 
     🔴 **"첫 감소"가 아니라 "결손이 시작된 자리"를 보는 이유:** 트랙의 TTL은 게시 경계와
     무관하게 그 트랙이 마지막으로 매칭된 시점부터 깎인다. 그래서 **직전 게시에서 넘어온 낡은
@@ -504,7 +697,14 @@ def classify_negative(frames: list[dict], groups: list[dict], hold_frames) -> di
                     onset_histogram[k] = onset_histogram.get(k, 0) + 1
                 if onset == 0:
                     klass[i] = CLASS_PENDING
-                elif hold_frames is not None and onset == hold_frames:
+                elif (
+                    # 🔴 **프레임 단위 정책에서만** hold_expiry로 귀속한다. 게시 단위에서는 이
+                    #   부류가 구조적으로 불가능하므로 아래 unexplained로 남는다 — 나오면 그것이
+                    #   진짜 발견이다.
+                    policy_unit == POLICY_FRAME
+                    and hold_frames is not None
+                    and onset == hold_frames
+                ):
                     klass[i] = CLASS_HOLD_EXPIRY
                 else:
                     klass[i] = CLASS_UNEXPLAINED
@@ -845,8 +1045,13 @@ def analyze_run(csv_path: Path, detect_path: Path, run_dir: Path, warmup_sec: fl
     window = series.analysis_window_sec
     sustained = bool(window is not None and window >= targets.SUSTAINED_SEC)
     hold_frames = facts["hold_frames"]
+    # 🔴 **귀속 규칙보다 먼저 정책을 읽는다.** `excess < 0`의 뜻이 정책마다 다르다.
+    policy = resolve_policy(facts)
+    policy_unit = policy["policy_unit"]
+    block["policy"] = policy
+    block["fsm_run_facts"] = fsm_run_facts(facts, policy)
 
-    negative = classify_negative(frames, groups, hold_frames)
+    negative = classify_negative(frames, groups, hold_frames, policy_unit)
     excess = negative["excess"]
     klass = negative["class"]
     group_of = negative["group_of"]
@@ -865,7 +1070,15 @@ def analyze_run(csv_path: Path, detect_path: Path, run_dir: Path, warmup_sec: fl
         "excess_computed_frames": sum(1 for i in window_positions if excess[i] is not None),
         "excess_undefined_frames": sum(1 for i in window_positions if excess[i] is None),
         "negative_class_counts": counts_by_class,
+        # 🔴 어느 정책으로 읽었는지를 **숫자 옆에** 둔다. 이 표는 한 줄씩 인용되므로 정책이
+        #    멀리 있으면 프레임 단위 런의 excess<0과 게시 단위 런의 excess<0이 같은 열처럼 읽힌다.
+        "policy_unit": policy_unit,
+        "policy_basis_key": policy["policy_basis_key"],
+        "policy_note": NOTES["policy_unit_not_pooled"],
         "hold_frames_declared": hold_frames,
+        "hold_publishes_declared": policy["hold_publishes_declared"],
+        "entry_window_publishes_declared": policy["entry_window_publishes_declared"],
+        "entry_hits_required_declared": policy["entry_hits_required_declared"],
         # 🔴 분류의 **근거를 숫자로** 남긴다: 결손이 시작된 그룹 안 인덱스의 도수분포.
         #    전부 hold 선언값 하나에 몰려 있으면 "프레임 단위 TTL 만료"라는 설명이 그 자리에서
         #    확인된다 — 문장으로 단언하지 않는다.
@@ -903,60 +1116,126 @@ def analyze_run(csv_path: Path, detect_path: Path, run_dir: Path, warmup_sec: fl
                 NOTES["ms_needs_cadence"], NOTES["no_ground_truth"], NOTES["policy_only"],
             ],
         }
-        hold_block = {
-            "available": True,
-            **episode_block(
-                "hold_expiry",
-                [k == CLASS_HOLD_EXPIRY for k in klass],
-                frames, excess, group_of, window_positions, window,
-            ),
-            "definition": (
-                f"excess < 0 이고 그 결손이 그룹 안 인덱스 {hold_frames}(= 선언된 hold_frames)"
-                "에서 시작된 프레임. 같은 게시를 다시 보는 프레임에는 새 측정이 오지 않으므로 "
-                "개수가 줄 수 있는 경로는 hold TTL 만료뿐이다 (OverlaySmoother.update: "
-                "isNewPublish=false면 trackMatched가 전부 false라 그 프레임마다 trackTtl이 "
-                "1씩 깎이고, 게시를 소비한 프레임에서 hold_frames로 찼으므로 정확히 그 인덱스에서 "
-                "0이 된다)"
-            ),
-            "onset_index_expected": hold_frames,
-            "threshold": None,
-            "threshold_note": NOTES["no_threshold"],
-        }
-        metrics["hold_expiry"] = hold_block
-        if unexplained_frames:
+        hold_expiry_observed = counts_by_class[CLASS_HOLD_EXPIRY]
+        if not policy["attribution_available"]:
+            # 🔴 정책 단위를 확정하지 못하면(둘 다 없음 / 둘 다 있음) `excess < 0`을 가를 수
+            #    없다. **ghost(excess > 0)는 정책과 무관하므로 그대로 낸다** — 잔상은 "게시에
+            #    없는 박스를 그리고 있다"이고 그 뜻은 두 정책에서 같다.
+            blocked = (
+                "🔴 **정책 단위를 확정하지 못해 `excess < 0`을 귀속하지 않는다.** "
+                + policy["reason"]
+                + ". 귀속을 추측으로 채우면 그 추측이 곧 규칙 6의 안전 회귀 숫자로 인용된다"
+            )
+            metrics["hold_expiry"] = {
+                "available": False,
+                "reason": blocked,
+                "policy_unit": policy_unit,
+                "observed_frames": hold_expiry_observed,
+            }
             metrics["pending"] = {
                 "available": False,
-                "reason": (
-                    f"🔴 `excess < 0`인 프레임 중 **{unexplained_frames}개를 설명하지 못했다** — "
-                    + (
-                        "session.json에 `overlay.smoothing.hold_frames`가 없어 게시 안에서 "
-                        "줄어든 결손을 프레임 단위 TTL 만료로 **귀속할 수 없다**"
-                        if hold_frames is None
-                        else f"같은 게시 안에서 줄었는데 결손이 시작된 자리가 hold 선언값 "
-                             f"{hold_frames}이 아니다"
-                    )
-                    + ". 미규명이 섞인 채로 pending 분포를 내면 그 숫자가 곧 안전 회귀 숫자로 "
-                    "인용된다 — 내지 않는다"
-                ),
+                "reason": blocked,
+                "policy_unit": policy_unit,
                 "unexplained_frames": unexplained_frames,
             }
         else:
-            metrics["pending"] = {
-                "available": True,
-                **episode_block(
-                    "pending",
-                    [k == CLASS_PENDING for k in klass],
-                    frames, excess, group_of, window_positions, window,
-                ),
-                "definition": (
-                    "excess < 0 이면서 **그 게시의 첫 프레임부터** 모자란 프레임 = 진입 쪽 결손. "
-                    "FSM 도입 전 빌드에서는 0이어야 한다(PENDING 상태가 없다)"
-                ),
-                "unexplained_frames": 0,
-                "threshold": None,
-                "threshold_note": NOTES["no_threshold"],
-                "companion_notes": [NOTES["negative_split"], NOTES["no_ground_truth"]],
-            }
+            if policy["hold_expiry_possible"]:
+                metrics["hold_expiry"] = {
+                    "available": True,
+                    **episode_block(
+                        "hold_expiry",
+                        [k == CLASS_HOLD_EXPIRY for k in klass],
+                        frames, excess, group_of, window_positions, window,
+                    ),
+                    "definition": (
+                        f"excess < 0 이고 그 결손이 그룹 안 인덱스 {hold_frames}"
+                        "(= 선언된 hold_frames)에서 시작된 프레임. **프레임 단위 정책에서만 "
+                        "정의된다** — 그 정책의 OverlaySmoother는 매 표시 프레임에 돌면서 "
+                        "매칭되지 않은 트랙의 trackTtl을 1씩 깎았고, 게시를 소비한 프레임에서 "
+                        "TTL이 hold_frames로 찼으므로 정확히 그 인덱스에서 0이 된다"
+                    ),
+                    "policy_unit": policy_unit,
+                    "onset_index_expected": hold_frames,
+                    "threshold": None,
+                    "threshold_note": NOTES["no_threshold"],
+                }
+            else:
+                # 게시 단위 정책 — 이 부류는 **구조적으로 불가능**하다. 0을 "재서 0이었다"로
+                # 내지 않는다(분류가 애초에 이 이름을 붙이지 않는다).
+                metrics["hold_expiry"] = {
+                    "available": False,
+                    "policy_unit": policy_unit,
+                    "structurally_impossible": True,
+                    "observed_frames": hold_expiry_observed,
+                    "observed_is_zero": hold_expiry_observed == 0,
+                    "reason": (
+                        "게시 단위 정책에서는 이 부류가 **구조적으로 불가능하다** — 전이가 새 "
+                        "게시를 소비한 프레임에서만 돌므로 같은 게시를 다시 보는 동안 TTL이 "
+                        "만료될 수 없다. 그래서 이 블록은 '0회 측정됐다'가 아니라 **정의되지 "
+                        "않는다**이며, 그룹 중간 결손은 hold_expiry가 아니라 unexplained로 "
+                        "간다. " + NOTES["publish_unit_midgroup_impossible"]
+                    ),
+                }
+
+            if unexplained_frames:
+                if policy_unit == POLICY_PUBLISH:
+                    # 🔴 여기서 "분류 실패가 아니라 진짜 발견"이라는 뜻을 **사유 문장 안에**
+                    #    적는다. 이 줄은 성질상 혼자 인용된다.
+                    detail = (
+                        "게시 단위 정책인데 결손이 **그룹 중간**에서 시작했다(결손 시작 자리: "
+                        f"{negative['deficit_onset_histogram']}). "
+                        + NOTES["publish_unit_midgroup_impossible"]
+                    )
+                elif hold_frames is None:
+                    detail = (
+                        f"`{facts['hold_frames_path']}` 키는 있으나 값이 정수가 아니어서"
+                        "(선언값 null) 게시 안에서 줄어든 결손을 프레임 단위 TTL 만료로 "
+                        "**귀속할 수 없다**."
+                    )
+                else:
+                    detail = (
+                        "같은 게시 안에서 줄었는데 결손이 시작된 자리가 hold 선언값 "
+                        f"{hold_frames}이 아니다."
+                    )
+                metrics["pending"] = {
+                    "available": False,
+                    "policy_unit": policy_unit,
+                    "reason": (
+                        f"🔴 `excess < 0`인 프레임 중 **{unexplained_frames}개를 설명하지 "
+                        f"못했다** — " + detail
+                        + " 미규명이 섞인 채로 pending 분포를 내면 그 숫자가 곧 안전 회귀 "
+                        "숫자로 인용된다 — 내지 않는다"
+                    ),
+                    "unexplained_frames": unexplained_frames,
+                }
+            else:
+                metrics["pending"] = {
+                    "available": True,
+                    **episode_block(
+                        "pending",
+                        [k == CLASS_PENDING for k in klass],
+                        frames, excess, group_of, window_positions, window,
+                    ),
+                    "definition": (
+                        "excess < 0 이면서 **그 게시의 첫 프레임부터** 모자란 프레임 = 진입 쪽 "
+                        "결손. "
+                        + (
+                            "게시 단위 FSM 빌드에서 이것은 **PENDING이 지불하는 값**이다 — "
+                            "새로 잡힌 트랙은 진입창을 채울 때까지 그려지지 않는다. 곧 '위험물 "
+                            "표시가 얼마나 늦어졌나'이며 규칙 6의 안전 회귀 숫자다"
+                            if policy_unit == POLICY_PUBLISH
+                            else "FSM 도입 전 빌드에서는 0이어야 한다(PENDING 상태가 없다)"
+                        )
+                    ),
+                    "policy_unit": policy_unit,
+                    "unexplained_frames": 0,
+                    "threshold": None,
+                    "threshold_note": NOTES["no_threshold"],
+                    "companion_notes": [
+                        NOTES["negative_split"], NOTES["no_ground_truth"],
+                        NOTES["policy_unit_not_pooled"],
+                    ],
+                }
 
     flicker = overlay_flicker(
         series.overlay_boxes,
@@ -1085,6 +1364,33 @@ def _print_run(block: dict) -> None:
             ", ".join(join.get("failed_checks") or []),
         )
 
+    # 🔴 **정책을 숫자보다 먼저 찍는다.** `excess < 0`의 뜻이 정책마다 다르므로, 아래 표를
+    #    한 줄만 떼어 인용해도 어느 단위였는지가 붙어 있어야 한다.
+    policy = block.get("policy") or {}
+    logger = LOG.info if policy.get("attribution_available") else LOG.error
+    logger(
+        "    정책 단위=%s (근거 키 %s) | hold_frames=%s / hold_publishes=%s / "
+        "entry %s중 %s | 귀속 가능=%s",
+        policy.get("policy_unit"), policy.get("policy_basis_key"),
+        policy.get("hold_frames_declared"), policy.get("hold_publishes_declared"),
+        policy.get("entry_window_publishes_declared"),
+        policy.get("entry_hits_required_declared"),
+        policy.get("attribution_available"),
+    )
+    if not policy.get("attribution_available"):
+        LOG.error("    %s", policy.get("reason"))
+
+    fsm = block.get("fsm_run_facts") or {}
+    if fsm.get("available"):
+        LOG.info(
+            "    FSM 런 카운터: 승격 %s / 버려진 PENDING %s | 생성 %s / 해제 %s",
+            fsm.get("pending_promoted"), fsm.get("pending_discarded"),
+            fsm.get("tracks_created"), fsm.get("tracks_expired"),
+        )
+        LOG.warning("    %s", fsm.get("tracks_expired_note"))
+        if fsm.get("no_promotion"):
+            LOG.error("    %s", fsm.get("no_promotion_note"))
+
     metrics = block.get("metrics") or {}
     LOG.info(
         "    excess 계산됨 %s프레임 / 미정의 %s프레임 | hold_frames 선언값 %s | "
@@ -1095,11 +1401,19 @@ def _print_run(block: dict) -> None:
     _print_episode("잔상(excess>0)", "ghost", metrics.get("ghost") or {})
     _print_episode("hold 만료(게시 안)", "hold_expiry", metrics.get("hold_expiry") or {})
     _print_episode("진입 결손(pending)", "pending", metrics.get("pending") or {})
-    LOG.info(
-        "    결손이 시작된 자리(그룹 안 인덱스: 횟수) %s — 전부 hold 선언값(%s)인가=%s",
-        metrics.get("deficit_onset_histogram"), metrics.get("hold_frames_declared"),
-        metrics.get("all_deficit_onsets_at_hold_frames"),
-    )
+    if metrics.get("policy_unit") == POLICY_PUBLISH:
+        # 게시 단위에서는 **0만 나올 수 있다**(그룹 중간 결손은 구조적으로 불가능).
+        LOG.info(
+            "    결손이 시작된 자리(그룹 안 인덱스: 횟수) %s — 게시 단위 정책이므로 **0만 "
+            "나올 수 있다**(0 = pending). 0이 아닌 자리가 있으면 그것은 진짜 발견이다",
+            metrics.get("deficit_onset_histogram"),
+        )
+    else:
+        LOG.info(
+            "    결손이 시작된 자리(그룹 안 인덱스: 횟수) %s — 전부 hold 선언값(%s)인가=%s",
+            metrics.get("deficit_onset_histogram"), metrics.get("hold_frames_declared"),
+            metrics.get("all_deficit_onsets_at_hold_frames"),
+        )
 
     st = block.get("detector_stability") or {}
     if st.get("available"):
@@ -1171,6 +1485,9 @@ def main() -> int:
     exact = [b for b in usable if b.get("published_count_exact")]
     commits = sorted({str(b.get("git_commit")) for b in usable})
     arms = sorted({str(b.get("render_arm")) for b in usable})
+    # 🔴 정책 단위는 커밋과 **다른 축이다** — 같은 커밋 안에서도 섞일 수 없고, 섞이면
+    #    `excess < 0`이 서로 다른 물리량이 된다(NOTES['policy_unit_not_pooled']).
+    policy_units = sorted({str((b.get("policy") or {}).get("policy_unit")) for b in usable})
 
     summary = {
         "run_ts": paths.run_ts,
@@ -1221,6 +1538,20 @@ def main() -> int:
         "any_run_accounting_broken": any(not b.get("rows_accounted") for b in usable),
         "mixed_builds": len(commits) > 1,
         "mixed_arms": len(arms) > 1,
+        "mixed_policy_units": len(policy_units) > 1,
+        "any_run_policy_unit_unknown": any(
+            (b.get("policy") or {}).get("policy_unit") == POLICY_UNKNOWN for b in usable
+        ),
+        "all_runs_policy_attributable": bool(usable)
+        and all((b.get("policy") or {}).get("attribution_available") for b in usable),
+        # 🔴 승격이 0회 = "아무것도 안 그렸다"의 지목. 키가 없는 옛 런은 여기 걸리지 않는다
+        #    ("0회였다"와 "낸 적이 없다"는 다른 사실이다).
+        "any_run_no_pending_promotion": any(
+            (b.get("fsm_run_facts") or {}).get("no_promotion") for b in usable
+        ),
+        "any_run_fsm_counters_present": any(
+            (b.get("fsm_run_facts") or {}).get("available") for b in usable
+        ),
         # 🔴 판정선을 만들지 않는다. **키를 빼지 않고 명시적 null로 둔다** — 키가 없으면
         #    "판정선이 없다"와 "쓰는 것을 잊었다"가 구분되지 않는다.
         "threshold": None,
@@ -1229,7 +1560,19 @@ def main() -> int:
         "cross_build": {
             "commits": commits,
             "render_arms": arms,
+            "policy_units": policy_units,
             "note": NOTES["cross_run_not_pooled"],
+            "policy_note": NOTES["policy_unit_not_pooled"],
+        },
+        "policy_by_run": {
+            str(b.get("run_id")): {
+                "policy_unit": (b.get("policy") or {}).get("policy_unit"),
+                "policy_basis_key": (b.get("policy") or {}).get("policy_basis_key"),
+                "attribution_available": (b.get("policy") or {}).get("attribution_available"),
+                "pending_promoted": (b.get("fsm_run_facts") or {}).get("pending_promoted"),
+                "pending_discarded": (b.get("fsm_run_facts") or {}).get("pending_discarded"),
+            }
+            for b in usable
         },
         "counts": {
             "inputs": len(inputs),
@@ -1247,12 +1590,18 @@ def main() -> int:
     LOG.info("  정의: %s", summary["excess_definition"])
     LOG.info("  조인: %s", summary["join_rule"])
     for key in ("ms_needs_cadence", "no_ground_truth", "policy_only", "negative_split",
-                "excess_is_count", "episode_ms_span", "cross_run_not_pooled", "no_threshold"):
+                "excess_is_count", "episode_ms_span", "cross_run_not_pooled",
+                "policy_unit_not_pooled", "no_threshold"):
         LOG.warning("  %s", NOTES[key])
     if summary["mixed_builds"]:
         LOG.error(
             "  🔴 이 표의 런들은 같은 빌드가 아니다(커밋 %s) — 잔상 분포를 빼거나 "
             "'줄었다'로 읽지 않는다", " / ".join(commits),
+        )
+    if summary["mixed_policy_units"]:
+        LOG.error(
+            "  🔴 이 표에 **정책 단위가 다른 런이 섞였다**(%s) — %s",
+            " / ".join(policy_units), NOTES["policy_unit_not_pooled"],
         )
     LOG.info("── 런별")
     for block in blocks:

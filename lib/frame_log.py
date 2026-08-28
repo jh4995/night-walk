@@ -288,6 +288,40 @@ OVERLAY_MAP_FAILED_FRAMES_PATH = (
 # 잔상 분석은 이 값으로 "게시 안에서 TTL이 만료된 프레임"을 가른다(scripts/overlay_ghost.py).
 OVERLAY_HOLD_FRAMES_PATH = (OVERLAY_SESSION_BLOCK, "smoothing", "hold_frames")
 
+# ── 게시(publish) 단위 정책 = PENDING/ACTIVE FSM 빌드의 선언값 ──────────────
+# 🔴 **`hold_frames`와 `hold_publishes`는 같은 값의 다른 이름이 아니라 서로 다른 정책이다.**
+#   전자는 TTL을 **표시 프레임**으로 깎고(게시 하나를 오래 보는 동안 박스가 사라질 수 있다),
+#   후자는 **게시**로 깎는다(새 게시를 소비한 프레임에서만 전이가 돈다). 한 런의 session.json에
+#   **정확히 하나만** 있어야 한다 — 둘 다 있으면 앱이 모순을 선언한 것이고, 둘 다 없으면
+#   `excess < 0`을 귀속할 근거가 없다. 그 세 경우를 가르는 주인은 `scripts/overlay_ghost.py`의
+#   `resolve_policy`이며, 어느 쪽도 **값을 지어내지 않는다**.
+# 🔴 이 전환에서 `SCHEMA_VERSION`은 오르지 않았고 CSV 열도 늘지 않았다 — 바뀐 것은
+#   session.json의 정책 블록뿐이다. 그래서 스키마 버전으로는 정책을 가를 수 없고, **키의
+#   존재 여부**가 유일한 판별 축이다.
+OVERLAY_HOLD_PUBLISHES_PATH = (OVERLAY_SESSION_BLOCK, "smoothing", "hold_publishes")
+OVERLAY_ENTRY_WINDOW_PUBLISHES_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "entry_window_publishes",
+)
+OVERLAY_ENTRY_HITS_REQUIRED_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "entry_hits_required",
+)
+# FSM 런 카운터. 🔴 `pending_promoted`는 **그 런에서 실제로 그려지기 시작한 트랙 수**다 —
+# 0이면 한 번도 승격이 없었다는 뜻이고 그것은 "아무것도 안 그렸다"의 지목이다.
+# 🔴 `tracks_expired`는 **뜻이 바뀌었다**(옛 빌드: hold(표시 프레임) 만료 / 새 빌드: ACTIVE가
+#   연속 미지지로 해제). 옛 런의 같은 이름과 직접 비교하지 않는다.
+OVERLAY_PENDING_PROMOTED_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "run_facts", "pending_promoted",
+)
+OVERLAY_PENDING_DISCARDED_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "run_facts", "pending_discarded",
+)
+OVERLAY_TRACKS_CREATED_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "run_facts", "tracks_created",
+)
+OVERLAY_TRACKS_EXPIRED_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "run_facts", "tracks_expired",
+)
+
 # 각 열이 **어느 스키마 버전에서 들어왔는가.** 옛 세션(선언 버전 < 하네스 버전)에 경고를 낼 때
 # "그 로그에 없을 수 있는 열"을 정확히 짚기 위해 쓴다 — 버전마다 문장을 손으로 고치면
 # v4에서 v2 문구가 그대로 남는다.
