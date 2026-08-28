@@ -221,6 +221,20 @@ FRAME_OVERLAY_COLUMNS = (
 #   0부터 주기까지 톱니 모양으로 퍼진다. **두 분포를 더하거나 비교해 빼지 않는다.**
 OVERLAY_FRESHNESS_SERIES = "overlay_freshness_ms"
 
+# ── 잔상 초과분 (파생 시계열. **CSV 열이 아니다**) ─────────────────────────
+# **무엇인가:** `overlay_boxes − (그 프레임이 소비 중인 게시의 boxes_out)`.
+# 그 프레임이 **게시에 없는 박스를 몇 개 그리고 있었나**다(음수면 게시보다 적게 그렸다).
+#
+# 🔴 **frames.csv만으로는 만들 수 없다** — `t_overlay_source_ns`를 `detect.csv`의
+#   `t_detect_end_ns`에 붙여야 나온다. 그래서 `read_frames`가 채우는 필드가 없고
+#   (`FrameSeries`에 자리가 없다) 계산의 주인은 `scripts/overlay_ghost.py` 하나다.
+#   위 `overlay_freshness_ms`처럼 read_frames가 채우는 파생과 **그 점이 다르다.**
+# 🔴 **여기 등록하는 이유는 하나다: 앱이 같은 이름의 열을 내면 import에서 죽는다**
+#   (아래 `_derived_as_column` 자기검사). 폰이 계산한 초과분과 PC가 조인해 만든 초과분이
+#   어긋날 때 어느 쪽이 맞는지 알 방법이 없다 — 그 상태를 애초에 만들지 않는다.
+# ⚠ **버짓 칸이 없다.** 단계 비용이 아니라 정책이 만든 표시 오차(개수)다.
+OVERLAY_EXCESS_SERIES = "overlay_excess_boxes"
+
 # ── frames.csv 쪽 **파생 시계열 이름 전부** (CSV 열이 아니다) ───────────────
 # 🔴 **이 이름들은 CSV 열이 될 수 없다.** 하네스가 계산하는 값이고, 폰이 같은 이름으로 열을
 #   내면 폰이 계산한 값과 PC가 계산한 값이 어긋날 때 어느 쪽이 맞는지 알 수 없다
@@ -232,6 +246,10 @@ OVERLAY_FRESHNESS_SERIES = "overlay_freshness_ms"
 # 그래서 이 이름들은 `_add_unknown_column_warnings`가 **다른 문장**으로 다룬다.
 FRAME_DERIVED_SERIES = GPU_DERIVED_SERIES + (
     OVERLAY_FRESHNESS_SERIES,
+    # 🔴 read_frames가 채우지 않는 유일한 이름이다(위 상수 주석: detect.csv 조인이 필요하다).
+    #    FrameSeries 필드 자기검사는 이 목록이 아니라 **명시 목록**을 보므로 여기 추가해도
+    #    import가 죽지 않는다 — 죽어야 하는 것은 앱이 이 이름으로 **열**을 낼 때뿐이다.
+    OVERLAY_EXCESS_SERIES,
     "capture_to_recv_ms",
     "capture_to_render_ms",
     "recv_interval_ms",
@@ -242,6 +260,33 @@ FRAME_DERIVED_SERIES = GPU_DERIVED_SERIES + (
     #   render end까지). FrameSeries 필드 주석에 셋의 관계가 적혀 있다.
     "recv_to_render_start_ms",
 )
+
+# ── session.json의 overlay 블록 경로 ──────────────────────────────────────
+# **하네스가 읽는 키를 한 곳에만 적는다** — 아래 `DETECT_*_PATH`와 같은 취지다. 읽는 코드와
+# 사람에게 보이는 메시지가 이름을 각자 갖고 있으면, 앱이 필드를 옮길 때 한쪽만 낡는다.
+#
+# 🔴 **경로 모양에 함정이 둘 있다**(실제 파일에서 확인한 것이며 추측이 아니다):
+#   1) `rejected_inverted`는 `overlay` 블록 **최상위**다. `publish.run_facts` 안이 아니다.
+#   2) `dropped_over_cap`은 스칼라가 아니라 **`{publish, smoothing, note}` 중첩 객체**다.
+#      🔴 **두 수를 더하지 않는다** — 세는 자리가 다르다(게시자 vs GL 스레드의 hold 포함 계수).
+#      더하면 같은 박스를 두 번 셀 수 있고, 그 note가 더하지 말라고 적고 있다.
+#   경로를 여기 상수로 두는 이유가 그것이다: 소비자가 모양을 짐작하면 조용히 null을 읽는다.
+OVERLAY_SESSION_BLOCK = "overlay"
+OVERLAY_PUBLISH_COUNT_PATH = (OVERLAY_SESSION_BLOCK, "publish", "run_facts", "publish_count")
+OVERLAY_BOXES_PUBLISHED_PATH = (
+    OVERLAY_SESSION_BLOCK, "publish", "run_facts", "boxes_published",
+)
+OVERLAY_REJECTED_INVERTED_PATH = (OVERLAY_SESSION_BLOCK, "rejected_inverted")
+OVERLAY_DROPPED_OVER_CAP_PUBLISH_PATH = (OVERLAY_SESSION_BLOCK, "dropped_over_cap", "publish")
+OVERLAY_DROPPED_OVER_CAP_SMOOTHING_PATH = (
+    OVERLAY_SESSION_BLOCK, "dropped_over_cap", "smoothing",
+)
+OVERLAY_MAP_FAILED_FRAMES_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "run_facts", "map_failed_frames",
+)
+# hold TTL의 **선언값**(표시 프레임 수). 🔴 판정선이 아니라 **그 런의 정책 파라미터**다 —
+# 잔상 분석은 이 값으로 "게시 안에서 TTL이 만료된 프레임"을 가른다(scripts/overlay_ghost.py).
+OVERLAY_HOLD_FRAMES_PATH = (OVERLAY_SESSION_BLOCK, "smoothing", "hold_frames")
 
 # 각 열이 **어느 스키마 버전에서 들어왔는가.** 옛 세션(선언 버전 < 하네스 버전)에 경고를 낼 때
 # "그 로그에 없을 수 있는 열"을 정확히 짚기 위해 쓴다 — 버전마다 문장을 손으로 고치면
