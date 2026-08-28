@@ -12,4 +12,10 @@
     -->
     <string name="hud_hide">정보 숨기기</string>
     <string name="hud_show">정보 보기</string>
+    <!--
+      사용자 테스트용 on/off. ON = ①②③④가 다 든 통합 arm, OFF = passthrough.
+      🔴 arm 스피너를 대체하지 않는다 — 이 버튼은 스피너의 리모컨이다.
+    -->
+    <string name="view_on">야간 보조 ON</string>
+    <string name="view_off">야간 보조 OFF</string>
 </resources>

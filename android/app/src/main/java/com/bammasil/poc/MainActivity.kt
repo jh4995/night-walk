@@ -75,6 +75,21 @@ class MainActivity : ComponentActivity() {
     private lateinit var hudButton: Button
 
     /**
+     * 사용자 테스트용 on/off. ON = [RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT](①②③④가 다 든
+     * 유일한 통합 arm) / OFF = [RenderArm.PASSTHROUGH].
+     *
+     * 🔴 **[armSpinner]의 리모컨이지 대체물이 아니다** — 두 버튼은 스피너의 `setSelection`만
+     * 부르고 arm 전환은 스피너 콜백이 한다. 버튼이 `setArm`·`prepareDetectIfNeeded`·
+     * `rebindSourceIfAnalysisChanged`를 직접 부르면 스피너 표시와 [selectedArm]이 갈리고,
+     * `session.json`이 **실제로 돈 arm과 다른 arm**을 적는다.
+     *
+     * ⚠ 측정 중에는 잠근다 — arm은 조명과 같은 급의 측정 조건이라 스피너와 같은 창에서
+     * 잠겨 있어야 한다([armAtStart]와 실제가 갈리지 않게).
+     */
+    private lateinit var viewOnButton: Button
+    private lateinit var viewOffButton: Button
+
+    /**
      * 정보 패널이 접혀 있는가. 🔴 **측정 시작 시점의 값이 아니라 현재 값이다** — 런 도중에도
      * 접을 수 있고(촬영이 그 목적이다) 그래서 `session.json`에는 **정지 시점의 값**이 실린다.
      * 런 내내 한 상태였는지는 이 값이 말해 주지 않는다.
@@ -186,6 +201,8 @@ class MainActivity : ComponentActivity() {
         glView = findViewById(R.id.gl_view)
         infoPanel = findViewById(R.id.info_panel)
         hudButton = findViewById(R.id.hud_button)
+        viewOnButton = findViewById(R.id.btn_view_on)
+        viewOffButton = findViewById(R.id.btn_view_off)
 
         // 🔴 컨트롤 바를 시스템 내비게이션 바 **위로** 밀어 올린다.
         //    이걸 안 하면 3버튼 내비 기기에서 정지 버튼이 홈·뒤로 버튼과 겹치고, 정지를
@@ -259,6 +276,14 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
+        // 사용자 테스트용 on/off. 🔴 **스피너를 통해서만 바꾼다**(위 [viewOnButton] KDoc).
+        viewOnButton.setOnClickListener {
+            selectArmFromButton(RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT, R.string.view_on)
+        }
+        viewOffButton.setOnClickListener {
+            selectArmFromButton(RenderArm.PASSTHROUGH, R.string.view_off)
         }
 
         toggleButton.setOnClickListener {
@@ -437,9 +462,13 @@ class MainActivity : ComponentActivity() {
         }
         recording = true
         toggleButton.setText(R.string.stop)
-        // 런 도중 조건이 바뀌면 그 분포는 오염된 것이다 → 둘 다 잠근다.
+        // 런 도중 조건이 바뀌면 그 분포는 오염된 것이다 → 조건 입력을 전부 잠근다.
+        // 🔴 on/off 버튼도 **arm을 바꾸는 입력**이므로 스피너와 같은 창에서 잠근다 —
+        //    잠그지 않으면 armAtStart와 실제로 돈 arm이 갈린다.
         lightingSpinner.isEnabled = false
         armSpinner.isEnabled = false
+        viewOnButton.isEnabled = false
+        viewOffButton.isEnabled = false
         armAtStart = arm
         runDirName = newRunDirName()
         val startedNs = SystemClock.elapsedRealtimeNanos()
@@ -496,6 +525,10 @@ class MainActivity : ComponentActivity() {
                 toggleButton.isEnabled = true
                 lightingSpinner.isEnabled = true
                 armSpinner.isEnabled = true
+                // ⚠ writeLogs가 도는 동안에는 toggleButton과 **같은 창**으로 잠겨 있었다 —
+                //   그 창에서 arm이 바뀌면 armAtStart와 실제가 갈린다.
+                viewOnButton.isEnabled = true
+                viewOffButton.isEnabled = true
                 showMessage(message)
                 updateStatus()
             }
@@ -720,6 +753,35 @@ class MainActivity : ComponentActivity() {
 
     private fun selectedArm(): RenderArm =
         RenderArm.fromId(armSpinner.selectedItem?.toString())
+
+    /**
+     * on/off 버튼 → **[armSpinner]의 선택을 바꾼다.** 🔴 `renderer.setArm`·
+     * [prepareDetectIfNeeded]·[rebindSourceIfAnalysisChanged]를 **직접 부르지 않는다** —
+     * `setSelection`이 스피너의 `onItemSelected`를 깨워 그 셋이 전부 돌고, 그래야 스피너
+     * 표시와 [selectedArm](= [startRecording]이 읽는 값)이 갈리지 않는다. 갈리면
+     * `session.json`이 실제로 돈 arm과 **다른 arm**을 적는다.
+     */
+    private fun selectArmFromButton(arm: RenderArm, labelRes: Int) {
+        // 측정 중에는 조건을 바꾸지 않는다. 버튼도 잠겨 있지만 경로 자체를 닫아 둔다
+        // (스피너 잠금과 같은 이유 — 런 도중 arm이 바뀌면 그 분포는 오염된 것이다).
+        if (recording) return
+        val index = RenderArm.CHOICES.indexOf(arm.id)
+        if (index < 0) {
+            // 🔴 조용히 0번 arm을 고르지 않는다 — 어느 arm이 도는지 모르는 채로 돌게 된다.
+            showMessage("arm 목록에서 ${arm.id}를 찾지 못했다 — 아무것도 바꾸지 않았다")
+            return
+        }
+        armSpinner.setSelection(index)
+        // ⚠ 프리뷰가 잠깐 끊기는 것은 **정상 동작**이다: ③ 분석 use case의 유무가 달라지면
+        //   카메라를 다시 바인딩한다(rebindSourceIfAnalysisChanged). 알리지 않으면
+        //   측정자가 고장으로 읽는다.
+        showMessage(
+            "${getString(labelRes)} — arm을 ${arm.id}로 바꿨다. ③ 분석 use case의 유무가 " +
+                "달라지면 카메라를 다시 바인딩하므로 프리뷰가 잠깐 끊긴다(정상 동작이다)"
+        )
+        // 화면이 arm을 바로 반영하게 한다(다음 상태 틱을 기다리지 않는다).
+        uiHandler.post { updateStatus() }
+    }
 
     // ── 화면 표시 (진행 확인용) ──────────────────────────────────────────
 
