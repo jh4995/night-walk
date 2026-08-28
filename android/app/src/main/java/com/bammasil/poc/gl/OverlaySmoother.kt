@@ -20,11 +20,12 @@ import com.bammasil.poc.detect.DetectOverlaySnapshot
  * | 전이 | 조건 | 적용 대상 |
  * |---|---|---|
  * | 승격 | 최근 [RenderArm.OVERLAY_ENTRY_WINDOW_PUBLISHES_MEASUREMENT_VALUE]게시 중 [RenderArm.OVERLAY_ENTRY_HITS_REQUIRED_MEASUREMENT_VALUE]회 지지 | 🔴 `PENDING`에만 |
- * | 폐기 | 그 창(= 탄생 게시 포함 3게시)이 다 지나도 지지가 모자람 | 🔴 `PENDING`에만 |
+ * | 폐기 | 그 창(= 탄생 게시 포함 [RenderArm.OVERLAY_ENTRY_WINDOW_PUBLISHES_MEASUREMENT_VALUE]게시)이 다 지나도 지지가 모자람 | 🔴 `PENDING`에만 |
  * | 해제 | 연속 [RenderArm.OVERLAY_HOLD_PUBLISHES_MEASUREMENT_VALUE]회 미지지 | 🔴 `ACTIVE`에만 |
  *
  * 🔴 **적용 범위가 갈려 있는 것이 설계의 핵심이다.** 해제(k=1)를 `PENDING`에도 걸면 `PENDING`이
- * 1회 미지지에 죽어 "3중 2회"가 "연속 2회"와 같아진다 — 진입 규칙이 사문화된다.
+ * 1회 미지지에 죽어 "창 안에서 [RenderArm.OVERLAY_ENTRY_HITS_REQUIRED_MEASUREMENT_VALUE]회"가 "연속 [RenderArm.OVERLAY_ENTRY_HITS_REQUIRED_MEASUREMENT_VALUE]회"와
+ * 같아진다 — 진입 규칙이 사문화된다.
  *
  * 🔴 **TTL의 단위는 표시 프레임이 아니라 게시다.** 그래서 이 정책은 표시 FPS와 탐지 주기 N에
  * **무관**하다(옛 프레임 단위 hold는 둘 다에 딸려 있었고, 게시 하나가 hold보다 오래 머물면
@@ -372,7 +373,7 @@ class OverlaySmoother(
 
             // 3) 히스토리 갱신 + 4) 전이. 🔴 **적용 범위가 상태마다 다르다**:
             //    해제(연속 미지지)는 ACTIVE에만, 진입창은 PENDING에만 건다. 해제를 PENDING에도
-            //    걸면 PENDING이 1회 미지지에 죽어 "3게시 중 2회"가 "연속 2회"와 같아지고,
+            //    걸면 PENDING이 1회 미지지에 죽어 "창 안에서 N회"가 "연속 N회"와 같아지고,
             //    고른 진입 규칙이 사문화된다.
             t = 0
             while (t < aliveCount) {
@@ -400,14 +401,15 @@ class OverlaySmoother(
                     RenderArm.OVERLAY_ENTRY_WINDOW_PUBLISHES_MEASUREMENT_VALUE - 1
                 ) {
                     // 진입창을 다 쓰고도 지지가 모자랐다 — 한 번도 그리지 않고 버린다.
-                    // 🔴 **`- 1`이 맞다: 수명은 정확히 진입창(3게시)이다.** 탄생 게시 B가 창의
-                    //   1회째이므로 트랙이 사는 것은 B·B+1·B+2이고, 나이가 (창−1)이 되는
-                    //   B+2가 마지막 판정 자리다. `- 1` 없이 4게시를 살리면 B+3에서
-                    //   히스토리 3비트가 {B+1,B+2,B+3}만 덮어 **탄생 비트가 이미 밀려
-                    //   나갔고**, B+2까지 승격 못 한 트랙은 m(B+1)=m(B+2)=0이라 bitCount가
-                    //   최대 1 — **승격이 산술적으로 불가능한데도 살아서 2)연결이 측정을
-                    //   삼킨다**(measTaken). 그러면 그 게시에 새 트랙도 못 태어나 위험물이
+                    // 🔴 **`- 1`이 맞다: 수명은 정확히 진입창 W게시다.** 탄생 게시 B가 창의
+                    //   1회째이므로 트랙이 사는 것은 B‥B+(W−1)이고, 나이가 (W−1)이 되는
+                    //   B+(W−1)이 마지막 판정 자리다. `- 1` 없이 W+1게시를 살리면 B+W에서
+                    //   히스토리 W비트가 {B+1‥B+W}만 덮어 **탄생 비트가 이미 밀려
+                    //   나갔고**, 거기까지 승격 못 한 트랙은 남은 비트가 전부 0이라 bitCount가
+                    //   요구치에 못 미친다 — **승격이 산술적으로 불가능한데도 살아서 2)연결이
+                    //   측정을 삼킨다**(measTaken). 그러면 그 게시에 새 트랙도 못 태어나 위험물이
                     //   더 늦게, 지지가 거기서 끝나면 **영영** 안 그려진다.
+                    //   ⚠ W를 바꿔도 이 논증은 그대로다 — 그래서 숫자를 박지 않는다.
                     // 🟢 그래서 **지지받은 게시에서 폐기되는 일은 없다** — 탄생 비트가 아직
                     //   창 안에 있으므로 이번 게시가 지지했다면 bitCount ≥ 2가 되어 위
                     //   가지에서 먼저 승격한다. 버려지는 것은 탄생 뒤 두 게시가 **모두**
@@ -556,7 +558,7 @@ class OverlaySmoother(
          * [trackHistory]의 폭 — 진입창
          * [RenderArm.OVERLAY_ENTRY_WINDOW_PUBLISHES_MEASUREMENT_VALUE]에서 **파생한다.**
          * 🟢 상수(`0b111`)로 박아 두면 창을 넓혔을 때 오래된 지지가 조용히 잘려 나가
-         * "3게시 중 2회"가 실제로는 더 좁은 창이 되므로, 파생시켜 그 함정을 없앤다.
+         * "창 안에서 N회"가 실제로는 더 좁은 창이 되므로, 파생시켜 그 함정을 없앤다.
          */
         const val HISTORY_MASK =
             (1 shl RenderArm.OVERLAY_ENTRY_WINDOW_PUBLISHES_MEASUREMENT_VALUE) - 1
