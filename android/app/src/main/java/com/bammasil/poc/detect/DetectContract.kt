@@ -23,8 +23,12 @@ object DetectContract {
     //    사실이 아니라 주장이다.
 
     /**
-     * `"models/0824/bammasil_det_c4e_s3_11n_640/metadata.json"` 또는 빌드 시점에 못 읽었으면
-     * `"unavailable"`.
+     * 빌드가 읽은 metadata의 저장소 상대 경로(예: 현재 배선인
+     * `"models/0826/bammasil_det_c4e_s3_11n_640-INT8/bammasil_det_c4e_s3_11n_640-INT8_metadata.json"`)
+     * 또는 빌드 시점에 못 읽었으면 `"unavailable"`.
+     *
+     * ⚠ **파일명이 `metadata.json`이라고 가정하지 않는다** — 인수 패키지마다 다르다
+     * (build.gradle.kts의 `detectMetadataFileName`).
      *
      * 🔴 **못 읽은 경우 이 값으로 "어디에 파일을 두라"고 안내할 수 없다** — 그때는
      * [expectedMetadataPath] / [expectedModelDir]를 쓴다(읽기 성공과 무관하게 기대 경로다).

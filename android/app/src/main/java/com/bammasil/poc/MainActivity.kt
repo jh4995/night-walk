@@ -75,7 +75,8 @@ class MainActivity : ComponentActivity() {
 
     /**
      * 접을 수 있는 정보 패널(상태 텍스트 + 조명·arm 스피너). ④ 강조가 실제로 어떻게 보이는지
-     * 촬영·캡처할 때 화면 절반을 가리기 때문에 [hudButton]으로 접는다.
+     * 촬영·캡처할 때 화면 절반을 가리기 때문에 **기본이 접힘**이고, 필요할 때 [hudButton]으로
+     * 편다(08-29 이전에는 반대였다 — 런마다 '접기 전 몇 초'가 달라 조건이 흔들렸다).
      *
      * ⚠ 이 패널은 [glView]와 **별 서피스**라 접어도 GL 스레드의 계측 창
      * (`t_render_start_ns` ~ `t_render_end_ns`, GPU query)은 달라지지 않는다. 다만 지속 런에서
@@ -86,11 +87,32 @@ class MainActivity : ComponentActivity() {
     private lateinit var hudButton: Button
 
     /**
+     * 사용자 테스트용 on/off. ON = [RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT](①②③④가 다 든
+     * 유일한 통합 arm) / OFF = [RenderArm.PASSTHROUGH].
+     *
+     * 🔴 **[armSpinner]의 리모컨이지 대체물이 아니다** — 두 버튼은 스피너의 `setSelection`만
+     * 부르고 arm 전환은 스피너 콜백이 한다. 버튼이 `setArm`·`prepareDetectIfNeeded`·
+     * `rebindSourceIfAnalysisChanged`를 직접 부르면 스피너 표시와 [selectedArm]이 갈리고,
+     * `session.json`이 **실제로 돈 arm과 다른 arm**을 적는다.
+     *
+     * ⚠ 측정 중에는 잠근다 — arm은 조명과 같은 급의 측정 조건이라 스피너와 같은 창에서
+     * 잠겨 있어야 한다([armAtStart]와 실제가 갈리지 않게).
+     */
+    private lateinit var viewOnButton: Button
+    private lateinit var viewOffButton: Button
+
+    /**
      * 정보 패널이 접혀 있는가. 🔴 **측정 시작 시점의 값이 아니라 현재 값이다** — 런 도중에도
      * 접을 수 있고(촬영이 그 목적이다) 그래서 `session.json`에는 **정지 시점의 값**이 실린다.
      * 런 내내 한 상태였는지는 이 값이 말해 주지 않는다.
+     *
+     * 🔎 **기본값이 `true`다(08-29).** 촬영이 이 앱의 상시 용도라 매번 접는 것이 실수를 부르고,
+     * 접기 전 몇 초가 런마다 달라 **조건이 흔들렸다.** 🔴 **초기 UI 반영을 잊지 말 것** —
+     * 이 값만 바꾸면 변수는 '숨김'인데 화면은 펼쳐진 자기모순이 된다([applyHudVisibility]).
+     * ⚠ `baseline_diff`의 조건키는 **아니다.** 즉 이 변경은 승격본과의 비교를 끊지 않지만,
+     * 기존 승격본은 전부 `false` 상태에서 잰 것이다.
      */
-    private var hudInfoHidden = false
+    private var hudInfoHidden = true
 
     private val recorder = FrameLogRecorder()
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -207,6 +229,8 @@ class MainActivity : ComponentActivity() {
         glView = findViewById(R.id.gl_view)
         infoPanel = findViewById(R.id.info_panel)
         hudButton = findViewById(R.id.hud_button)
+        viewOnButton = findViewById(R.id.btn_view_on)
+        viewOffButton = findViewById(R.id.btn_view_off)
 
         // 🔴 컨트롤 바를 시스템 내비게이션 바 **위로** 밀어 올린다.
         //    이걸 안 하면 3버튼 내비 기기에서 정지 버튼이 홈·뒤로 버튼과 겹치고, 정지를
@@ -229,12 +253,17 @@ class MainActivity : ComponentActivity() {
         }
 
         // 정보 패널 접기/펴기. 측정 중에도 눌릴 수 있게 잠그지 않는다 — ④ 강조가 도는 모습을
+        // 🔴 **초기 상태를 여기서 반영한다.** 레이아웃에는 visibility 선언이 없어 XML 기본이
+        //    `visible`이고, [hudInfoHidden]의 기본값은 `true`다 — 반영하지 않으면 변수와 화면이
+        //    어긋난 채 시작하고 버튼 글자도 거꾸로 뜬다.
+        applyHudVisibility()
+
         // 찍는 것이 이 버튼의 목적이고, 렌더 경로를 건드리지 않으므로 잠글 이유가 없다.
-        // ⚠ GONE 을 쓴다(INVISIBLE 이 아니다) — INVISIBLE 은 자리를 그대로 차지해 화면이 안 열린다.
+        // 🔴 초기 반영과 **같은 함수**를 부른다 — 두 곳에 같은 식을 적으면 한쪽만 고쳐지는 날
+        //    화면과 버튼 글자가 갈린다.
         hudButton.setOnClickListener {
             hudInfoHidden = !hudInfoHidden
-            infoPanel.visibility = if (hudInfoHidden) View.GONE else View.VISIBLE
-            hudButton.setText(if (hudInfoHidden) R.string.hud_show else R.string.hud_hide)
+            applyHudVisibility()
         }
 
         val thread = HandlerThread("frame-signal").apply { start() }
@@ -324,6 +353,18 @@ class MainActivity : ComponentActivity() {
         cardboardFovSeek.setOnSeekBarChangeListener(tuningListener)
         cardboardAlignmentSeek.setOnSeekBarChangeListener(tuningListener)
         applyCardboardTuning()
+
+        // 사용자 테스트용 on/off. 🔴 **스피너를 통해서만 바꾼다**(위 [viewOnButton] KDoc).
+        viewOnButton.setOnClickListener {
+            selectArmFromButton(
+                RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT, R.string.view_on, R.string.assist_on_toast,
+            )
+        }
+        viewOffButton.setOnClickListener {
+            selectArmFromButton(
+                RenderArm.PASSTHROUGH, R.string.view_off, R.string.assist_off_toast,
+            )
+        }
 
         toggleButton.setOnClickListener {
             if (recording) stopRecording() else startRecording()
@@ -481,7 +522,10 @@ class MainActivity : ComponentActivity() {
 
     private fun startRecording() {
         if (!sourceStarted) {
-            showMessage("카메라가 아직 준비되지 않았다 — 권한과 프리뷰를 먼저 확인할 것")
+            showMessage(
+                getString(R.string.camera_not_ready),
+                "카메라가 아직 준비되지 않았다 — 권한과 프리뷰를 먼저 확인할 것",
+            )
             return
         }
         val arm = selectedArm()
@@ -510,9 +554,13 @@ class MainActivity : ComponentActivity() {
         }
         recording = true
         toggleButton.setText(R.string.stop)
-        // 런 도중 조건이 바뀌면 그 분포는 오염된 것이다 → 둘 다 잠근다.
+        // 런 도중 조건이 바뀌면 그 분포는 오염된 것이다 → 조건 입력을 전부 잠근다.
+        // 🔴 on/off 버튼도 **arm을 바꾸는 입력**이므로 스피너와 같은 창에서 잠근다 —
+        //    잠그지 않으면 armAtStart와 실제로 돈 arm이 갈린다.
         lightingSpinner.isEnabled = false
         armSpinner.isEnabled = false
+        viewOnButton.isEnabled = false
+        viewOffButton.isEnabled = false
         displayModeSpinner.isEnabled = false
         cardboardFovSeek.isEnabled = false
         cardboardAlignmentSeek.isEnabled = false
@@ -520,6 +568,30 @@ class MainActivity : ComponentActivity() {
         displayModeAtStart = selectedDisplayMode()
         cardboardImageScaleAtStart = 1f - cardboardFovSeek.progress / 100f
         cardboardEyeOffsetAtStart = (cardboardAlignmentSeek.progress - 60) / 200f
+        // 🔴 **조명 기본값이 `unknown`이 아니게 된 것의 짝이다**
+        //    ([LightingCondition.CHOICES] 참고). 예전에는 스피너를 안 만지면 하네스가
+        //    "비교 대상이 못 된다"고 소리 내어 거부했는데, 이제 안 만진 런이 **정상적인
+        //    야간 런으로 조용히 통과**한다. 그 신호를 여기서 되살린다 — 실내에서 재면서
+        //    조명을 안 바꾼 것을 **시작하는 순간** 알아채야 한다.
+        //    ⚠ HUD(statusText)가 아니라 Toast인 이유: 촬영 중에는 HUD를 접어 두므로
+        //      (hudButton) 거기 적으면 정작 필요한 때 보이지 않는다.
+        //    ⚠ 앱은 조명을 알 수 없다 — 이 값은 **사람의 신고**이고 여기서 하는 것은
+        //      검증이 아니라 **확인**이다. 틀린 신고를 앱이 잡아낼 방법은 없다.
+        val lightingNow = lightingSpinner.selectedItem?.toString() ?: LightingCondition.UNKNOWN
+        // 🔴 **틀렸을 때만 시끄럽게 한다.** 매번 "실내면 바꿔라"를 띄우면 참가자에게는
+        //    뜻 없는 말이고 측정자에게는 곧 배경이 되어 진짜 실수 때도 안 읽힌다.
+        //    야외 야간이 아니면(= 실내거나 unknown이면) 그때만 경고를 붙인다.
+        val lightingLooksIndoor = !lightingNow.startsWith("outdoor_")
+        showMessage(
+            getString(R.string.rec_start, lightingNow) +
+                if (lightingLooksIndoor) {
+                    "\n" + getString(R.string.rec_start_lighting_warn, lightingNow)
+                } else {
+                    ""
+                },
+            "측정 시작 — lighting_condition=$lightingNow arm=${arm.id}" +
+                if (lightingLooksIndoor) " 🔴 야외 야간이 아니다 — 실내에서 재는 것이 맞는지 확인할 것" else "",
+        )
         runDirName = newRunDirName()
         val startedNs = SystemClock.elapsedRealtimeNanos()
         glView.queueEvent {
@@ -587,6 +659,10 @@ class MainActivity : ComponentActivity() {
                 displayModeSpinner.isEnabled = true
                 cardboardFovSeek.isEnabled = true
                 cardboardAlignmentSeek.isEnabled = true
+                // ⚠ writeLogs가 도는 동안에는 toggleButton과 **같은 창**으로 잠겨 있었다 —
+                //   그 창에서 arm이 바뀌면 armAtStart와 실제가 갈린다.
+                viewOnButton.isEnabled = true
+                viewOffButton.isEnabled = true
                 showMessage(message)
                 updateStatus()
             }
@@ -835,6 +911,39 @@ class MainActivity : ComponentActivity() {
 
     private fun selectedDisplayMode(): DisplayMode =
         DisplayMode.fromId(displayModeSpinner.selectedItem?.toString())
+    /**
+     * on/off 버튼 → **[armSpinner]의 선택을 바꾼다.** 🔴 `renderer.setArm`·
+     * [prepareDetectIfNeeded]·[rebindSourceIfAnalysisChanged]를 **직접 부르지 않는다** —
+     * `setSelection`이 스피너의 `onItemSelected`를 깨워 그 셋이 전부 돌고, 그래야 스피너
+     * 표시와 [selectedArm](= [startRecording]이 읽는 값)이 갈리지 않는다. 갈리면
+     * `session.json`이 실제로 돈 arm과 **다른 arm**을 적는다.
+     */
+    private fun selectArmFromButton(arm: RenderArm, labelRes: Int, toastRes: Int) {
+        // 측정 중에는 조건을 바꾸지 않는다. 버튼도 잠겨 있지만 경로 자체를 닫아 둔다
+        // (스피너 잠금과 같은 이유 — 런 도중 arm이 바뀌면 그 분포는 오염된 것이다).
+        if (recording) return
+        val index = RenderArm.CHOICES.indexOf(arm.id)
+        if (index < 0) {
+            // 🔴 조용히 0번 arm을 고르지 않는다 — 어느 arm이 도는지 모르는 채로 돌게 된다.
+            showMessage("arm 목록에서 ${arm.id}를 찾지 못했다 — 아무것도 바꾸지 않았다")
+            return
+        }
+        armSpinner.setSelection(index)
+        // ⚠ 프리뷰가 잠깐 끊기는 것은 **정상 동작**이다: ③ 분석 use case의 유무가 달라지면
+        //   카메라를 다시 바인딩한다(rebindSourceIfAnalysisChanged). 알리지 않으면
+        //   측정자가 고장으로 읽는다.
+        // 🔴 토스트는 **참가자**가 읽는다 — arm id도 use case도 쓰지 않는다.
+        //    화면이 끊기는 사실은 참가자에게도 알린다(안 알리면 고장으로 읽는다).
+        //    ⚠ arm id는 로그와 HUD(updateStatus)에 남는다 — HUD가 기본 접힘이 되면서
+        //      토스트가 유일한 즉시 확인 수단이 됐으므로, 로그에서 빼지 않는다.
+        showMessage(
+            getString(toastRes),
+            "${getString(labelRes)} — arm을 ${arm.id}로 바꿨다. ③ 분석 use case의 유무가 " +
+                "달라지면 카메라를 다시 바인딩하므로 프리뷰가 잠깐 끊긴다(정상 동작이다)",
+        )
+        // 화면이 arm을 바로 반영하게 한다(다음 상태 틱을 기다리지 않는다).
+        uiHandler.post { updateStatus() }
+    }
 
     // ── 화면 표시 (진행 확인용) ──────────────────────────────────────────
 
@@ -884,9 +993,30 @@ class MainActivity : ComponentActivity() {
                 "\n(진행 확인용 — 인용은 frames.csv / session.json 으로만)"
     }
 
-    private fun showMessage(message: String) {
-        Log.i(TAG, message)
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    /**
+     * [hudInfoHidden]을 화면에 반영한다. **초기화와 버튼이 같이 부른다.**
+     *
+     * ⚠ `GONE`을 쓴다(`INVISIBLE`이 아니다) — `INVISIBLE`은 자리를 그대로 차지해 화면이 안 열린다.
+     */
+    private fun applyHudVisibility() {
+        infoPanel.visibility = if (hudInfoHidden) View.GONE else View.VISIBLE
+        hudButton.setText(if (hudInfoHidden) R.string.hud_show else R.string.hud_hide)
+    }
+
+    /**
+     * 화면(Toast)과 로그에 알린다. 🔴 **두 청중이 다르다.**
+     *
+     * - [toast] — **사용자 테스트 참가자**가 읽는 말. 기술어(arm·use case·바인딩·프리뷰)를
+     *   쓰지 않는다. 문구는 `strings.xml`의 "참가자가 읽는 문구" 절에 둔다.
+     * - [log] — **측정자**용 정밀 문장. 기본값은 [toast]와 같고, 다르게 주면 토스트만
+     *   쉬워지고 추적 정보는 그대로 남는다.
+     *
+     * ⚠ **실패·거부 경로는 가르지 않는다** — 런이 왜 안 도는지를 나르는 문장은 측정자가
+     * 현장에서 바로 봐야 하므로 토스트에 그대로 띄운다(③ 게이트·탐지 기록 실패 등).
+     */
+    private fun showMessage(toast: String, log: String = toast) {
+        Log.i(TAG, log)
+        Toast.makeText(this, toast, Toast.LENGTH_LONG).show()
     }
 
     private companion object {

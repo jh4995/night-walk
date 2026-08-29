@@ -131,24 +131,66 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
-        android:orientation="horizontal"
+        android:orientation="vertical"
         android:padding="8dp"
         android:background="#99000000">
 
-        <Button
-            android:id="@+id/hud_button"
-            android:layout_width="0dp"
-            android:layout_weight="1"
-            android:layout_height="wrap_content"
-            android:text="@string/hud_hide" />
+        <!--
+          사용자 테스트용 on/off. 🔴 **arm 스피너의 리모컨이지 대체물이 아니다** —
+          스피너는 화면에 그대로 남는다(측정 하네스가 **모든 arm**을 계속 쓴다 —
+          🔴 개수를 여기 적지 않는다. arm 은 계속 늘고 그때마다 이 주석이 낡는다.
+          목록의 유일한 출처는 RenderArm.CHOICES 다).
+          두 버튼은 스피너의 setSelection 만 부르고, 실제 전환은 스피너 콜백이 한다
+          (MainActivity 참고 — 버튼이 setArm 을 직접 부르면 스피너 표시와
+          session.json 의 arm 이 갈린다).
 
-        <Button
-            android:id="@+id/toggle_button"
-            android:layout_width="0dp"
-            android:layout_weight="1"
+          🔴 **바깥 컨테이너와 id 를 유지한 채 안에 행 2개를 넣는다** — 인셋 리스너가
+          control_bar 자신의 paddingBottom 을 만지므로 이 구조라야 3버튼 내비 기기에서
+          정지 버튼이 내비바에 안 겹친다. 새 버튼을 루트 FrameLayout 에 직접 달면
+          GLSurfaceView 가 줄어들어 present 기하가 바뀌고 승격 비교가 끊긴다.
+        -->
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:text="@string/start" />
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_view_on"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="@string/view_on" />
+
+            <Button
+                android:id="@+id/btn_view_off"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/view_off" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/hud_button"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="@string/hud_hide" />
+
+            <Button
+                android:id="@+id/toggle_button"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/start" />
+        </LinearLayout>
     </LinearLayout>
 
 </FrameLayout>

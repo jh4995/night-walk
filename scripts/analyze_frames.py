@@ -33,6 +33,8 @@ from lib.frame_log import (  # noqa: E402
     FRAME_CPU_TIME_COLUMNS,
     FRAME_OVERLAY_COLUMNS,
     FRAME_OVERLAY_SOURCE_COLUMNS,
+    FRAME_RATIO_COLUMNS,
+    RATIO_SUMMARY_DIGITS,
     GPU_FRAME_COLUMN,
     GPU_SUM_COLUMNS,
     GPU_TIME_COLUMNS,
@@ -54,7 +56,7 @@ from lib.frame_log import (  # noqa: E402
     session_field,
 )
 from lib.run_utils import common_argparser, init_run  # noqa: E402
-from lib.stats import summarize  # noqa: E402
+from lib.stats import DEFAULT_SUMMARY_DIGITS, summarize  # noqa: E402
 
 LOG = logging.getLogger(__name__)
 
@@ -155,6 +157,11 @@ FRAME_CPU_BUDGET_CELL_OF = {
     #   `detect_wall_ms`와 같은 이유로 **키를 빼지 않고 명시적으로 None을 적는다** —
     #   키가 없으면 "칸이 없다"와 "매핑 등록을 잊었다"가 구분되지 않는다.
     "overlay_boxes": None,          # 개수다. 비용이 아니라 **비용의 조건**이다
+    # v8 — 면적 비율. 개수와 **같은 이유로 칸이 없다**(비용의 조건이지 비용이 아니다).
+    # 🔴 이 dict의 이름은 "CPU 벽시계"지만 실제 경계는 **frames.csv의 비-GPU 시계열**이다
+    #   (overlay_boxes가 이미 그렇다). 비율을 GPU 쪽 BUDGET_CELL_OF에 넣으면 stages 블록의
+    #   합산 라벨 체계로 들어간다 — 그 경계가 이 파일의 상수 자기검사가 지키는 것이다.
+    "overlay_fill_frac": None,      # 면적 비율이다. 시간도 개수도 아니다
     OVERLAY_FRESHNESS_SERIES: None,  # 결과의 나이다. 단계 비용이 아니다
 }
 
@@ -192,7 +199,10 @@ if _detect_cell_missing:
 # 🔴 `t_overlay_source_ns`는 여기 **들어가지 않는다** — 시계열이 아니라 파생의 재료(시각)다.
 #    나머지 v7 열·파생은 전부 등록돼 있어야 한다(위와 같은 이유로 None도 명시).
 _frame_cpu_cell_missing = [
-    c for c in FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS + (OVERLAY_FRESHNESS_SERIES,)
+    c for c in (
+        FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS + FRAME_RATIO_COLUMNS
+        + (OVERLAY_FRESHNESS_SERIES,)
+    )
     if c not in FRAME_CPU_BUDGET_CELL_OF
 ]
 _frame_cpu_cell_stray = [
@@ -200,7 +210,7 @@ _frame_cpu_cell_stray = [
 ]
 if _frame_cpu_cell_missing or _frame_cpu_cell_stray:
     raise RuntimeError(
-        f"analyze_frames.py 상수 불일치 — FRAME_CPU_BUDGET_CELL_OF가 v7 오버레이 시계열과 "
+        f"analyze_frames.py 상수 불일치 — FRAME_CPU_BUDGET_CELL_OF가 ④ 오버레이 시계열과 "
         f"어긋난다: 미등록={_frame_cpu_cell_missing}, 시계열이 아닌 항목="
         f"{_frame_cpu_cell_stray}. 칸이 없는 열도 **명시적으로 None**을 적어야 '칸이 없다'와 "
         f"'등록을 잊었다'가 구분되고, 시각 열(t_overlay_source_ns)은 분포를 내지 않으므로 "
@@ -943,7 +953,17 @@ def _overlay_block(
             "🔴 H칸·I칸은 **박스 개수의 함수다.** overlay_boxes 분포를 함께 옮기지 않은 "
             "stage_h_ms·stage_i_ms는 조건이 없는 숫자다(session.json의 overlay.box_count는 "
             "arm이 선언한 조건이고, overlay_boxes는 **그 프레임에 실제로 그린 개수**다 — "
-            "③ 탐지 결과를 받기 시작하면 두 값이 다르다)"
+            "③ 탐지 결과를 받기 시작하면 두 값이 다르다). "
+            "🔴 **v8부터 조건이 둘이다** — 박스 안을 채우기 시작해 I칸의 설명 변수에 "
+            "**면적**(overlay_fill_frac)이 더해졌다. 같은 개수라도 큰 박스 하나가 화면 절반을 "
+            "덮으면 fill 비용이 다르므로, 개수만 옮긴 I는 여전히 조건이 모자란 숫자다"
+        ),
+        "fill_frac_note": (
+            "overlay_fill_frac = Σ(박스 면적) ÷ 화면 면적. 🔴 **'칠해진 픽셀의 비율'이 "
+            "아니다** — 겹침을 보정하지 않아 1을 넘을 수 있고 뷰포트 밖 클리핑도 보정하지 "
+            "않는다(면적의 **합**이다). 🔴 **0.0은 정상값**(박스 0개)이고 -1만 '기록하지 "
+            "않았다'다. ⚠ 시간이 아니므로 어떤 ms 합에도 들어가지 않고 버짓 칸도 없다 — "
+            "비용이 아니라 **비용의 조건**이다"
         ),
         "freshness_note": (
             f"{OVERLAY_FRESHNESS_SERIES} = t_render_start_ns − t_overlay_source_ns = 그 "
@@ -1099,9 +1119,20 @@ def main() -> int:
 
     # ── ④ 오버레이 (v7). **stages와도 detect와도 다른 블록**이다 — 시계는 CPU 벽시계인데
     #    모집단은 프레임이다(_overlay_block 주석). 판정선이 없으므로 verdict를 흔들지 않는다.
+    #    🔴 비율 열(v8)도 여기서 분포를 낸다 — 읽기만 하고 요약에 안 실으면 CSV에 있는
+    #    열이 요약에서 조용히 사라지고, 그 상태는 "열이 없던 로그"와 구분되지 않는다.
     overlay_stats = {
-        name: summarize(getattr(series, name))
-        for name in FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS
+        # 🔴 비율 열은 **6자리로 요약한다.** 기본값(3자리)으로 두면 작은 박스의 면적이
+        #    `0.0`으로 찍혀 하네스가 "면적 0"으로 읽는다 — 폐기되지 않으므로 보이지도
+        #    않는다. 스키마가 앱에 6자리를 요구한 바로 그 실패를 리포트 계층이 되돌리는
+        #    자리다. 자릿수의 출처는 `lib/frame_log.RATIO_SUMMARY_DIGITS` 하나다.
+        name: summarize(
+            getattr(series, name),
+            digits=(
+                RATIO_SUMMARY_DIGITS if name in FRAME_RATIO_COLUMNS else DEFAULT_SUMMARY_DIGITS
+            ),
+        )
+        for name in FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS + FRAME_RATIO_COLUMNS
     }
     overlay_stats[OVERLAY_FRESHNESS_SERIES] = summarize(series.overlay_freshness_ms)
     flicker = overlay_flicker(
@@ -1521,9 +1552,10 @@ def _print_overlay(summary: dict) -> None:
         "판정선 없음)", arm_short,
     )
     LOG.warning("  ⚠ %s", ov.get("condition_note"))
-    for name in list(FRAME_CPU_TIME_COLUMNS) + list(FRAME_COUNT_COLUMNS) + [
-        OVERLAY_FRESHNESS_SERIES
-    ]:
+    for name in (
+        list(FRAME_CPU_TIME_COLUMNS) + list(FRAME_COUNT_COLUMNS)
+        + list(FRAME_RATIO_COLUMNS) + [OVERLAY_FRESHNESS_SERIES]
+    ):
         s = ov.get(name) or {}
         if not s:
             continue

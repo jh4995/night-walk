@@ -20,6 +20,9 @@
 3. **없는 값은 -1.** 빈칸이나 0이 아니라 -1로 명시한다. 0은 "0ms 걸렸다"와 구분되지 않는다.
    ⚠ **카운트 열은 예외다** — `overlay_boxes`처럼 개수를 담는 열에서 0은 정상값이고
    (박스가 없는 프레임), -1만이 "기록되지 않았다"다. 폐기 가드가 시간 열과 다르다.
+   ⚠ **비율 열(v8)도 같은 예외다** — `overlay_fill_frac`에서 `0.0`은 "채운 면적이 없었다"는
+   정상값이고 `-1`만 미기록이다. 가드는 카운트와 같고 **파싱만 float**이다
+   (FRAME_RATIO_COLUMNS 주석: 카운트 목록에 넣으면 `_to_int`가 소수부를 잘라 버린다).
 """
 
 from __future__ import annotations
@@ -35,7 +38,17 @@ from typing import Optional
 
 from lib.stats import percentile
 
-SCHEMA_VERSION = 7
+# v8 — ④ 오버레이에 **면적** 열(`overlay_fill_frac`) 하나가 늘었다(FRAME_RATIO_COLUMNS).
+# 🔴 **이번에는 앱이 먼저 올라갔다** (`SessionWriter.SCHEMA_VERSION = 8`). 평소 순서
+#   (docs/FRAME_LOG_SCHEMA.md §6 — 하네스가 먼저 들어간다)와 **반대**이며, 그 사이의 v8
+#   로그는 이 열을 "미지 열"로 경고받았다. 그 방향은 check_schema_version의 "앱이 하네스보다
+#   앞서 나갔다" 경로가 말한다.
+# 🔴 **v7 로그는 이 승급 뒤에도 그대로 읽힌다.** check_schema_version은 **경고만** 내고
+#   판정·종료 코드를 바꾸지 않으며(declared < SCHEMA_VERSION 경로), COLUMN_ADDED_IN을 보고
+#   "그 로그에 없을 수 있는 열"로 `overlay_fill_frac`을 **이름으로 짚는다**. 열이 헤더에
+#   없으면 overlay_columns_present에 들어가지 않아 폐기로도 세지 않는다
+#   ("열이 없다"와 "열은 있는데 -1이다"는 다른 사실이다).
+SCHEMA_VERSION = 8
 
 # 폰이 반드시 뱉어야 하는 열
 REQUIRED_COLUMNS = ("frame_idx", "t_recv_ns")
@@ -188,6 +201,41 @@ FRAME_COUNT_COLUMNS = (
     "overlay_boxes",   # 그 프레임에 실제로 그린 박스 수. **0은 정상값이다**
 )
 
+# ── 비율 열 (단위 없음, float) — v8에서 신설한 범주 ────────────────────────
+# **왜 기존 범주에 넣지 않고 새로 만들었는가.** 셋 다 맞지 않는다:
+#   1) 시간 열(FRAME_CPU_TIME_COLUMNS·GPU_TIME_COLUMNS)이 아니다 — ms가 아니므로
+#      `gpu_sum_ms`·`stage_d_total_ms`에 더해지면 두 물리량이 한 숫자가 되고, 시간 열의
+#      하한(`> 0`)이 걸리면 **면적이 0인 프레임(박스 0개)이 전부 폐기**된다.
+#   2) 카운트 열(FRAME_COUNT_COLUMNS)도 아니다. 폐기 하한(`>= 0`)은 같지만 **읽는 함수가
+#      다르다** — 그 범주는 `_to_int`로 읽히므로 `0.123456`이 조용히 `0`으로 잘린다.
+#      "0이 정상값"이라는 규약이 같다는 이유로 같은 통에 넣으면 값이 소리 없이 사라진다.
+#   3) 파생 시계열도 아니다 — 앱이 실제로 CSV에 싣는 열이고, 하네스가 유도할 수 없다
+#      (박스 좌표가 로그에 없다).
+# 그래서 범주가 하나 더 필요하다: **폐기 가드는 카운트와 같고(`>= 0`, `_collect_nonneg`),
+# 파싱은 시간 열과 같다(`_to_float`).**
+#
+# `overlay_fill_frac` — 그 프레임에 **채운 면적의 합 ÷ 화면 면적**. NDC에서
+#   Σ|(x1−x0)(y1−y0)| / 4 이며 앱이 소수 6자리로 쓴다.
+#   🔴 **"칠해진 픽셀의 비율"이 아니다.** 겹침을 보정하지 않으므로 **1을 넘을 수 있고**,
+#     뷰포트 밖으로 나간 부분도 잘라내지 않는다. 면적의 **합**이다 — 비율로 읽고 상한 1을
+#     가정하면 I칸 분석이 틀린다.
+#   🔴 **`0.0`은 정상값이다**(그 프레임에 그린 박스가 없었다). `-1`만 "기록하지 않았다"다 —
+#     `overlay_boxes`와 글자 그대로 같은 규약이다.
+#   🔴 **개수 축 `overlay_boxes`의 짝이다.** 스트로크 비용은 개수·둘레가 설명하고, 박스 안을
+#     채우기 시작한 뒤의 fill 비용은 **면적**이 설명한다. I칸의 설명 변수가 하나에서 둘로
+#     늘었으므로 한쪽만 옮기면 그 숫자는 다시 "조건 없는 숫자"가 된다.
+#   ⚠ **버짓 칸이 없다.** 비용이 아니라 **비용의 조건**이다(`overlay_boxes`와 같은 취급).
+FRAME_RATIO_COLUMNS = (
+    "overlay_fill_frac",   # Σ(박스 면적) ÷ 화면 면적. **0.0은 정상값이다**
+)
+
+#: 비율 열을 요약할 때 쓰는 소수 자릿수. 🔴 **앱이 CSV에 쓰는 자릿수와 같아야 한다.**
+#: 줄이면 작은 박스가 `0.000`이 되고 하네스가 그 샘플을 "면적 0"으로 읽는다 —
+#: 폐기되지 않으므로 **보이지도 않는다**(docs/FRAME_LOG_SCHEMA.md의 ④ 면적 열 절).
+#: 🔴 **여기가 유일한 출처다.** `lib/stats.py`의 `summarize(digits=...)`에 넘겨 쓰고,
+#: 소비자마다 6을 다시 적지 않는다 — 적는 순간 한쪽만 고쳐져 갈린다.
+RATIO_SUMMARY_DIGITS = 6
+
 # ── 오버레이가 사용한 탐지 결과의 **게시 시각** ────────────────────────────
 # `t_*_ns` 규약을 그대로 따른다: int ns, `CLOCK_BOOTTIME`
 # (`SystemClock.elapsedRealtimeNanos`), 즉 `t_recv_ns`·`t_render_start_ns`와 **같은 시계**다.
@@ -203,9 +251,17 @@ FRAME_OVERLAY_SOURCE_COLUMNS = (
     "t_overlay_source_ns",
 )
 
-# 위 셋 = v7에서 frames.csv에 늘어난 열 전부. 헤더 탐색·버전 등록·요약 블록이 이 목록을 쓴다.
+# ④ 오버레이 열 **전부**(v7의 셋 + v8의 하나). 헤더 탐색·버전 등록·요약 블록이 이 목록을 쓴다.
+# 🔴 **순서를 앱의 CSV 헤더 순서와 같게 둔다** — `FrameLogRecorder.OVERLAY_HEADER`는
+#   `stage_h_ms,overlay_boxes,t_overlay_source_ns,overlay_fill_frac`이고, 그래서 비율 열이
+#   `FRAME_OVERLAY_SOURCE_COLUMNS` **뒤**에 온다. 읽기는 이름으로 하므로 순서가 판독을
+#   바꾸지는 않지만, `write_frames`가 만드는 합성 로그의 열 순서와 요약의 `columns_defined`가
+#   실기기 로그와 어긋나면 눈으로 대조할 때마다 사람이 헷갈린다.
 FRAME_OVERLAY_COLUMNS = (
-    FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS + FRAME_OVERLAY_SOURCE_COLUMNS
+    FRAME_CPU_TIME_COLUMNS
+    + FRAME_COUNT_COLUMNS
+    + FRAME_OVERLAY_SOURCE_COLUMNS
+    + FRAME_RATIO_COLUMNS
 )
 
 # ── 오버레이 신선도 (파생 시계열. **CSV 열이 아니다**) ─────────────────────
@@ -221,6 +277,20 @@ FRAME_OVERLAY_COLUMNS = (
 #   0부터 주기까지 톱니 모양으로 퍼진다. **두 분포를 더하거나 비교해 빼지 않는다.**
 OVERLAY_FRESHNESS_SERIES = "overlay_freshness_ms"
 
+# ── 잔상 초과분 (파생 시계열. **CSV 열이 아니다**) ─────────────────────────
+# **무엇인가:** `overlay_boxes − (그 프레임이 소비 중인 게시의 boxes_out)`.
+# 그 프레임이 **게시에 없는 박스를 몇 개 그리고 있었나**다(음수면 게시보다 적게 그렸다).
+#
+# 🔴 **frames.csv만으로는 만들 수 없다** — `t_overlay_source_ns`를 `detect.csv`의
+#   `t_detect_end_ns`에 붙여야 나온다. 그래서 `read_frames`가 채우는 필드가 없고
+#   (`FrameSeries`에 자리가 없다) 계산의 주인은 `scripts/overlay_ghost.py` 하나다.
+#   위 `overlay_freshness_ms`처럼 read_frames가 채우는 파생과 **그 점이 다르다.**
+# 🔴 **여기 등록하는 이유는 하나다: 앱이 같은 이름의 열을 내면 import에서 죽는다**
+#   (아래 `_derived_as_column` 자기검사). 폰이 계산한 초과분과 PC가 조인해 만든 초과분이
+#   어긋날 때 어느 쪽이 맞는지 알 방법이 없다 — 그 상태를 애초에 만들지 않는다.
+# ⚠ **버짓 칸이 없다.** 단계 비용이 아니라 정책이 만든 표시 오차(개수)다.
+OVERLAY_EXCESS_SERIES = "overlay_excess_boxes"
+
 # ── frames.csv 쪽 **파생 시계열 이름 전부** (CSV 열이 아니다) ───────────────
 # 🔴 **이 이름들은 CSV 열이 될 수 없다.** 하네스가 계산하는 값이고, 폰이 같은 이름으로 열을
 #   내면 폰이 계산한 값과 PC가 계산한 값이 어긋날 때 어느 쪽이 맞는지 알 수 없다
@@ -232,6 +302,10 @@ OVERLAY_FRESHNESS_SERIES = "overlay_freshness_ms"
 # 그래서 이 이름들은 `_add_unknown_column_warnings`가 **다른 문장**으로 다룬다.
 FRAME_DERIVED_SERIES = GPU_DERIVED_SERIES + (
     OVERLAY_FRESHNESS_SERIES,
+    # 🔴 read_frames가 채우지 않는 유일한 이름이다(위 상수 주석: detect.csv 조인이 필요하다).
+    #    FrameSeries 필드 자기검사는 이 목록이 아니라 **명시 목록**을 보므로 여기 추가해도
+    #    import가 죽지 않는다 — 죽어야 하는 것은 앱이 이 이름으로 **열**을 낼 때뿐이다.
+    OVERLAY_EXCESS_SERIES,
     "capture_to_recv_ms",
     "capture_to_render_ms",
     "recv_interval_ms",
@@ -241,6 +315,67 @@ FRAME_DERIVED_SERIES = GPU_DERIVED_SERIES + (
     # ⚠ 위 recv_to_render_ms와 **한 글자 차이인데 다른 물리량**이다(render start까지 vs
     #   render end까지). FrameSeries 필드 주석에 셋의 관계가 적혀 있다.
     "recv_to_render_start_ms",
+)
+
+# ── session.json의 overlay 블록 경로 ──────────────────────────────────────
+# **하네스가 읽는 키를 한 곳에만 적는다** — 아래 `DETECT_*_PATH`와 같은 취지다. 읽는 코드와
+# 사람에게 보이는 메시지가 이름을 각자 갖고 있으면, 앱이 필드를 옮길 때 한쪽만 낡는다.
+#
+# 🔴 **경로 모양에 함정이 둘 있다**(실제 파일에서 확인한 것이며 추측이 아니다):
+#   1) `rejected_inverted`는 `overlay` 블록 **최상위**다. `publish.run_facts` 안이 아니다.
+#   2) `dropped_over_cap`은 스칼라가 아니라 **`{publish, smoothing, note}` 중첩 객체**다.
+#      🔴 **두 수를 더하지 않는다** — 세는 자리가 다르다(게시자 vs GL 스레드의 hold 포함 계수).
+#      더하면 같은 박스를 두 번 셀 수 있고, 그 note가 더하지 말라고 적고 있다.
+#   경로를 여기 상수로 두는 이유가 그것이다: 소비자가 모양을 짐작하면 조용히 null을 읽는다.
+OVERLAY_SESSION_BLOCK = "overlay"
+OVERLAY_PUBLISH_COUNT_PATH = (OVERLAY_SESSION_BLOCK, "publish", "run_facts", "publish_count")
+OVERLAY_BOXES_PUBLISHED_PATH = (
+    OVERLAY_SESSION_BLOCK, "publish", "run_facts", "boxes_published",
+)
+OVERLAY_REJECTED_INVERTED_PATH = (OVERLAY_SESSION_BLOCK, "rejected_inverted")
+OVERLAY_DROPPED_OVER_CAP_PUBLISH_PATH = (OVERLAY_SESSION_BLOCK, "dropped_over_cap", "publish")
+OVERLAY_DROPPED_OVER_CAP_SMOOTHING_PATH = (
+    OVERLAY_SESSION_BLOCK, "dropped_over_cap", "smoothing",
+)
+OVERLAY_MAP_FAILED_FRAMES_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "run_facts", "map_failed_frames",
+)
+# hold TTL의 **선언값**(표시 프레임 수). 🔴 판정선이 아니라 **그 런의 정책 파라미터**다 —
+# 잔상 분석은 이 값으로 "게시 안에서 TTL이 만료된 프레임"을 가른다(scripts/overlay_ghost.py).
+OVERLAY_HOLD_FRAMES_PATH = (OVERLAY_SESSION_BLOCK, "smoothing", "hold_frames")
+
+# ── 게시(publish) 단위 정책 = PENDING/ACTIVE FSM 빌드의 선언값 ──────────────
+# 🔴 **`hold_frames`와 `hold_publishes`는 같은 값의 다른 이름이 아니라 서로 다른 정책이다.**
+#   전자는 TTL을 **표시 프레임**으로 깎고(게시 하나를 오래 보는 동안 박스가 사라질 수 있다),
+#   후자는 **게시**로 깎는다(새 게시를 소비한 프레임에서만 전이가 돈다). 한 런의 session.json에
+#   **정확히 하나만** 있어야 한다 — 둘 다 있으면 앱이 모순을 선언한 것이고, 둘 다 없으면
+#   `excess < 0`을 귀속할 근거가 없다. 그 세 경우를 가르는 주인은 `scripts/overlay_ghost.py`의
+#   `resolve_policy`이며, 어느 쪽도 **값을 지어내지 않는다**.
+# 🔴 이 전환에서 `SCHEMA_VERSION`은 오르지 않았고 CSV 열도 늘지 않았다 — 바뀐 것은
+#   session.json의 정책 블록뿐이다. 그래서 스키마 버전으로는 정책을 가를 수 없고, **키의
+#   존재 여부**가 유일한 판별 축이다.
+OVERLAY_HOLD_PUBLISHES_PATH = (OVERLAY_SESSION_BLOCK, "smoothing", "hold_publishes")
+OVERLAY_ENTRY_WINDOW_PUBLISHES_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "entry_window_publishes",
+)
+OVERLAY_ENTRY_HITS_REQUIRED_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "entry_hits_required",
+)
+# FSM 런 카운터. 🔴 `pending_promoted`는 **그 런에서 실제로 그려지기 시작한 트랙 수**다 —
+# 0이면 한 번도 승격이 없었다는 뜻이고 그것은 "아무것도 안 그렸다"의 지목이다.
+# 🔴 `tracks_expired`는 **뜻이 바뀌었다**(옛 빌드: hold(표시 프레임) 만료 / 새 빌드: ACTIVE가
+#   연속 미지지로 해제). 옛 런의 같은 이름과 직접 비교하지 않는다.
+OVERLAY_PENDING_PROMOTED_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "run_facts", "pending_promoted",
+)
+OVERLAY_PENDING_DISCARDED_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "run_facts", "pending_discarded",
+)
+OVERLAY_TRACKS_CREATED_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "run_facts", "tracks_created",
+)
+OVERLAY_TRACKS_EXPIRED_PATH = (
+    OVERLAY_SESSION_BLOCK, "smoothing", "run_facts", "tracks_expired",
 )
 
 # 각 열이 **어느 스키마 버전에서 들어왔는가.** 옛 세션(선언 버전 < 하네스 버전)에 경고를 낼 때
@@ -266,6 +401,11 @@ COLUMN_ADDED_IN = {
     "stage_h_ms": 7,
     "overlay_boxes": 7,
     "t_overlay_source_ns": 7,
+    # v8 — ④ 오버레이 **면적** 열. 시간도 개수도 아니다(FRAME_RATIO_COLUMNS 주석).
+    # 🔴 v7 로그에는 이 열이 없다. 여기 등록해 두어야 v7 세션에 뜨는 "앱이 하네스보다
+    #   뒤처졌다" 경고가 빠진 열을 **이름으로** 짚는다 — 등록을 잊으면 그 경고가 이 열을
+    #   말없이 빼먹은 채 성공을 보고한다.
+    "overlay_fill_frac": 8,
 }
 
 # COLUMN_ADDED_IN이 **덮어야 하는 frames.csv 열 전부.** GPU 열만이 아니다(v7에서 CPU 벽시계
@@ -393,6 +533,19 @@ for _c in FRAME_COUNT_COLUMNS:
             f"{_c}이 FRAME_CPU_TIME_COLUMNS에 있다 — 카운트 열에 시간 열의 하한(`> 0`)이 "
             f"걸리면 **박스 0개 프레임이 전부 폐기**된다(0은 정상값이다)"
         )
+# v8 — 비율 열이 다른 범주로 새면 **조용히 깨지는 것이 둘**이다(위 카운트 검사와 같은 부류).
+for _c in FRAME_RATIO_COLUMNS:
+    if _c in FRAME_CPU_TIME_COLUMNS:
+        _overlay_col_errors.append(
+            f"{_c}이 FRAME_CPU_TIME_COLUMNS에 있다 — 비율은 ms가 아니라서 (a) 시간 열의 "
+            f"하한(`> 0`)에 걸려 **면적 0인 프레임이 전부 폐기**되고 (b) 비용 차분 표에 "
+            f"ms 라벨로 실린다"
+        )
+    if _c in FRAME_COUNT_COLUMNS:
+        _overlay_col_errors.append(
+            f"{_c}이 FRAME_COUNT_COLUMNS에 있다 — 그 범주는 `_to_int`로 읽히므로 "
+            f"`0.123456`이 조용히 `0`으로 잘린다(폐기로도 세어지지 않아 보이지 않는다)"
+        )
 _derived_as_column = [c for c in FRAME_DERIVED_SERIES if c in KNOWN_COLUMNS]
 if _derived_as_column:
     _overlay_col_errors.append(
@@ -402,7 +555,7 @@ if _derived_as_column:
     )
 if _overlay_col_errors:
     raise RuntimeError(
-        "lib/frame_log.py 상수 불일치 — v7 오버레이 열의 성질이 어긋난다: "
+        "lib/frame_log.py 상수 불일치 — ④ 오버레이 열의 성질이 어긋난다: "
         + "; ".join(_overlay_col_errors)
         + " (docs/FRAME_LOG_SCHEMA.md §2 '④ 오버레이 열')"
     )
@@ -1055,6 +1208,46 @@ RENDER_ARM_DETECT_CPU_CHAIN_1Q = "detect_cpu_chain_1q"
 RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT = "detect_cpu_chain_highlight"
 RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT_1Q = "detect_cpu_chain_highlight_1q"
 
+# ── fill 대조 arm (2026-08-29) ─────────────────────────────────────────────
+#
+#   detect_cpu_chain_highlight_nofill   9패스 본진과 **같은 구성인데 박스 안쪽 fill 기하를
+#                                       건너뛴다.** 스트로크는 그대로 그린다
+#                                       → "fill이 I칸을 얼마나 올렸나"의 **대조군**
+#
+# **왜 arm을 가르나:** v8에서 ④ 오버레이가 박스 안을 **빌드 상수 알파**(0.30)로 채우기
+#   시작했다. 알파가 컴파일 시점에 박히므로 **같은 세션에 대조군이 없다** — fill 있는 런과
+#   없는 런을 같은 밤에 뜨려면 코드 경로가 둘이어야 하고, 이 저장소의 선례대로 코드 경로가
+#   갈리면 **arm id를 가른다**(`highlight_boxes` ↔ `_stress`는 박스 개수가, `_1q`는 계측
+#   방식이 갈린 것과 같은 구조).
+#
+# 🔴 **알파만 0으로 둔 대조군은 쓸모없다.** fill quad가 그대로 래스터라이즈돼 프래그먼트
+#   비용이 똑같이 든다 — 그러면 대조군이 본진과 같은 값을 내고 "fill은 공짜"라는 거짓
+#   결론이 나온다. 그래서 이 arm은 **fill 기하 자체를 건너뛰는 코드 경로**다.
+#
+# 🔴 **`overlay.fill_enabled`(불리언)가 이 arm과 fill arm을 가르는 세션 키다.**
+#   `fill_alpha`만으로는 부족하다: 이 arm은 `fill_alpha=null`을 내는데
+#   `scripts/baseline_diff.py`의 `_dig`는 **명시적 null과 키 부재를 구분하지 못한다**
+#   (아래 `session_field`와 달리 `key_present`를 주지 않는다). 그래서 조건 판정의 하중은
+#   `fill_enabled`가 받는다 — fill↔nofill이 `true≠false`로, v7 승격본↔nofill이
+#   `None≠false`로 갈린다. `fill_alpha=0`으로 내는 선택지는 **"알파 0으로 그렸다"와
+#   "안 그렸다"가 구분되지 않아** 쓰지 않는다(둘은 비용이 다르다).
+#
+# 🔴 **CSV 열이 늘지 않고 `SCHEMA_VERSION`도 8 그대로다.** 이 arm도 v8 오버레이 4열을
+#   그대로 싣고, `overlay_fill_frac`은 **면적을 그대로** 낸다(그리지 않은 면적). 그 열의
+#   정의가 "Σ박스면적÷화면면적"이고 **"칠해진 픽셀의 비율이 아니다"**라고 이미 못 박혀
+#   있으므로(→ FRAME_RATIO_COLUMNS 주석) 이것은 예외가 아니라 **정의를 따르는 것**이다.
+#   면적을 0으로 내면 `overlay_cost_by_boxes.py`의 불가능 짝 카운터
+#   (`boxes_positive_fill_zero`)가 오작동하고 버킷 안 면적 분포가 사라진다.
+#   ⚠ 바뀐 것은 session.json의 정책 블록뿐이므로 **스키마 버전으로는 이 arm을 가를 수 없다**
+#     — 위 `hold_frames`↔`hold_publishes`와 글자 그대로 같은 상황이며, 판별 축은
+#     **`render_arm` + `overlay.fill_enabled`**다.
+#
+# ⚠ 이 arm의 상한·하한 구조는 본진과 같다(I 상한 = `stage_i_ms`). `_1q` 짝은 **아직 없다** —
+#   필요해지면 위 `_1q` 블록의 요구(`singleFrameQueryPeer`·`renderPassCount` 등록)를 그대로
+#   받는다. 🔴 **fill의 I칸 비용은 이 글을 쓰는 시점에 미측정이다** — 이 arm의 실기기 로그가
+#   아직 하나도 없다.
+RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL = "detect_cpu_chain_highlight_nofill"
+
 RENDER_ARMS = (
     RENDER_ARM_PASSTHROUGH,
     RENDER_ARM_BLIT_2PASS,
@@ -1105,6 +1298,9 @@ RENDER_ARMS = (
     RENDER_ARM_DETECT_CPU_CHAIN_1Q,
     RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT,
     RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT_1Q,
+    # fill 대조 arm(2026-08-29). 위 본진과 **같은 9패스인데 fill 기하를 건너뛴다** —
+    # 판별 축은 `render_arm` + `overlay.fill_enabled` 둘이다. 위 블록 참고.
+    RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL,
     RENDER_ARM_SYNTHETIC,
 )
 
@@ -1160,6 +1356,15 @@ FRAME_COUNT_DISCARD_REASON_TEXT = {
     "below_min": (
         "-1 또는 음수 — 기록되지 않았다"
         " (0은 폐기하지 않는다: 박스 0개 프레임은 정상값이다)"
+    ),
+}
+
+# 비율 열용(v8). 카운트와 가드가 같으므로 문장도 같은 모양이되 **면적의 언어로** 말한다 —
+# "박스 개수"라고 쓰면 폰 쪽이 개수 계수 코드를 뒤진다(값의 출처가 다르다).
+FRAME_RATIO_DISCARD_REASON_TEXT = {
+    "below_min": (
+        "-1 또는 음수 — 기록되지 않았다"
+        " (0.0은 폐기하지 않는다: 채운 면적이 없는 프레임은 정상값이다)"
     ),
 }
 
@@ -1279,6 +1484,9 @@ class FrameSeries:
     stage_h_ms: list[float] = field(default_factory=list)
     # 그 프레임에 실제로 그린 박스 수. **0을 폐기하지 않는다**(가드가 `>= 0`이다).
     overlay_boxes: list[int] = field(default_factory=list)
+    # Σ(박스 면적) ÷ 화면 면적 (v8). **비율이지 시간도 개수도 아니다** — 겹침 미보정이라
+    # 1을 넘을 수 있고, `0.0`은 정상값이다(가드가 `>= 0`, 파싱은 `_to_float`).
+    overlay_fill_frac: list[float] = field(default_factory=list)
     # t_render_start_ns - t_overlay_source_ns = 그 프레임이 쓴 탐지 결과의 나이 (파생 시계열).
     # 🔴 CSV 열이 아니다 — 유도값은 저장하지 않는다.
     overlay_freshness_ms: list[float] = field(default_factory=list)
@@ -1350,7 +1558,7 @@ class FrameSeries:
 
     @property
     def overlay_series(self) -> dict[str, list]:
-        """v7 오버레이 열 이름 -> 시계열. **파생(신선도)은 넣지 않는다**(원본 열만).
+        """④ 오버레이 열 이름 -> 시계열(v7 셋 + v8 비율). **파생(신선도)은 넣지 않는다**.
 
         🔴 `gpu_series`와 **합치지 않는다.** 그 property의 소비자는 GPU 시계 전용 경로
         (`gpu_sum_ms` 합산·stages 블록)라, 여기 값이 그 dict에 들어가면 CPU 벽시계와 개수가
@@ -1358,7 +1566,9 @@ class FrameSeries:
         """
         return {
             name: getattr(self, name)
-            for name in FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS
+            for name in (
+                FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS + FRAME_RATIO_COLUMNS
+            )
         }
 
     @property
@@ -1425,8 +1635,8 @@ class FrameSeries:
 # count=0은 "0이었다"로도 "없었다"로도 읽히므로 그 상태를 남기지 않는다.
 _frame_field_names = {f.name for f in dataclass_fields(FrameSeries)}
 _frame_field_errors = [
-    f"FrameSeries에 {_c} 필드가 없다 — v7 오버레이 열로 선언됐는데 담을 자리가 없다"
-    for _c in FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS
+    f"FrameSeries에 {_c} 필드가 없다 — ④ 오버레이 열로 선언됐는데 담을 자리가 없다"
+    for _c in FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS + FRAME_RATIO_COLUMNS
     if _c not in _frame_field_names
 ]
 if OVERLAY_FRESHNESS_SERIES not in _frame_field_names:
@@ -1443,7 +1653,7 @@ if "recv_to_render_start_ms" not in _frame_field_names:
     )
 if _frame_field_errors:
     raise RuntimeError(
-        "lib/frame_log.py 상수 불일치 — v7 오버레이 열과 FrameSeries 필드가 어긋난다: "
+        "lib/frame_log.py 상수 불일치 — ④ 오버레이 열과 FrameSeries 필드가 어긋난다: "
         + "; ".join(_frame_field_errors)
         + " (docs/FRAME_LOG_SCHEMA.md §2 '④ 오버레이 열')"
     )
@@ -1869,6 +2079,12 @@ def read_frames(
                 # 🔴 하한 `>= 0`. **박스 0개 프레임은 정상값이다** — 시간 열의 `> 0`을
                 #    복사하면 그 프레임들이 전부 폐기로 세어진다.
                 _collect_nonneg(series, col, getattr(series, col), _to_int(row.get(col)))
+            elif col in FRAME_RATIO_COLUMNS:
+                # 🔴 **가드는 카운트와 같고(`>= 0`) 파싱은 시간 열과 같다(`_to_float`).**
+                #    `_to_int`로 읽으면 `0.123456`이 `0`으로 잘리고 폐기로도 세어지지 않아
+                #    "면적이 0이었다"와 구분되지 않는다. 상한을 두지 않는 이유는 겹침을
+                #    보정하지 않아 **1을 넘는 값이 정상**이기 때문이다.
+                _collect_nonneg(series, col, getattr(series, col), _to_float(row.get(col)))
             # t_overlay_source_ns는 시계열이 아니라 **파생의 재료**다 (바로 아래).
 
         # 오버레이 신선도 = 렌더 시작 − 그 프레임이 쓴 탐지 결과의 게시 시각 (파생 시계열).
@@ -2505,6 +2721,8 @@ def _frame_discard_reason_text(name: str) -> dict:
         return FRAME_CPU_DISCARD_REASON_TEXT
     if name in FRAME_COUNT_COLUMNS:
         return FRAME_COUNT_DISCARD_REASON_TEXT
+    if name in FRAME_RATIO_COLUMNS:
+        return FRAME_RATIO_DISCARD_REASON_TEXT
     if name == OVERLAY_FRESHNESS_SERIES:
         return OVERLAY_FRESHNESS_DISCARD_REASON_TEXT
     return DISCARD_REASON_TEXT
@@ -2625,13 +2843,15 @@ def _add_stage_d_warnings(series: FrameSeries) -> None:
 def _add_overlay_warnings(series: FrameSeries) -> None:
     """v7 오버레이 열에 대한 경고. `_add_gpu_warnings`·`_add_detect_warnings`와 같은 취지.
 
-    말하는 것 셋:
+    말하는 것 넷:
       1. **열은 있는데 유효 표본이 0개다** — `count == 0`이 "그 프레임에 박스가 없었다"나
          "평활이 0ms였다"로 읽히는 것을 막는다. 0과 "재지 못했다"는 다른 사실이다.
       2. **박스 개수 없이 H를 잰 로그** — I칸·H칸은 박스 개수의 함수이므로, 개수 열이 없으면
          그 비용은 조건이 없는 숫자다.
       3. **게시 시각 없이 박스를 그린 로그** — 신선도를 낼 수 없으므로 "박스가 몇 프레임
          묶여 있었나"를 되물을 수 없다.
+      4. **면적 없이 개수만 있는 로그**(v8) — 박스 안을 채우는 빌드부터 I칸의 설명 변수가
+         개수 하나가 아니다. 개수만으로는 fill 비용을 조건 지을 수 없다.
     """
     for col in series.overlay_columns_present:
         if col in FRAME_OVERLAY_SOURCE_COLUMNS:
@@ -2646,6 +2866,14 @@ def _add_overlay_warnings(series: FrameSeries) -> None:
                 f"(0은 폐기하지 않으므로, 0개인 프레임이 많았다면 표본은 0이 아니라 그만큼 "
                 f"있어야 한다). 이 열 없이 stage_i_ms·stage_h_ms를 인용하지 말 것"
             )
+        elif col in FRAME_RATIO_COLUMNS:
+            series.warnings.append(
+                f"{col}: 열은 있는데 유효 표본이 0개다(폐기 {discarded}개). 이건 '채운 면적이 "
+                f"0이었다'가 아니라 **면적을 기록하지 못했다**는 뜻이다 "
+                f"(0.0은 폐기하지 않으므로, 박스가 없는 프레임이 많았다면 표본은 0이 아니라 "
+                f"그만큼 있어야 한다). 이 열 없이 fill이 들어간 빌드의 stage_i_ms를 인용하지 "
+                f"말 것 — 그 비용의 설명 변수가 여기 있다"
+            )
         else:
             series.warnings.append(
                 f"{col}: 열은 있는데 유효 표본이 0개다(폐기 {discarded}개). 이건 '그 구간이 "
@@ -2659,6 +2887,21 @@ def _add_overlay_warnings(series: FrameSeries) -> None:
             f"stage_h_ms는 있는데 {', '.join(FRAME_COUNT_COLUMNS)} 열이 없다 — H칸(그리고 "
             f"I칸)은 **박스 개수의 함수**이므로 개수 없는 이 값은 조건이 없는 숫자다. "
             f"버짓 칸에 옮길 때 개수를 함께 옮길 수 없으므로 그대로 인용하지 말 것"
+        )
+    # v8 — 개수는 있는데 **면적이 없다**. 🔴 이 경고는 **옛 로그에서도 뜬다**(v7 빌드에는
+    #   열 자체가 없다). 그건 오작동이 아니라 사실이고, 문장이 두 경우를 함께 말한다 —
+    #   "fill 이전 빌드였다"와 "fill 빌드인데 면적을 안 실었다"는 둘 다 가능하며, 어느
+    #   쪽인지는 session.json의 schema_version(선언값)이 가른다.
+    if (
+        any(c in series.overlay_columns_present for c in FRAME_COUNT_COLUMNS)
+        and not any(c in series.overlay_columns_present for c in FRAME_RATIO_COLUMNS)
+    ):
+        series.warnings.append(
+            f"overlay 박스 개수는 있는데 {FRAME_RATIO_COLUMNS[0]}(면적)이 없다 — 박스 안을 "
+            f"채우는 빌드부터 I칸의 설명 변수는 **개수 하나가 아니라 개수와 면적 둘**이다. "
+            f"이 로그가 fill 이전 빌드(선언 schema_version <= 7)라면 정상이며 그때의 I는 "
+            f"개수·둘레로 설명된다. fill 빌드인데 이 열이 없다면 같은 개수의 큰 박스와 작은 "
+            f"박스를 구분할 수 없으므로, 그 런의 stage_i_ms를 면적 조건 없이 인용하지 말 것"
         )
     if (
         any(c in series.overlay_columns_present for c in FRAME_COUNT_COLUMNS)

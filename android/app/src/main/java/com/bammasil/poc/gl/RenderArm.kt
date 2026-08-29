@@ -731,6 +731,66 @@ enum class RenderArm(
             "stage4_smoothing",
         ),
         listOf("gpu_frame_ms"),
+    ),
+
+    // ── ④ fill 대조군(`detect_cpu_chain_highlight_nofill`) ─────────────────
+    // 🔴 **fill 기하 하나만 다른 짝 arm이다.** 접미사 규약은 [DETECT_CPU_NOROT]의 선례를
+    // 그대로 따른다 — "짝과 글자 그대로 같고 한 요소만 뺀 **의도된 대조군**"이며, 그 뜻이
+    // "아직 구현하지 않았다"와 구분돼야 한다.
+    //
+    // 🔴 **알파 0으로 두는 대조군이 아니다.** 알파 0이면 fill quad가 그대로 래스터라이즈돼
+    //   프래그먼트 비용이 똑같이 들고, 그러면 차분이 0에 가깝게 나오면서 "fill이 공짜다"라는
+    //   틀린 결론이 나온다. 이 arm은 **fill 기하 자체를 정점 버퍼에 쓰지 않는다**
+    //   ([HighlightOverlay.vertsPerBox]가 그 유일한 분기다).
+    //
+    // 🔴 **[DETECT_CPU_CHAIN_HIGHLIGHT]와 글자 그대로 같아야 한다** — 같은 [pipelineStages]·
+    //   같은 [gpuColumns]·같은 draw 함수([usesChainedHighlight])·같은 EP·같은 평활 정책이고,
+    //   블렌딩도 켠 채 둔다. 갈리는 것은 [drawsOverlayFill] 하나뿐이다. 전문은
+    //   [HIGHLIGHT_NOFILL_CONTROL_NOTE].
+    //
+    // 🔴 **`_1q` 짝을 만들지 않는다** — [singleFrameQueryPeer]에 넣지 않으므로
+    //   [renderPassCount]가 자기 열 수(9)를 그대로 쓴다.
+    //
+    // ⚠ 목록 **맨 뒤**에 붙인다. 스피너는 entries 순서라 중간에 끼우면 측정자가 손으로 고르던
+    //   기존 arm의 위치가 전부 밀린다(`_1q` 셋·회전 대조군·③→④ 세트·통합 세트를 뒤에 붙인
+    //   것과 같은 이유다).
+
+    /**
+     * [DETECT_CPU_CHAIN_HIGHLIGHT]의 **fill 미적용** 짝. I칸에서 fill 기하가 차지하는 몫을
+     * **같은 세션·같은 빌드 안에서** 잡는 자리다.
+     *
+     * 🔴 **이 arm의 뜻은 짝 arm과의 차분 하나뿐이다** → [HIGHLIGHT_NOFILL_CONTROL_NOTE].
+     * 그 문장이 무엇이 분리되고 무엇이 분리되지 않는지를 함께 적는다.
+     *
+     * ⚠ [pipelineStages]와 [gpuColumns]는 짝과 **글자 그대로 같다.** 토큰의 뜻은 "그 단계가
+     * 프레임 경로에서 돌았는가"이고 ④도 평활도 이 arm에서 실제로 돈다 — 스트로크는 그리고
+     * fill 기하만 건너뛴다.
+     *
+     * 🔴 이 arm은 상류 '비채움' 명세에 **부합한다**(짝 arm이 그 명세에서 이탈한 쪽이다) —
+     * `overlay.fill_deviation`이 arm별로 그 사실을 말한다.
+     */
+    DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL(
+        "detect_cpu_chain_highlight_nofill",
+        // 🔴 짝(detect_cpu_chain_highlight)과 **같은 목록·같은 순서**다.
+        listOf(
+            "blit_2pass",
+            "stage2_drago",
+            "stage2_clahe",
+            "detect",
+            "stage4_highlight",
+            "stage4_smoothing",
+        ),
+        listOf(
+            "stage_b_ms",
+            "stage_d_analyze_ms",
+            "stage_d_build_ms",
+            "stage_d_apply_ms",
+            "stage_d_analyze2_ms",
+            "stage_d_build2_ms",
+            "stage_d_apply2_ms",
+            "stage_i_ms",
+            "gpu_present_ms",
+        ),
     );
 
     /**
@@ -776,9 +836,14 @@ enum class RenderArm(
      * 🔴 [usesChainedComputeStage2]와 **겹치지 않는다.** 겹치면 `dispatchDraw`가 8패스 경로로
      * 떨어뜨려 **④가 조용히 사라진다**(그 프로퍼티가 경고한 겸업 함정과 같은 부류이고,
      * [usesChainedBilateral]이 같은 이유로 갈라져 있다).
+     *
+     * 🔴 fill 대조군([DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL])도 **여기다** — 렌더 경로가 짝과
+     * 글자 그대로 같아야 두 arm의 차분이 fill 기하의 비용이 된다. 갈리는 것은
+     * [drawsOverlayFill] 하나뿐이다.
      */
     val usesChainedHighlight: Boolean
-        get() = this == DETECT_CPU_CHAIN_HIGHLIGHT || this == DETECT_CPU_CHAIN_HIGHLIGHT_1Q
+        get() = this == DETECT_CPU_CHAIN_HIGHLIGHT || this == DETECT_CPU_CHAIN_HIGHLIGHT_1Q ||
+            this == DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL
 
     /**
      * ② 자리가 **융합**(통계 두 벌 + 적용 한 벌)인 arm인가.
@@ -816,6 +881,21 @@ enum class RenderArm(
             this == HIGHLIGHT_BOXES_1Q || usesDynamicHighlightBoxes
 
     /**
+     * 🔴 **박스 안쪽 fill quad를 실제로 그리는가 — fill 여부의 단일 출처다.**
+     *
+     * [HighlightOverlay]의 정점 생성과 `session.json`의 `overlay.fill_enabled`가 **둘 다
+     * 이 값에서 온다.** 상태 플래그(`var fillEnabled`)를 두지 않고 프레임 경로에 **인자로**
+     * 넘기는 이유는 `PassthroughRenderer.setArm`이 `if (arm == next) return`으로 조기
+     * 반환하는 경로가 있어서다 — 그 길로 들어가면 초기 arm에 플래그가 안 실리고, 그것은
+     * 로그에 아무 흔적을 남기지 않는 무음 실패다.
+     *
+     * 🔴 **false인 arm은 fill 기하를 정점 버퍼에 아예 쓰지 않는다**(알파 0이 아니다 — 알파 0은
+     * 프래그먼트 비용이 같다). 전문은 [HIGHLIGHT_NOFILL_CONTROL_NOTE].
+     */
+    val drawsOverlayFill: Boolean
+        get() = usesHighlightOverlay && this != DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL
+
+    /**
      * 🔴 오버레이 박스가 **③ 탐지 결과**인가(정적 더미가 아닌가). true면 GL 스레드가 매 프레임
      * `DetectOverlayPublisher.latest()`를 읽어 H칸(좌표 평활·hold)을 거친 목록을 그린다.
      *
@@ -827,7 +907,10 @@ enum class RenderArm(
      */
     val usesDynamicHighlightBoxes: Boolean
         get() = this == DETECT_CPU_HIGHLIGHT || this == DETECT_CPU_HIGHLIGHT_1Q ||
-            this == DETECT_CPU_CHAIN_HIGHLIGHT || this == DETECT_CPU_CHAIN_HIGHLIGHT_1Q
+            this == DETECT_CPU_CHAIN_HIGHLIGHT || this == DETECT_CPU_CHAIN_HIGHLIGHT_1Q ||
+            // fill 대조군도 ③ 결과를 그린다 — 스트로크는 그대로 그리고 fill 기하만 건너뛴다.
+            // 빠뜨리면 박스를 0개 그려 렌더가 짝과 달라지고 차분이 아무 뜻이 없어진다.
+            this == DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL
 
     /** ② 자리에 bilateral 한 패스가 붙는 arm인가(체인이든 융합이든). */
     val usesBilateral: Boolean
@@ -940,6 +1023,7 @@ enum class RenderArm(
             DETECT_CPU, DETECT_CPU_PROF, DETECT_PARITY_CPU, DETECT_CPU_NOROT,
             DETECT_CPU_HIGHLIGHT, DETECT_CPU_HIGHLIGHT_1Q, DETECT_CPU_1Q,
             DETECT_CPU_CHAIN_HIGHLIGHT, DETECT_CPU_CHAIN_HIGHLIGHT_1Q,
+            DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL,
             DETECT_CPU_CHAIN, DETECT_CPU_CHAIN_1Q -> "cpu"
             DETECT_NNAPI, DETECT_NNAPI_PROF, DETECT_PARITY_NNAPI -> "nnapi"
             DETECT_XNNPACK, DETECT_XNNPACK_PROF, DETECT_PARITY_XNNPACK -> "xnnpack"
@@ -976,7 +1060,8 @@ enum class RenderArm(
             HIGHLIGHT_BOXES, HIGHLIGHT_BOXES_1Q -> HIGHLIGHT_BOX_COUNT
             HIGHLIGHT_BOXES_STRESS -> HIGHLIGHT_BOX_COUNT_STRESS
             DETECT_CPU_HIGHLIGHT, DETECT_CPU_HIGHLIGHT_1Q,
-            DETECT_CPU_CHAIN_HIGHLIGHT, DETECT_CPU_CHAIN_HIGHLIGHT_1Q ->
+            DETECT_CPU_CHAIN_HIGHLIGHT, DETECT_CPU_CHAIN_HIGHLIGHT_1Q,
+            DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL ->
                 HIGHLIGHT_BOX_COUNT_DYNAMIC
             else -> 0
         }
@@ -1804,6 +1889,157 @@ enum class RenderArm(
                 "배치라 안쪽·바깥쪽으로 t/2씩 채운다). 픽셀 값을 하드코딩하지 않고 **처리 " +
                 "해상도에서 계산**하므로 640×360으로 내려도 비례가 유지된다"
 
+        // ── ④ fill (박스 안쪽 채움) ────────────────────────────────────────
+        // 🔴 **상류 확정 명세는 '비채움'이다**(FRAME_BUDGET.md §3 주5). 아래 값은 그 명세로부터의
+        //    이탈이며 사유는 [HIGHLIGHT_FILL_DEVIATION]에 있다. 🔴 **알파 리터럴은 아래 한 줄이
+        //    전부다** — 사본을 만들면 값을 바꾸는 날 session.json이 안 도는 값을 선언한다.
+        // 🔴 **fill 대조군([DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL])은 이 값을 쓰지 않는다** —
+        //    그 arm에서 `overlay.fill_alpha`는 null이고 사유가 옆 키에 붙는다
+        //    ([HIGHLIGHT_NOFILL_CONTROL_NOTE]).
+
+        /**
+         * 박스 안쪽 fill의 알파. **제안값이 아니라 임의값이다** — 근거는
+         * [highlightFillProvenance].
+         *
+         * 🔴 **빌드 상수이며 시간·프레임에 따라 변하지 않는다.** 알파 변조는 광과민 사용자
+         * 안전 이슈로 규정된 항목이다([OVERLAY_NO_FLICKER_DESIGN] (1)).
+         */
+        const val OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE = 0.30f
+
+        /**
+         * 🔴 위 값의 출처 문장. **같은 문장이 `session.json`으로 나간다**
+         * ([OVERLAY_SMOOTHING_PROVENANCE]와 같은 틀이다).
+         *
+         * 🔴 **상수가 아니라 함수인 이유:** fill 대조군([DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL])도
+         * 이 키를 싣는데(키가 사라지면 소비자가 조용히 null을 읽는다) 그 arm은 이 알파를
+         * **쓰지 않는다.** 출처·판정 기준·'사본이 없다'는 서술은 두 arm에서 그대로 참이므로
+         * 공유하고 **귀속 한 절만** 앞에 붙인다([chainHighlightTileReloadNote]와 같은 틀이다).
+         *
+         * @param fill 이 arm이 fill quad를 실제로 그리는가([drawsOverlayFill]).
+         */
+        fun highlightFillProvenance(fill: Boolean): String = (
+            if (fill) {
+                ""
+            } else {
+                "🔴 **이 arm은 이 알파를 쓰지 않는다** — fill 기하를 건너뛰는 대조군이라 " +
+                    "정점에 이 값이 실리지 않는다(overlay.fill_enabled=false · " +
+                    "전문은 overlay.fill). 아래는 **짝 arm이 쓰는 값의 출처**이며, 이 arm의 " +
+                    "로그에 남기는 이유는 차분의 상대가 어떤 알파였는지가 사후에 필요하기 " +
+                    "때문이다. "
+            }
+            ) +
+            "🔴 **제안값이 아니다 — 임의값이다.** fill_alpha=" +
+                "$OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE. " +
+                "🔴 **INTERFACES.md에 이 항목 자체가 없다** — 계약은 A(모델)·B(①②)·C(녹화) " +
+                "셋뿐이고 ④ 계약도, 채움·알파 항목도 없다. 그러므로 '계약의 ☐'가 아니라 " +
+                "**항목 부재**이며, 확정해 줄 칸이 아직 존재하지 않는다. " +
+                "OVERLAY_*_MEASUREMENT_VALUE·GAMMA_MEASUREMENT_VALUE와 같은 취급이다: 팀이 " +
+                "④ 항목을 만들면 그때 교체한다. " +
+                "**판정 기준은 성능이 아니라 형상 파악 가능성이다** — 야간에 bbox 안 물체" +
+                "(계단·볼라드·사람)의 **형상이 육안으로 파악되는가**가 이 값을 정하는 유일한 " +
+                "기준이다(사용자 결정, 2026-08-28). 알파가 높을수록 박스는 눈에 띄지만 " +
+                "**안의 물체는 덜 보인다.** " +
+                "🔴 **아직 미측정이다** — 야간 육안 확인(계획 1-6)을 실시하지 않았다. 이 값이 " +
+                "그 기준을 만족한다는 근거는 **아직 없다.** " +
+                "🔴 **이 숫자의 사본은 코드 어디에도 없다** — 상수 정의 한 줄이 전부이고 " +
+                "셰이더·정점·이 문장은 전부 그것을 보간한다"
+
+        /**
+         * 🔴 **두 번째 상류 이탈 선언.** [OverlayClassColors.PERSON_COLOR_DEVIATION]이 색에
+         * 대해 한 것과 같은 처리다 — 지시였다는 사실과 **대가**를 함께 적는다.
+         *
+         * ⚠ 그쪽과 결정적으로 다른 점이 하나 있다: **색은 픽셀 비용에 영향이 없었지만
+         * 채움은 있다.** 그 문장을 여기 복사해 오면 거짓이 된다.
+         */
+        const val HIGHLIGHT_FILL_DEVIATION =
+            "🔴 **상류 명세 이탈 — 사용자 지시다.** 박스 **안쪽**을 클래스 색으로 알파 " +
+                "$OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE 로 채운다. " +
+                "상류 확정 명세는 **비채움**이다(FRAME_BUDGET.md §3 주5 · " +
+                "docs/research/RESEARCH_20260803_UPSTREAM.md §5 표의 '채움' 행). " +
+                "채우기로 한 이유는 야간에 bbox 안 물체의 **형상 파악**을 돕는 것이며 " +
+                "판정 기준도 그것이다(fill_alpha_provenance). " +
+                "🔴 **이 이탈이 지는 대가 셋을 사실로 적는다.** " +
+                "(a) **박스 내부의 대비가 알파만큼 눌린다** — 화면 픽셀이 " +
+                "`(1-α)·원본 + α·클래스색`이 되므로 물체와 배경의 대비가 " +
+                "$OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE 만큼 깎인다. 즉 '박스가 잘 보인다'와 " +
+                "'박스 안이 잘 보인다'를 **정면으로 맞바꾼 것**이고, 어느 쪽으로 기울었는지는 " +
+                "야간 육안(계획 1-6)이 판정한다 — **아직 미실시다.** " +
+                "(b) **I칸의 설명 변수가 개수에서 면적으로 바뀐다** — 08-26 S3에서 나온 " +
+                "'stage_i_ms는 박스 개수와 무관하다'는 결론은 스트로크만 그리던 시절의 " +
+                "것이다. 채우는 프래그먼트가 박스 면적에 비례하므로 이제 큰 박스 하나가 작은 " +
+                "박스 여럿보다 비쌀 수 있다. 🔴 **그 축은 ③ 결과 arm의 frames.csv에서 " +
+                "overlay_fill_frac 열이 낸다** — 정적 더미 arm은 박스의 크기·배치가 고정이라 " +
+                "④ 오버레이 열 자체를 싣지 않고, 그 arm의 조건은 box_count와 " +
+                "box_count_provenance의 격자 서술이 말한다(overlay_boxes와 같은 게이트다). " +
+                "🔴 **(c) 색 이탈과 달리 이 변경은 타이밍 지표를 바꾼다.** " +
+                "person_color_deviation의 마지막 문장('색은 픽셀 비용에 영향이 없으므로 이 " +
+                "변경은 타이밍 지표를 바꾸지 않는다')이 **여기서는 성립하지 않는다** — 그 " +
+                "문장을 이 항목에 옮겨 적지 말 것. 드로우콜은 여전히 프레임당 1회이고 정점은 " +
+                "박스당 ${HighlightOverlay.VERTS_PER_FILL}개만 늘지만, **채우는 픽셀 수는 " +
+                "테두리 면적에서 박스 면적으로 늘었다.** 🔴 **얼마나 늘었는지는 미측정이다** " +
+                "(계획 1-7, I칸 재측정). 이전 stage_i_ms 실측은 **이 빌드의 값이 아니다** — " +
+                "정적 더미 arm(highlight_boxes / _stress / _1q)도 함께 채우므로 그 arm들의 " +
+                "승격 숫자도 같이 낡았다"
+
+        /**
+         * 🔴 **fill 대조군 arm의 뜻 전부.** `session.json`의 **`overlay.fill`**로 나간다
+         * (그 키가 arm별로 갈린다 — fill arm에서는 '채운다'는 이탈 서술이 실린다).
+         * `overlay.fill_alpha`가 null인 사유(`fill_alpha_null_reason`)도 이 키를 가리킨다.
+         *
+         * ⚠ [HIGHLIGHT_FILL_DEVIATION]의 사본이 아니다 — 그쪽은 **채운다는 이탈**의 사유이고
+         * 이쪽은 **채우지 않는 대조군**이 무엇을 답하고 무엇을 답하지 못하는가다.
+         */
+        const val HIGHLIGHT_NOFILL_CONTROL_NOTE =
+            "🔴 **이 arm은 fill 기하를 건너뛴다 — 알파를 0으로 둔 것이 아니다.** 알파 0이면 " +
+                "fill quad가 그대로 래스터라이즈돼 프래그먼트 비용이 **똑같이** 들고, 그러면 " +
+                "차분이 0에 가깝게 나오면서 'fill은 공짜다'라는 틀린 결론이 나온다. 이 arm은 " +
+                "박스당 정점이 스트로크 몫 ${HighlightOverlay.VERTS_PER_STROKES}개뿐이고" +
+                "(짝 arm은 ${HighlightOverlay.VERTS_PER_BOX}개 = 거기에 fill quad " +
+                "${HighlightOverlay.VERTS_PER_FILL}개가 더 붙는다) fill 사각형은 정점 버퍼에 " +
+                "**쓰이지 않는다.** " +
+                "🔴 **이 arm의 유일한 뜻은 짝 arm(detect_cpu_chain_highlight)과의 차분이며 " +
+                "그 차분이 fill 기하의 비용이다.** 다른 어떤 질문에도 이 arm으로 답하지 말 것 — " +
+                "특히 이 arm의 stage_i_ms를 '④ 오버레이의 비용'으로 인용하면 fill을 뺀 값을 " +
+                "제품 구성의 값으로 옮겨 적는 것이 된다(제품은 채운다). " +
+                "🔴 **차분이 성립하는 조건 넷**: (1) **같은 세션·같은 빌드**여야 한다 — 다른 " +
+                "세션과 빼면 발열·조명·AE 상태의 차이가 fill 비용으로 둔갑한다. " +
+                "(2) **overlay_boxes 버킷 안에서** 비교한다(개수를 섞으면 스트로크 몫이 " +
+                "차분에 들어온다). (3) 두 런의 **overlay_fill_frac 분포가 겹쳐야 한다** — " +
+                "fill 비용은 면적에 비례하므로 면적이 다른 장면끼리의 차분은 fill 비용이 " +
+                "아니다. (4) 박스가 0개인 프레임은 두 arm 모두 드로우콜을 내지 않으므로 " +
+                "차분에 기여하지 않는다(야간에는 그런 프레임이 다수다 — 버킷 분리가 필수인 " +
+                "이유이기도 하다). " +
+                "🔴 **이 짝으로 분리되지 않는 것 넷**: (a) **블렌드 상태 변경 비용** — 이 " +
+                "arm도 블렌딩을 켠 채 두므로(overlay.fill_blend) glEnable/glBlendFuncSeparate/" +
+                "glDisable이 두 arm에서 똑같이 돈다. 상태 변경 자체의 비용은 이 차분에 " +
+                "나타나지 않는다. (b) **aAlpha 정점 속성** — 두 arm이 같은 셰이더·같은 " +
+                "6-float stride를 쓴다(스트로크도 알파를 나른다). (c) **정점 버퍼 용량** — " +
+                "두 arm 모두 최대 개수분을 컨텍스트당 한 번 잡는다(vertexCount만 다르다). " +
+                "(d) **패스7↔8의 FBO_A 병합 가능성** — 드라이버가 두 렌더패스를 합칠 수 " +
+                "있고(tile_reload_note) 그 사정은 두 arm이 같다. " +
+                "🔴 **이 arm은 상류 '비채움' 명세에 부합한다**(FRAME_BUDGET.md §3 주5 · " +
+                "docs/research/RESEARCH_20260803_UPSTREAM.md §5 표의 '채움' 행) — 이탈한 쪽은 " +
+                "짝 arm이다. 다만 스트로크 기하의 이탈(upstream_deviation)은 이 arm에도 " +
+                "그대로 있다. " +
+                "🔴 **아직 미측정이다** — 이 arm으로 실기기 런을 뜨지 않았다."
+
+        /**
+         * 🔴 fill 대조군의 `overlay.fill_deviation`. **키를 지우지 않는다** — 지우면 소비자가
+         * 조용히 null을 읽고 "이탈이 기록되지 않은 빌드"와 구분되지 않는다.
+         *
+         * ⚠ 이탈 전문은 짝 arm의 같은 키([HIGHLIGHT_FILL_DEVIATION])에 있다. 여기 사본을
+         * 두지 않는다.
+         */
+        const val HIGHLIGHT_NOFILL_DEVIATION_NOTE =
+            "🔴 **이 arm은 채우지 않으므로 이 이탈이 적용되지 않는다 — 상류 '비채움' 명세를 " +
+                "지킨다.** fill 기하를 건너뛰는 대조군이며(overlay.fill_enabled=false · " +
+                "전문은 overlay.fill) 박스 내부는 한 픽셀도 건드리지 않는다. " +
+                "⚠ **이탈 전문은 짝 arm(detect_cpu_chain_highlight)의 같은 키에 있다** — " +
+                "여기에 사본을 두지 않는다. 그쪽 arm이 상류 명세에서 이탈한 쪽이고 그 이탈의 " +
+                "비용이 이 두 arm의 차분이다. " +
+                "⚠ 스트로크 기하의 이탈(upstream_deviation)은 **이 arm에도 그대로 있다** — " +
+                "fill과 별개의 항목이다"
+
         const val HIGHLIGHT_SPEC_PROVENANCE =
             "상류(모델링 담당 kty2001/KDT_Hackathon) scripts/emphasize.py로 **확정된 ④ 명세**다 " +
                 "— 이중 스트로크(검정 밑선 + 대비색 본선) · 비채움 · stairs=노랑 / person=시안 · " +
@@ -1823,7 +2059,7 @@ enum class RenderArm(
          * ⚠ 고치지 않은 것은 의도다 — 어느 쪽이 상류와 같은지 **우리가 알지 못한다**(아래 (3)).
          * 기하를 건드리면 검증을 다시 받아야 하므로 이번 라운드는 **선언만** 추가했다.
          */
-        const val HIGHLIGHT_DEVIATION =
+        private const val HIGHLIGHT_DEVIATION_HEAD =
             "🔴 **(1) 스펙 문구와 이 구현의 스트로크 기하가 다르다.** 스펙은 '비채움 — " +
                 "경계선 밖은 일절 안 건드림'인데(FRAME_BUDGET.md:258 · " +
                 "docs/research/RESEARCH_20260803_UPSTREAM.md:114 §5 표의 '채움' 행) 이 구현은 " +
@@ -1838,9 +2074,33 @@ enum class RenderArm(
                 "${(HIGHLIGHT_STROKE_PX_AT_720P + 2f * HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P) / 2f}" +
                 "px을 덮는다**(가장 바깥 " +
                 "${HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P}px이 검정, 그 안 " +
-                "${HIGHLIGHT_STROKE_PX_AT_720P / 2f}px이 대비색). 안쪽도 대칭으로 같은 폭이며, " +
-                "**그보다 더 안쪽(박스 내부)은 한 픽셀도 건드리지 않는다**(overlay.fill). " +
-                "**(2) 왜 고치지 않았는가**: `cv2.rectangle(img, p1, p2, color, thickness=t)`가 " +
+                "${HIGHLIGHT_STROKE_PX_AT_720P / 2f}px이 대비색). 안쪽도 대칭으로 같은 폭이다. "
+
+        /**
+         * 🔴 (1)번 항목의 **박스 내부** 절 — fill arm 판. 이 arm은 내부를 채우므로 예전 문장
+         * ("그보다 더 안쪽은 한 픽셀도 건드리지 않는다")이 **거짓**이다.
+         */
+        private const val HIGHLIGHT_DEVIATION_INNER_FILLED =
+            "⚠ **여기서 '그보다 더 안쪽은 한 픽셀도 건드리지 않는다'는 문장이 예전에 " +
+                "있었고 지금은 거짓이다** — 이 빌드는 박스 내부를 알파 " +
+                "$OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE 로 채운다(fill_deviation). 이 (1)번 " +
+                "항목은 **스트로크의 기하**에 대한 것이고 내부 채움은 별개의 이탈이다. "
+
+        /**
+         * 🔴 같은 절의 **fill 대조군** 판 — 그 arm에서는 같은 문장이 **다시 참**이 된다
+         * (반대 방향이다). 🔴 스트로크 기하 서술 (2)(3)(4)는 두 arm에서 참이므로 갈리지 않는다.
+         */
+        private const val HIGHLIGHT_DEVIATION_INNER_UNTOUCHED =
+            "🔎 **이 arm에서는 '그보다 더 안쪽은 한 픽셀도 건드리지 않는다'가 다시 참이다** — " +
+                "fill 기하를 건너뛰는 대조군이라 박스 내부를 칠하지 않는다" +
+                "(overlay.fill_enabled=false · 전문은 overlay.fill). 그 문장이 거짓인 것은 " +
+                "**짝 arm**(detect_cpu_chain_highlight) 쪽이며 그쪽 사유는 fill_deviation에 " +
+                "있다. 이 (1)번 항목은 **스트로크의 기하**에 대한 것이고 그 이탈은 이 arm에도 " +
+                "그대로 있다. "
+
+        /** (2)(3)(4)와 (5)의 앞부분. 🔴 **두 arm에서 글자 그대로 같다.** */
+        private const val HIGHLIGHT_DEVIATION_MID =
+            "**(2) 왜 고치지 않았는가**: `cv2.rectangle(img, p1, p2, color, thickness=t)`가 " +
                 "스트로크를 경계선 **가운데**에 놓고(안쪽 t/2 · 바깥 t/2), 상류 " +
                 "scripts/emphasize.py가 쓰는 함수가 바로 그것이다. 그러므로 **이 구현이 오히려 " +
                 "상류 동작과 일치할 가능성이 높고**, 스펙 문구가 '비채움'(= 박스 내부를 칠하지 " +
@@ -1865,15 +2125,70 @@ enum class RenderArm(
                 "밖을 자르므로 **가장자리에서 검정 밑선이 한쪽만 잘려 보인다** — 이것은 " +
                 "이 기하 선택의 알려진 결과이지 결함이 아니며, 클램프로 막지 않는다" +
                 "(클램프는 면적 0 박스를 가장자리에 남겨 더 나쁜 쓰레기를 만든다). " +
-                "**(5) 비용에 대한 영향**: 드로우콜(프레임당 1회)과 정점 수(박스당 " +
-                "${HighlightOverlay.VERTS_PER_BOX}개)는 이 선택과 무관하게 같다. 다만 **채우는 " +
-                "프래그먼트 수는 완전히 같지 않다** — 두께 t 띠 하나의 면적이 가운데 맞춤이면 " +
+                "**(5) 비용에 대한 영향**: 드로우콜(프레임당 1회)은 이 선택과 무관하게 같고 "
+
+        /** (5)의 **정점 수** 절 — fill arm 판. */
+        private const val HIGHLIGHT_DEVIATION_VERTS_FILLED =
+            "정점 수도 스트로크 몫 " +
+                "${HighlightOverlay.VERTS_PER_STROKES}개는 그대로다(박스당 총 " +
+                "${HighlightOverlay.VERTS_PER_BOX}개인 것은 fill quad " +
+                "${HighlightOverlay.VERTS_PER_FILL}개가 더 붙었기 때문이며 그것은 이 항목이 " +
+                "아니라 fill_deviation의 몫이다). "
+
+        /** (5)의 **정점 수** 절 — fill 대조군 판. 박스당 정점이 스트로크 몫뿐이다. */
+        private const val HIGHLIGHT_DEVIATION_VERTS_NOFILL =
+            "정점 수도 스트로크 몫 " +
+                "${HighlightOverlay.VERTS_PER_STROKES}개는 그대로다(**이 arm은 박스당 총 " +
+                "${HighlightOverlay.VERTS_PER_STROKES}개이고 fill quad가 없다** — 짝 arm은 " +
+                "${HighlightOverlay.VERTS_PER_BOX}개다. 전문은 overlay.fill). " +
+                "⚠ 아래 4% 비교에 나오는 fill 몫은 **짝 arm의 값**이며 이 arm에는 없다. "
+
+        /** (5)의 나머지. 🔴 **두 arm에서 글자 그대로 같다**(스트로크 기하의 사실이다). */
+        private const val HIGHLIGHT_DEVIATION_TAIL =
+            "다만 **채우는 프래그먼트 수는 완전히 같지 " +
+                "않다** — 두께 t 띠 하나의 면적이 가운데 맞춤이면 " +
                 "2t(W+H)이고 안쪽 맞춤이면 2t(W+H) - 4t²이라 **띠마다 4t²만큼 더 채운다**" +
                 "(720p에서 본선 t=$HIGHLIGHT_STROKE_PX_AT_720P → 64px, 밑선 t=" +
                 "${HIGHLIGHT_STROKE_PX_AT_720P + 2f * HIGHLIGHT_UNDERLINE_MARGIN_PX_AT_720P}" +
-                " → 144px, 합 박스당 208px). 이 격자의 720p 박스가 121.6x136.8px이고 박스당 총 " +
-                "5168px을 채우므로 **약 4%**다. 작지만 **0이 아니다** — '그린 픽셀 수가 안 " +
-                "바뀐다'로 적지 말 것"
+                " → 144px, 합 박스당 208px). 이 격자의 720p 박스가 121.6x136.8px이고 " +
+                "스트로크가 박스당 총 5168px을 채우므로 **약 4%**다. 작지만 **0이 아니다** — " +
+                "'그린 픽셀 수가 안 바뀐다'로 적지 말 것. " +
+                "⚠ **이 4%는 스트로크 안에서의 비율이다** — 같은 박스의 fill은 " +
+                "121.6x136.8 = 16635px을 더 채우므로(스트로크의 3.2배) 비교 대상이 아니다. " +
+                "🔴 fill을 포함한 실제 I칸 비용은 **미측정이다**"
+
+        /**
+         * 🔴 fill arm 판의 전문. **KDoc 참조와 사람이 읽는 앵커가 이 이름이다**
+         * ([HighlightOverlay]와 `DetectPostprocessor`의 주석이 이 이름으로 (1)·(4)를 가리킨다).
+         *
+         * ⚠ **사본이 아니라 위 조각들의 합이다** — 물리 서술을 두 벌로 두지 않는다.
+         * `session.json`에 실을 값은 [highlightDeviation]에 arm의 fill 여부를 넣어 얻는다.
+         */
+        const val HIGHLIGHT_DEVIATION =
+            HIGHLIGHT_DEVIATION_HEAD + HIGHLIGHT_DEVIATION_INNER_FILLED +
+                HIGHLIGHT_DEVIATION_MID + HIGHLIGHT_DEVIATION_VERTS_FILLED +
+                HIGHLIGHT_DEVIATION_TAIL
+
+        /**
+         * 🔴 **스트로크 기하 이탈의 arm별 판.** 물리 서술((1)의 기하 수치·(2)(3)(4)·(5)의
+         * 프래그먼트 산식)은 **두 arm에서 글자 그대로 같고**, 갈리는 것은 두 절뿐이다:
+         * **박스 내부를 건드리는가**와 **박스당 정점 수**. [chainHighlightTileReloadNote]와
+         * 같은 틀이다 — 문장을 두 벌로 복사하지 않고 갈리는 절만 매개변수화한다.
+         *
+         * @param fill 이 arm이 fill quad를 실제로 그리는가([drawsOverlayFill]).
+         */
+        fun highlightDeviation(fill: Boolean): String =
+            HIGHLIGHT_DEVIATION_HEAD +
+                (
+                    if (fill) HIGHLIGHT_DEVIATION_INNER_FILLED
+                    else HIGHLIGHT_DEVIATION_INNER_UNTOUCHED
+                    ) +
+                HIGHLIGHT_DEVIATION_MID +
+                (
+                    if (fill) HIGHLIGHT_DEVIATION_VERTS_FILLED
+                    else HIGHLIGHT_DEVIATION_VERTS_NOFILL
+                    ) +
+                HIGHLIGHT_DEVIATION_TAIL
 
         /**
          * ⚠ **개수와 배치는 계약값이 아니다.** `session.json`에 개수를 싣지 않으면 I칸 숫자가
@@ -1989,21 +2304,70 @@ enum class RenderArm(
         //    `_MEASUREMENT_`를 넣고, **제안값이 아니라 비용 봉투를 재기 위한 임의값**이라고
         //    적고, 같은 문장을 `session.json`에도 싣는다([OVERLAY_SMOOTHING_PROVENANCE]).
 
-        /**
-         * hold 길이 — **표시 프레임 수**. 마지막으로 자기를 지지한 측정이 사라진 뒤 이만큼
-         * 버티다 그린 목록에서 빠진다. **제안값이 아니라 임의 측정값이다.**
-         *
-         * 🔴 **벽시계 길이가 표시 FPS에 딸리고, 몇 번의 탐지에 해당하는지는 탐지 주기 N에
-         * 딸린다.** N은 미정이므로(`FRAME_BUDGET.md` §7 질문 3) 이 값을 인용할 때 그 런의
-         * **실측 cadence**(`detect_cadence_ms`)를 함께 옮긴다 → [OVERLAY_HOLD_CADENCE_NOTE].
-         * 30FPS·실측 3.4Hz 기준으로 18프레임은 약 0.6초 = 탐지 약 2주기다.
-         */
-        const val OVERLAY_HOLD_FRAMES_MEASUREMENT_VALUE = 18
+        // ═══════════════════════════════════════════════════════════════════════
+        // 🎛 **④ 오버레이 FSM 튜닝 지점 — 값을 바꾸는 곳은 아래 상수 3개가 전부다.**
+        //
+        // `HISTORY_MASK`(OverlaySmoother)와 `PENDING` 수명은 진입창에서 **파생되고**,
+        // `session.json`의 정책 블록과 근거 문장도 전부 이 상수를 **보간**한다.
+        // 🔴 **다른 곳에 값을 적지 않는다** — 적는 순간 둘이 갈리고, `session.json`이
+        // 안 도는 정책을 선언하게 된다(옛 `hold_frames`를 지운 이유와 같다).
+        //
+        // 바꾼 뒤 할 일: release 빌드 → 설치 → 야간 1런 → `overlay_ghost.py`.
+        // 🔴 **바꾸면 이전 실측은 이 빌드의 값이 아니다** — baselines의 `entry<W>of<H>`
+        // 파일명이 그 경계를 나른다(docs/baselines/README 규약).
+        // ═══════════════════════════════════════════════════════════════════════
 
         /**
-         * 프레임 간 박스를 이어 붙이는 IoU 임계 — 그리고 그것이 곧 **폐기 조건**이다
-         * (이 임계 이상인 측정이 [OVERLAY_HOLD_FRAMES_MEASUREMENT_VALUE] 프레임 연속으로
-         * 없으면 폐기한다). **제안값이 아니라 임의 측정값이다.**
+         * 진입창 — `PENDING` 트랙의 지지를 세는 **최근 게시 수**. **제안값이 아니라 임의
+         * 측정값이다.**
+         *
+         * 🟢 [com.bammasil.poc.gl.OverlaySmoother]의 히스토리 비트 폭(`HISTORY_MASK`)과
+         * `PENDING` 수명이 **이 값에서 파생된다** — 여기만 고치면 둘 다 따라 넓어진다.
+         *
+         * 🔎 **08-28 밤에 3에서 넓혔다.** 증거 요구([OVERLAY_ENTRY_HITS_REQUIRED_MEASUREMENT_VALUE])는
+         * 그대로 두고
+         * **인내만 늘린 것**이다. 3일 때는 지지가 게시 0·3에 오면 창이 지나 버려졌다 —
+         * 증거가 2회 있는데도 한 번도 안 그려진다. 근거는 `run_ts=20260828_221726`(야간 2런,
+         * 진입 3중2): 생성 209·334개 중 승격 **70·88**개뿐이고 **버려진 PENDING이 138·246개**,
+         * 표시된 프레임이 **7.8%·14.9%**로 pre(43.2%·44.1%, 단 그중 23.6%p·20.9%p가 잔상
+         * 프레임)보다 낮았다.
+         *
+         * 🔴 **진입만 만진다 — 해제([OVERLAY_HOLD_PUBLISHES_MEASUREMENT_VALUE])는 건드리지
+         * 않는다.** 해제를 늦추면 탐지가 끊긴 구간에도 계속 그리게 되는데 그것이 곧 **잔상**
+         * 이고, 잔상을 없앤 것이 이 정책의 목적이다. 표시 시간을 되찾는 두 길의 성질이 다르다.
+         *
+         * 🔴 **지금 값의 효과는 미측정이다.** 위 숫자는 전부 진입창 3에서 잰 것이다.
+         * 값을 바꿀 때마다 이 문장이 다시 참이 된다 — 잰 뒤에만 지운다.
+         */
+        const val OVERLAY_ENTRY_WINDOW_PUBLISHES_MEASUREMENT_VALUE = 4
+
+        /**
+         * 진입 조건 — 위 창 안에서 몇 번 지지받아야 `ACTIVE`(그리기 시작)가 되는가.
+         * **제안값이 아니라 임의 측정값이다.**
+         *
+         * ⚠ **이 값이 진입을 늦춘다**: 확인되지 않은 트랙을 그리지 않는 대신 진짜 위험물도
+         * 최대 (진입창−1)게시만큼 늦게 뜬다 → [OVERLAY_NO_FLICKER_DESIGN].
+         */
+        const val OVERLAY_ENTRY_HITS_REQUIRED_MEASUREMENT_VALUE = 2
+
+        /**
+         * hold 길이 — 🔴 **표시 프레임이 아니라 게시(publish) 수다.** `ACTIVE` 트랙은 자기를
+         * 지지하지 않은 게시가 이만큼 이어지면 그린 목록에서 빠진다(값 1 = **연속 1회 미지지에
+         * 즉시 해제**). **제안값이 아니라 임의 측정값이다.**
+         *
+         * 🟢 게시로 세므로 **표시 FPS에도, 탐지 주기 N에도 딸리지 않는다** — 몇 번의 탐지를
+         * 버티는지를 이 상수가 직접 말한다. ⚠ 그러나 **ms로 환산하려면** 그 런의
+         * `detect_cadence_ms` 분포가 필요하다 → [OVERLAY_HOLD_CADENCE_NOTE].
+         *
+         * 🔴 **`ACTIVE`에만 적용한다.** `PENDING`은 진입창이 수명을 정한다.
+         */
+        const val OVERLAY_HOLD_PUBLISHES_MEASUREMENT_VALUE = 1
+
+        /**
+         * 게시 간 박스를 이어 붙이는 IoU 임계 — 그리고 그것이 곧 **지지 판정**이다
+         * (이 임계 이상인 측정이 없으면 그 게시는 그 트랙에 대해 "미지지"이며, `ACTIVE`는
+         * [OVERLAY_HOLD_PUBLISHES_MEASUREMENT_VALUE]회 연속 미지지에 해제된다).
+         * **제안값이 아니라 임의 측정값이다.**
          */
         const val OVERLAY_MATCH_IOU_MEASUREMENT_VALUE = 0.30f
 
@@ -2021,13 +2385,24 @@ enum class RenderArm(
          */
         const val OVERLAY_BOX_CAP_MEASUREMENT_VALUE = 32
 
-        /** 🔴 위 네 값의 출처 문장. **같은 문장이 `session.json`으로 나간다.** */
+        /** 🔴 위 여섯 값의 출처 문장. **같은 문장이 `session.json`으로 나간다.** */
         const val OVERLAY_SMOOTHING_PROVENANCE =
             "🔴 **제안값이 아니다 — H칸의 비용 봉투를 재기 위한 임의값이다.** " +
-                "hold_frames=$OVERLAY_HOLD_FRAMES_MEASUREMENT_VALUE(표시 프레임) / " +
+                "entry_window_publishes=" +
+                "$OVERLAY_ENTRY_WINDOW_PUBLISHES_MEASUREMENT_VALUE(게시) / " +
+                "entry_hits_required=$OVERLAY_ENTRY_HITS_REQUIRED_MEASUREMENT_VALUE / " +
+                "hold_publishes=$OVERLAY_HOLD_PUBLISHES_MEASUREMENT_VALUE(게시) / " +
                 "match_iou=$OVERLAY_MATCH_IOU_MEASUREMENT_VALUE / " +
                 "iir_alpha=$OVERLAY_IIR_ALPHA_MEASUREMENT_VALUE / " +
                 "box_cap=$OVERLAY_BOX_CAP_MEASUREMENT_VALUE. " +
+                "🟢 **진입·해제를 세는 단위가 게시(publish)다 — 표시 프레임이 아니다.** 그래서 이 " +
+                "정책은 **표시 FPS와 탐지 주기 N에 무관하다**: 몇 번의 탐지를 버티고 몇 번을 " +
+                "보고 그리기 시작하는지가 상수에 그대로 적혀 있다(옛 hold_frames=18은 둘 다에 " +
+                "딸려 있었고, 게시 하나가 18프레임보다 오래 머물면 **아직 그 게시를 쓰는 " +
+                "중에도** 박스가 사라졌다 — excess<0 35프레임으로 실측됐다: run_ts=20260828_185222 " +
+                "= 08-24 런 20260824_212554 재분석). " +
+                "🔴 **그러나 벽시계 잔상 길이는 여전히 cadence에 딸린다** — 게시 수를 ms로 " +
+                "환산하려면 그 런의 detect_cadence_ms 분포가 필요하다(hold_cadence_note). " +
                 "🔴 **INTERFACES.md에 이 항목 자체가 없다** — 계약은 A(모델)·B(①②)·C(녹화) " +
                 "셋뿐이고 ④ 계약도 hold·평활·트래킹 항목도 없다. 그러므로 '계약의 ☐'가 " +
                 "아니라 **항목 부재**이며, 확정해 줄 칸이 아직 존재하지 않는다. " +
@@ -2036,13 +2411,19 @@ enum class RenderArm(
                 "정한다) — 그러나 **화면에 보이는 결과는 크게 달라진다.** 그래서 이 값들은 " +
                 "성능 인용이 아니라 **화면 판단**의 조건이며, 값을 옮길 때 이 문장을 함께 옮긴다"
 
-        /** 🔴 hold를 프레임으로 표현한 것의 함정. `session.json`으로 나간다. */
+        /** 🔴 hold를 게시로 표현한 것의 함정 — **옛 문장과 방향이 반대다.** `session.json`으로 나간다. */
         const val OVERLAY_HOLD_CADENCE_NOTE =
-            "🔴 **hold를 프레임 수로 적었으므로 '몇 번의 탐지를 버티는가'는 이 값만으로 " +
-                "말할 수 없다.** 탐지 주기 N이 미정이라(FRAME_BUDGET.md §7 질문 3) 앱은 " +
-                "idle-gated로 돌고, 실제 주기는 하네스가 detect_cadence_ms 분포로 낸다 — " +
-                "**선언된 N이 아니라 관측값이다.** 그러므로 hold_frames를 인용할 때 그 런의 " +
-                "cadence 분포를 함께 옮긴다. " +
+            "🟢 **hold를 게시 수로 적었으므로 '몇 번의 탐지를 버티는가'는 상수가 직접 " +
+                "말한다(hold_publishes=1 = 연속 1회 미지지에 해제).** ⚠ 이 문장은 " +
+                "**뜻이 뒤집힌 것이다** — 옛 문장은 hold가 프레임 단위라 몇 탐지를 버티는지 " +
+                "모른다고 적었고, 그 서술은 지금 거짓이다. " +
+                "🔴 **대신 ms로 환산하려면 detect_cadence_ms 분포가 필요하다.** 탐지 주기 N이 " +
+                "미정이라(FRAME_BUDGET.md §7 질문 3) 앱은 idle-gated로 돌고, 실제 주기는 " +
+                "하네스가 그 분포로 낸다 — **선언된 N이 아니라 관측값이다.** 그러므로 " +
+                "잔상·진입 지연을 **초 단위로** 인용할 때 그 런의 cadence 분포를 함께 옮긴다 " +
+                "(run_ts=20260828_185222 = 08-24 런 20260824_212554 재분석, warmup 30s 제외 n=358: " +
+                "detect_cadence_ms p50 276.315 / p95 741.653 / max 1263.696ms — 꼬리가 " +
+                "길다). " +
                 "🔴 **H의 1회 비용을 프레임당으로 환산하지 말 것** — H는 탐지 주기마다가 아니라 " +
                 "**표시 프레임마다** 돈다(그래서 stage_h_ms가 프레임당 1행이다). 환산하면 " +
                 "탐지 주기에 딸린 값처럼 보이는데 그렇지 않다"
@@ -2052,49 +2433,130 @@ enum class RenderArm(
          * 않았다"는 **주장이 아니다** — 그 주장의 근거는 하네스의 `overlay.flicker`뿐이다
          * ([HIGHLIGHT_BLINK_NOT_A_PERF_CLAIM]).
          */
-        const val OVERLAY_NO_FLICKER_DESIGN =
+        private const val OVERLAY_NO_FLICKER_DESIGN_HEAD =
             "설계에서 막은 것 넷: " +
                 "(1) **점멸·펄스·알파 변조가 코드에 없다** — 광과민 사용자에게 안전 이슈로 " +
-                "규정된 항목이라(no_blink_reason) 밝기·알파를 시간에 따라 바꾸는 경로를 두지 " +
-                "않았다. 블렌딩 자체를 켜지 않는다. " +
-                "(2) **hold 안에서는 끊지 않는다** — 갱신이 안 온 프레임에 박스를 0으로 " +
-                "떨어뜨리지 않고 마지막 좌표를 계속 그린다. 사라졌다 나타나는 구간이 곧 " +
-                "깜빡임이기 때문이다. " +
-                "(3) **새 게시가 그 박스를 다시 담으면 TTL이 다시 찬다** — 게시 주기가 실측 " +
-                "약 3.4Hz(30FPS에서 ≈9프레임)이고 hold가 " +
-                "${OVERLAY_HOLD_FRAMES_MEASUREMENT_VALUE}프레임이므로, **탐지가 정상인 동안은 " +
-                "만료 전에 다음 게시가 온다.** 그래서 탐지 주기와 표시 주기가 다르다는 사실 " +
-                "때문에 깜빡이는 일은 생기지 않는다. " +
-                "🔴 **TTL은 새 게시가 왔을 때만 다시 찬다 — 같은 스냅샷을 다시 보는 " +
-                "프레임에서는 깎인다.** 게시 슬롯은 새 게시가 올 때까지 직전 스냅샷을 " +
-                "보존하므로(정상 동작), 프레임마다 재충전하면 **탐지 워커가 멈추거나 매 " +
-                "프레임 실패해도 낡은 좌표의 박스가 무한히 그려진다.** 야간 보행 보조에서 " +
+                "규정된 항목이라(no_blink_reason) 밝기·알파를 **시간에 따라** 바꾸는 경로를 " +
+                "두지 않았다. "
+
+        /**
+         * 🔴 (1)의 **블렌딩을 켜는 사유** — fill arm 판.
+         *
+         * ⚠ 갈리는 것은 **사유뿐이다.** 뒤에 오는 "알파 변조가 없다"는 본문은 두 arm에서
+         * 그대로 참이므로 [OVERLAY_NO_FLICKER_DESIGN_TAIL]에 공유로 남긴다.
+         */
+        private const val OVERLAY_NO_FLICKER_BLEND_FILL =
+            "⚠ **블렌딩은 켠다** — 박스 안쪽 fill이 반투명이기 때문이다" +
+                "(fill_deviation). 예전 문장('블렌딩 자체를 켜지 않는다')은 이 빌드에서 " +
+                "**거짓이므로** 갈아 끼웠다. " +
+                "🔴 **그러나 알파는 빌드 상수 " +
+                "$OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE(fill_alpha)이며 프레임 간에도 " +
+                "시간에 따라서도 변하지 않는다** — 변조가 없다는 사실이 이 항목의 " +
+                "내용이고 그것은 그대로 참이다. 스트로크의 알파는 1.0 고정이다. "
+
+        /**
+         * 🔴 같은 사유의 **fill 대조군** 판. 이 arm은 채우지 않지만 블렌딩을 **켠 채 둔다** —
+         * 끄면 차분에 GL 상태 변경 비용이 섞인다([HIGHLIGHT_NOFILL_CONTROL_NOTE] (a)).
+         */
+        private const val OVERLAY_NO_FLICKER_BLEND_NOFILL =
+            "⚠ **이 arm은 채우지 않지만 블렌딩은 켠 채 둔다** — 짝 arm과 GL 상태를 같게 " +
+                "두기 위한 것이다(전문은 overlay.fill). 스트로크의 알파가 1.0이라 픽셀은 " +
+                "블렌딩 OFF와 **비트 단위로 같다.** " +
+                "🔴 **이 arm은 fill 알파를 쓰지 않는다(fill_alpha=null).** 그리는 " +
+                "알파는 스트로크의 **1.0 고정**뿐이며 프레임 간에도 시간에 따라서도 " +
+                "변하지 않는다 — 변조가 없다는 사실이 이 항목의 내용이고 그것은 " +
+                "**두 arm에서 그대로 참이다.** 짝 arm의 빌드 상수 알파는 그쪽 " +
+                "fill_alpha와 fill_alpha_provenance가 말한다. "
+
+        private const val OVERLAY_NO_FLICKER_DESIGN_TAIL =
+            "**페이드아웃도 없다** — 잔상을 부드럽게 " +
+                "지우고 싶어지는 자리이지만 알파 변조라 규약 위반이다. " +
+                "(2) **한 게시를 쓰는 동안에는 끊지 않는다** — 갱신이 안 온 표시 프레임에 " +
+                "박스를 0으로 떨어뜨리지 않고 마지막 좌표를 계속 그린다. 사라졌다 나타나는 " +
+                "구간이 곧 깜빡임이기 때문이다. 🔴 **상태 전이는 게시 단위로만 돈다**(표시 " +
+                "프레임 단위가 아니다) — 그래서 게시 하나가 아무리 오래 머물러도 그것을 " +
+                "쓰는 중에 박스가 사라지는 일이 **구조적으로 없다.** 옛 프레임 단위 hold에서는 " +
+                "있었다(run_ts=20260828_185222: excess<0 35프레임, 결손 시작이 전부 18프레임 자리). " +
+                "(3) **확인된 트랙만 그린다(PENDING/ACTIVE)** — 새로 잡힌 박스는 PENDING으로 " +
+                "태어나 **그리지 않고**, 최근 " +
+                "${OVERLAY_ENTRY_WINDOW_PUBLISHES_MEASUREMENT_VALUE}게시 중 " +
+                "${OVERLAY_ENTRY_HITS_REQUIRED_MEASUREMENT_VALUE}회 지지받으면 ACTIVE로 " +
+                "승격해 그리기 시작한다. ACTIVE는 연속 " +
+                "${OVERLAY_HOLD_PUBLISHES_MEASUREMENT_VALUE}회 미지지에 해제된다. " +
+                "🔴 **진입창은 PENDING에만, 해제는 ACTIVE에만 건다** — 해제를 PENDING에도 " +
+                "걸면 '창 안에서 ${OVERLAY_ENTRY_HITS_REQUIRED_MEASUREMENT_VALUE}회'가 '연속 " +
+                "${OVERLAY_ENTRY_HITS_REQUIRED_MEASUREMENT_VALUE}회'와 같아져 진입 규칙이 사문화된다. " +
+                "🔴 **PENDING은 진입을 늦춘다 — 이 설계가 지불하는 값이다.** 확인되지 않은 " +
+                "트랙을 그리지 않으므로 1회짜리 오탐이 화면에 번쩍이지 않는 대신, **진짜 " +
+                "위험물도 최대 (진입창−1)게시만큼 늦게 뜬다.** ⚠ **해제가 k=1이라 탐지가 " +
+                "1게시 끊기면 박스가 사라지고 다시 뜨는 데 2게시가 걸린다** — 옛 " +
+                "hold(18프레임)가 그 끊김을 메우고 있었다. 🔴 **맞바꿈이 야간에서 실측됐다 — 단 " +
+                "그것은 진입창이 3일 때의 값이고 이 빌드의 값이 아니다.** " +
+                "run_ts=20260828_221726(야간 2런, 같은 코스, 진입 3중2): 진입 결손 " +
+                "63·104회(22.3·40.3/분) · 미표시 max 1710ms · 표시된 프레임 7.8%·14.9% " +
+                "(pre 43.2%·44.1%, 그중 23.6%p·20.9%p는 잔상 프레임) · 생성 209·334개 중 " +
+                "승격 70·88개 · 버려진 PENDING 138·246개. 그래서 창을 넓혔다 " +
+                "(증거 요구는 그대로, 인내만 늘림). 🔴 **넓힌 뒤의 값은 미측정이다** — " +
+                "이 맞바꿈은 하네스의 overlay_ghost.pending과 overlay.flicker가 사후에 판정한다. " +
+                "🔴 **상태 기계는 새 게시가 왔을 때만 돈다 — 같은 스냅샷을 다시 보는 " +
+                "프레임에서는 아무 전이도 없다.** 게시 슬롯은 새 게시가 올 때까지 직전 " +
+                "스냅샷을 보존하므로(정상 동작), 프레임마다 지지로 세면 **탐지 워커가 멈추거나 " +
+                "매 프레임 실패해도 낡은 좌표의 박스가 무한히 그려진다.** 야간 보행 보조에서 " +
                 "낡은 위험물 위치를 현재인 것처럼 계속 보여 주는 것이 더 위험하다. " +
                 "(4) **크기·위치는 IIR로만 움직인다** — 새 좌표로 순간 이동하지 않고 " +
-                "iir_alpha로 수렴한다(태어나는 프레임만 예외이며, 거기서 0에서 자라게 하면 " +
+                "iir_alpha로 수렴한다(태어나는 자리만 예외이며, 거기서 0에서 자라게 하면 " +
                 "그게 곧 튐이다). IIR은 **매 프레임** 돌아 한 게시를 쓰는 ≈9프레임 동안 계속 " +
-                "수렴한다 — TTL 재충전과는 별개다. " +
-                "⚠ **hold가 만료돼 박스가 사라지는 동작은 남아 있고 그것이 정상이다.** " +
-                "두 경우에 일어난다: (a) 새 게시가 왔는데 그 박스가 빠졌다(장면에서 실제로 " +
-                "사라졌을 수 있다), (b) **게시가 아예 끊겼다**(탐지가 멈췄거나 매 프레임 " +
-                "실패했다). 🔴 **둘 다 깜빡임이 아니다** — 빠른 on/off가 아니라 탐지가 끊긴 " +
-                "사실의 **정직한 표시**다. 하네스가 그것을 `drew_then_stopped`로 지목하면 " +
-                "**그 지목이 맞는 것이고**, 원인이 (a)인지 (b)인지는 그 지표가 가르지 못한다" +
+                "수렴한다 — 상태 전이와는 별개다(PENDING도 수렴시켜 둔다: 승격되는 순간에 " +
+                "이미 목표점에 있어야 튀지 않는다). " +
+                "⚠ **박스가 사라지는 동작은 남아 있고 그것이 정상이다.** 두 경우에 일어난다: " +
+                "(a) 새 게시가 왔는데 그 박스가 빠졌다(장면에서 실제로 사라졌을 수 있다), " +
+                "(b) **게시가 아예 끊겼다**(탐지가 멈췄거나 매 프레임 실패했다 — 그때는 " +
+                "새 게시가 없으므로 전이도 없고 박스는 그대로 남는다). 🔴 **둘 다 깜빡임이 " +
+                "아니다** — 빠른 on/off가 아니라 탐지가 끊긴 사실의 **정직한 표시**다. " +
+                "하네스가 그것을 `drew_then_stopped`로 지목하면 **그 지목이 맞는 것이고**, " +
+                "원인이 (a)인지 (b)인지는 그 지표가 가르지 못한다" +
                 "(detect.run의 errors·inferences_run과 함께 읽어야 갈린다). " +
                 "그 사라짐은 로그에 그대로 남는다(overlay_boxes의 >0→0 전이·뒷자락). " +
                 "⚠ 그리고 박스가 크게 튀면 이어지지 않고 **새 박스가 태어난다**(match_iou " +
-                "미달) — 그때 이전 박스는 hold 동안 함께 그려지므로 잠깐 둘로 보인다. " +
-                "**그 실패 방향을 일부러 택했다**: 잠깐 하나 더 그리는 것이 깜빡이는 것보다 " +
-                "안전하다"
+                "미달) — 그때 이전 ACTIVE 박스는 해제될 때까지 함께 그려지므로 잠깐 둘로 " +
+                "보일 수 있다. **그 실패 방향을 일부러 택했다**: 잠깐 하나 더 그리는 것이 " +
+                "깜빡이는 것보다 안전하다"
+
+        /**
+         * 🔴 fill arm 판의 전문. **KDoc 참조와 사람이 읽는 앵커가 이 이름이다**
+         * ([OverlaySmoother]·[HighlightOverlay]의 주석이 이 이름으로 (1)을 가리킨다).
+         *
+         * ⚠ **사본이 아니라 위 조각들의 합이다.** `session.json`에 실을 값은
+         * [overlayNoFlickerDesign]에 arm의 fill 여부를 넣어 얻는다.
+         */
+        const val OVERLAY_NO_FLICKER_DESIGN =
+            OVERLAY_NO_FLICKER_DESIGN_HEAD + OVERLAY_NO_FLICKER_BLEND_FILL +
+                OVERLAY_NO_FLICKER_DESIGN_TAIL
+
+        /**
+         * 🔴 **깜빡임 방지 설계의 arm별 판.** 갈리는 것은 (1)의 **블렌딩을 켜는 사유** 하나뿐
+         * 이고, **알파 변조가 없다는 본문과 (2)(3)(4)는 두 arm에서 그대로 참**이라 공유한다
+         * ([chainHighlightTileReloadNote]와 같은 틀이다).
+         *
+         * @param fill 이 arm이 fill quad를 실제로 그리는가([drawsOverlayFill]).
+         */
+        fun overlayNoFlickerDesign(fill: Boolean): String =
+            OVERLAY_NO_FLICKER_DESIGN_HEAD +
+                (
+                    if (fill) OVERLAY_NO_FLICKER_BLEND_FILL
+                    else OVERLAY_NO_FLICKER_BLEND_NOFILL
+                    ) +
+                OVERLAY_NO_FLICKER_DESIGN_TAIL
 
         /** 🔴 `stage_h_ms` 구간이 **정확히 무엇을 감싸는가**. `session.json`으로 나간다. */
         const val OVERLAY_STAGE_H_SCOPE =
             "🔴 **CPU 벽시계**(SystemClock.elapsedRealtimeNanos, GL 스레드)이며 GPU query가 " +
                 "아니다 — gpu_sum_ms에도 stage_d_total_ms에도 들어가지 않는다. " +
                 "구간은 **GPU 패스를 열기 전에 닫힌다**(gpuTimer.beginFrame보다 앞이다). " +
-                "안에 있는 것: (새 게시일 때) 스냅샷의 박스를 NDC로 매핑 → 이전 프레임 목록과 " +
-                "IoU 연결 → 좌표 IIR 평활(**매 프레임**) → hold/TTL 갱신 → " +
-                "**그릴 목록을 정점 버퍼에 in-place 재기록**" +
+                "안에 있는 것: (새 게시일 때만) 스냅샷의 박스를 NDC로 매핑 → 살아 있는 " +
+                "트랙과 IoU 연결 → 지지 히스토리 갱신 → **상태 전이**(PENDING 승격·폐기 / " +
+                "ACTIVE 해제) → 새 트랙 탄생, 그리고 **매 프레임** 좌표 IIR 평활 → " +
+                "**ACTIVE만 골라 정점 버퍼에 in-place 재기록**" +
                 "까지다. 정점 재기록을 일부러 포함했다 — 그 CPU 비용이 GPU query 안에 있으면 " +
                 "(GPU 시간을 재는 query라) **어디에도 계상되지 않는다.** " +
                 "밖에 있는 것: `latest()` 참조 읽기 하나(t_render_start_ns를 찍기 **전에** " +
@@ -2230,8 +2692,9 @@ enum class RenderArm(
                 "아니라 **분모가 상한을 통째로 중복 계상했다**는 뜻이었다. " +
                 "🔴 **H는 하한·상한의 대상이 아니다.** stage_h_ms는 CPU 벽시계 직접 측정이고 " +
                 "모든 GPU query **밖**에서 닫힌다(overlay.smoothing.scope) — gpu_frame_ms " +
-                "차분에 H는 물리적으로 들어 있지 않으므로 'H의 하한'은 범주 오류다. H는 두 " +
-                "오버레이 arm(detect_cpu_chain_highlight / _1q)이 stage_h_ms 열로 **직접** 낸다. " +
+                "차분에 H는 물리적으로 들어 있지 않으므로 'H의 하한'은 범주 오류다. H는 " +
+                "오버레이 arm들이 stage_h_ms 열로 **직접** 낸다(개수를 여기 적지 않는다 — " +
+                "arm이 늘면 이 문장이 낡는다. 목록의 출처는 usesHighlightOverlay다). " +
                 "⚠ 오버레이가 없는 두 arm(detect_cpu_chain / _1q)에는 stage_i_ms도 stage_h_ms도 " +
                 "없다 — 그 arm들의 자리는 **분모**이고 그것이 이 세트에서 그 arm의 뜻 전부다"
 

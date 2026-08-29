@@ -1,10 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">밤마실 PoC</string>
+    <string name="app_name">밤마실</string>
     <string name="start">측정 시작</string>
     <string name="stop">측정 정지 (로그 저장)</string>
     <string name="idle">대기 중 — 카메라 프리뷰만 흐르고 있다</string>
     <string name="lighting_label">조명 조건 (session.json 에 그대로 들어간다)</string>
+    <!-- ── 참가자가 읽는 문구 ────────────────────────────────────────────────
+         🔴 이 아래는 **사용자 테스트 참가자**가 보는 말이다. 기술어(arm·use case·
+         바인딩·프리뷰)를 쓰지 않는다. 측정자용 정밀 문장은 Kotlin 쪽에 두고
+         showMessage(toast, log)의 log 인자로 보낸다 — 파일이 두 청중의 경계다.
+         ⚠ 문구를 늘릴 때도 Toast 한 줄에 읽히는 길이를 넘기지 않는다. -->
+
+    <!-- 측정 시작. 평소엔 조용하고 조명이 야외가 아닐 때만 아래 경고가 붙는다. -->
+    <string name="rec_start">측정을 시작합니다.\n조명: %1$s</string>
+    <!-- 🔴 조명 기본값이 unknown이 아니게 된 것의 짝이다 — 안 고친 런이 조용히
+         야간 런으로 통과하는 것을 여기서 알아챈다. 틀렸을 때만 뜬다. -->
+    <string name="rec_start_lighting_warn">⚠ 조명이 %1$s 로 되어 있습니다.\n야간이면 정지하고 바꾸세요.</string>
+
+    <!-- 야간 보조 on/off. 화면이 끊기는 것은 참가자에게도 알려야 한다 —
+         알리지 않으면 고장으로 읽는다. 다만 "프리뷰·리바인딩"이라고 쓰지 않는다.
+         🔴 줄바꿈은 \n 으로 쓴다. &#10; 은 XML 파서가 실제 개행으로 바꿔 주지만
+         aapt 가 문자열 리소스의 공백을 정규화하면서 **스페이스로 접어** 한 줄이 된다. -->
+    <string name="assist_on_toast">야간 보조를 켰습니다.\n화면이 잠깐 멈췄다 다시 나옵니다.</string>
+    <string name="assist_off_toast">야간 보조를 껐습니다.\n화면이 잠깐 멈췄다 다시 나옵니다.</string>
+
+    <!-- 카메라가 아직 안 붙은 상태에서 시작을 누른 경우. -->
+    <string name="camera_not_ready">카메라를 준비하는 중입니다.\n잠시 후 다시 눌러 주세요.</string>
     <string name="arm_label">렌더 arm (pipeline_stages 로 나간다 — arm 이 다르면 비교 조건이 다르다)</string>
     <!--
       ④ 강조가 실제로 어떻게 보이는지 촬영·캡처할 때 정보 패널을 접는 버튼.
@@ -15,4 +36,10 @@
     <string name="display_mode_label">표시 모드</string>
     <string name="cardboard_fov_format">Cardboard 화면 크기: %1$d%% (작을수록 넓게 보임)</string>
     <string name="cardboard_alignment_format">좌우 상 정렬: %1$+.1f%% (− 안쪽 / + 바깥쪽)</string>
+    <!--
+      사용자 테스트용 on/off. ON = ①②③④가 다 든 통합 arm, OFF = passthrough.
+      🔴 arm 스피너를 대체하지 않는다 — 이 버튼은 스피너의 리모컨이다.
+    -->
+    <string name="view_on">야간 보조 ON</string>
+    <string name="view_off">야간 보조 OFF</string>
 </resources>
