@@ -34,6 +34,7 @@ from lib.frame_log import (  # noqa: E402
     FRAME_OVERLAY_COLUMNS,
     FRAME_OVERLAY_SOURCE_COLUMNS,
     FRAME_RATIO_COLUMNS,
+    RATIO_SUMMARY_DIGITS,
     GPU_FRAME_COLUMN,
     GPU_SUM_COLUMNS,
     GPU_TIME_COLUMNS,
@@ -55,7 +56,7 @@ from lib.frame_log import (  # noqa: E402
     session_field,
 )
 from lib.run_utils import common_argparser, init_run  # noqa: E402
-from lib.stats import summarize  # noqa: E402
+from lib.stats import DEFAULT_SUMMARY_DIGITS, summarize  # noqa: E402
 
 LOG = logging.getLogger(__name__)
 
@@ -1121,7 +1122,16 @@ def main() -> int:
     #    🔴 비율 열(v8)도 여기서 분포를 낸다 — 읽기만 하고 요약에 안 실으면 CSV에 있는
     #    열이 요약에서 조용히 사라지고, 그 상태는 "열이 없던 로그"와 구분되지 않는다.
     overlay_stats = {
-        name: summarize(getattr(series, name))
+        # 🔴 비율 열은 **6자리로 요약한다.** 기본값(3자리)으로 두면 작은 박스의 면적이
+        #    `0.0`으로 찍혀 하네스가 "면적 0"으로 읽는다 — 폐기되지 않으므로 보이지도
+        #    않는다. 스키마가 앱에 6자리를 요구한 바로 그 실패를 리포트 계층이 되돌리는
+        #    자리다. 자릿수의 출처는 `lib/frame_log.RATIO_SUMMARY_DIGITS` 하나다.
+        name: summarize(
+            getattr(series, name),
+            digits=(
+                RATIO_SUMMARY_DIGITS if name in FRAME_RATIO_COLUMNS else DEFAULT_SUMMARY_DIGITS
+            ),
+        )
         for name in FRAME_CPU_TIME_COLUMNS + FRAME_COUNT_COLUMNS + FRAME_RATIO_COLUMNS
     }
     overlay_stats[OVERLAY_FRESHNESS_SERIES] = summarize(series.overlay_freshness_ms)

@@ -229,6 +229,13 @@ FRAME_RATIO_COLUMNS = (
     "overlay_fill_frac",   # Σ(박스 면적) ÷ 화면 면적. **0.0은 정상값이다**
 )
 
+#: 비율 열을 요약할 때 쓰는 소수 자릿수. 🔴 **앱이 CSV에 쓰는 자릿수와 같아야 한다.**
+#: 줄이면 작은 박스가 `0.000`이 되고 하네스가 그 샘플을 "면적 0"으로 읽는다 —
+#: 폐기되지 않으므로 **보이지도 않는다**(docs/FRAME_LOG_SCHEMA.md의 ④ 면적 열 절).
+#: 🔴 **여기가 유일한 출처다.** `lib/stats.py`의 `summarize(digits=...)`에 넘겨 쓰고,
+#: 소비자마다 6을 다시 적지 않는다 — 적는 순간 한쪽만 고쳐져 갈린다.
+RATIO_SUMMARY_DIGITS = 6
+
 # ── 오버레이가 사용한 탐지 결과의 **게시 시각** ────────────────────────────
 # `t_*_ns` 규약을 그대로 따른다: int ns, `CLOCK_BOOTTIME`
 # (`SystemClock.elapsedRealtimeNanos`), 즉 `t_recv_ns`·`t_render_start_ns`와 **같은 시계**다.
@@ -1201,6 +1208,46 @@ RENDER_ARM_DETECT_CPU_CHAIN_1Q = "detect_cpu_chain_1q"
 RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT = "detect_cpu_chain_highlight"
 RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT_1Q = "detect_cpu_chain_highlight_1q"
 
+# ── fill 대조 arm (2026-08-29) ─────────────────────────────────────────────
+#
+#   detect_cpu_chain_highlight_nofill   9패스 본진과 **같은 구성인데 박스 안쪽 fill 기하를
+#                                       건너뛴다.** 스트로크는 그대로 그린다
+#                                       → "fill이 I칸을 얼마나 올렸나"의 **대조군**
+#
+# **왜 arm을 가르나:** v8에서 ④ 오버레이가 박스 안을 **빌드 상수 알파**(0.30)로 채우기
+#   시작했다. 알파가 컴파일 시점에 박히므로 **같은 세션에 대조군이 없다** — fill 있는 런과
+#   없는 런을 같은 밤에 뜨려면 코드 경로가 둘이어야 하고, 이 저장소의 선례대로 코드 경로가
+#   갈리면 **arm id를 가른다**(`highlight_boxes` ↔ `_stress`는 박스 개수가, `_1q`는 계측
+#   방식이 갈린 것과 같은 구조).
+#
+# 🔴 **알파만 0으로 둔 대조군은 쓸모없다.** fill quad가 그대로 래스터라이즈돼 프래그먼트
+#   비용이 똑같이 든다 — 그러면 대조군이 본진과 같은 값을 내고 "fill은 공짜"라는 거짓
+#   결론이 나온다. 그래서 이 arm은 **fill 기하 자체를 건너뛰는 코드 경로**다.
+#
+# 🔴 **`overlay.fill_enabled`(불리언)가 이 arm과 fill arm을 가르는 세션 키다.**
+#   `fill_alpha`만으로는 부족하다: 이 arm은 `fill_alpha=null`을 내는데
+#   `scripts/baseline_diff.py`의 `_dig`는 **명시적 null과 키 부재를 구분하지 못한다**
+#   (아래 `session_field`와 달리 `key_present`를 주지 않는다). 그래서 조건 판정의 하중은
+#   `fill_enabled`가 받는다 — fill↔nofill이 `true≠false`로, v7 승격본↔nofill이
+#   `None≠false`로 갈린다. `fill_alpha=0`으로 내는 선택지는 **"알파 0으로 그렸다"와
+#   "안 그렸다"가 구분되지 않아** 쓰지 않는다(둘은 비용이 다르다).
+#
+# 🔴 **CSV 열이 늘지 않고 `SCHEMA_VERSION`도 8 그대로다.** 이 arm도 v8 오버레이 4열을
+#   그대로 싣고, `overlay_fill_frac`은 **면적을 그대로** 낸다(그리지 않은 면적). 그 열의
+#   정의가 "Σ박스면적÷화면면적"이고 **"칠해진 픽셀의 비율이 아니다"**라고 이미 못 박혀
+#   있으므로(→ FRAME_RATIO_COLUMNS 주석) 이것은 예외가 아니라 **정의를 따르는 것**이다.
+#   면적을 0으로 내면 `overlay_cost_by_boxes.py`의 불가능 짝 카운터
+#   (`boxes_positive_fill_zero`)가 오작동하고 버킷 안 면적 분포가 사라진다.
+#   ⚠ 바뀐 것은 session.json의 정책 블록뿐이므로 **스키마 버전으로는 이 arm을 가를 수 없다**
+#     — 위 `hold_frames`↔`hold_publishes`와 글자 그대로 같은 상황이며, 판별 축은
+#     **`render_arm` + `overlay.fill_enabled`**다.
+#
+# ⚠ 이 arm의 상한·하한 구조는 본진과 같다(I 상한 = `stage_i_ms`). `_1q` 짝은 **아직 없다** —
+#   필요해지면 위 `_1q` 블록의 요구(`singleFrameQueryPeer`·`renderPassCount` 등록)를 그대로
+#   받는다. 🔴 **fill의 I칸 비용은 이 글을 쓰는 시점에 미측정이다** — 이 arm의 실기기 로그가
+#   아직 하나도 없다.
+RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL = "detect_cpu_chain_highlight_nofill"
+
 RENDER_ARMS = (
     RENDER_ARM_PASSTHROUGH,
     RENDER_ARM_BLIT_2PASS,
@@ -1251,6 +1298,9 @@ RENDER_ARMS = (
     RENDER_ARM_DETECT_CPU_CHAIN_1Q,
     RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT,
     RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT_1Q,
+    # fill 대조 arm(2026-08-29). 위 본진과 **같은 9패스인데 fill 기하를 건너뛴다** —
+    # 판별 축은 `render_arm` + `overlay.fill_enabled` 둘이다. 위 블록 참고.
+    RENDER_ARM_DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL,
     RENDER_ARM_SYNTHETIC,
 )
 

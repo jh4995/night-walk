@@ -8,6 +8,12 @@
 "박스 개수에 따라 ④ 비용이 어떻게 오르는가"에 아직 아무 답이 없었다. 이 스크립트는 그
 질문 하나만 본다: **`overlay_boxes` 값을 버킷으로 삼아 같은 프레임의 비용 열 분포를 낸다.**
 
+**v8에서 면적 축이 붙었다.** ④가 박스 **안쪽을 채우기** 시작하면서 I칸의 설명 변수가 개수
+하나에서 **개수와 면적 둘**로 늘었다(`overlay_fill_frac`). 🔴 그렇다고 면적으로 버킷을
+나누지 않는다 — 개수 버킷은 그대로 두고 **각 버킷 안에서 면적 분포를 함께 낸다.** 2차원
+교차 버킷은 실재 런에서 표본이 안 나오고(야간 런 0박스 81.6%, 개수 20버킷 중 8개가 이미
+n<30), 면적 구간 경계는 fill 빌드 실측이 0건이라 지금 정하면 데이터가 아니라 발명이다.
+
 🔴 **회귀·외삽·기울기를 내지 않는다.** 개수가 적은 버킷은 `n`이 작아서 백분위가 의미 없고,
    그 사실이 표에 보여야 한다 — 그래서 모든 줄에 `n`을 함께 낸다. "박스 1개당 몇 ms"라는
    숫자를 이 스크립트가 만들면, 그 숫자는 `n=3`짜리 버킷에서 나온 기울기일 수 있다.
@@ -41,6 +47,8 @@ from lib import targets  # noqa: E402
 from lib.frame_log import (  # noqa: E402
     FRAME_COUNT_COLUMNS,
     FRAME_CPU_TIME_COLUMNS,
+    FRAME_RATIO_COLUMNS,
+    RATIO_SUMMARY_DIGITS,
     GPU_FRAME_COLUMN,
     GPU_TIME_COLUMNS,
     MIN_POSITIVE_MS,
@@ -67,6 +75,27 @@ BUCKET_COLUMN = "overlay_boxes"
 # 열 소속(frame_log의 상수)으로부터 유도한다. 문자열로 손으로 적으면 열이 옮겨갈 때 낡는다.
 COST_COLUMNS = ("stage_i_ms", "stage_h_ms", GPU_FRAME_COLUMN)
 
+# ── 조건 열 (v8) — 버킷 축도 아니고 비용도 아니다 ─────────────────────────
+# 🔴 **세 번째 범주가 필요한 이유.** 이 표에는 성질이 다른 열이 세 종류 선다:
+#   1) 버킷 축(`BUCKET_COLUMN`) — 줄을 가르는 값. 개수다.
+#   2) 비용(`COST_COLUMNS`) — 버킷 안에서 분포를 내는 ms.
+#   3) **조건**(여기) — 버킷 안에서 분포를 내지만 **ms가 아니다.** 비용이 아니라
+#      *비용의 조건*이다(`overlay_boxes`와 같은 취급이며 버짓 칸이 없다).
+# `overlay_fill_frac`을 2)에 넣으면 시계 라벨이 붙고 ms처럼 읽히며, 1)로 삼으면 면적
+# 버킷을 만들게 되는데 그 경계는 이 라운드에서 정하지 않는다(NOTES의 no_area_bucket).
+#
+# 🔴 **면적 버킷을 만들지 않는다.** 개수 버킷은 그대로 두고, 각 버킷 **안에서** 면적
+#   분포를 함께 낸다. 2차원 교차 버킷은 실재 런에서 표본이 안 나온다(야간 런은 0박스가
+#   81.6%였고 개수 20버킷 중 8개가 이미 n<30이다) — 거기서 면적으로 또 쪼개면 백분위가
+#   표본 몇 개짜리가 된다.
+CONDITION_COLUMNS = FRAME_RATIO_COLUMNS
+
+# 🔴 비율 열의 반올림 자릿수. **앱이 CSV에 쓰는 자릿수와 같게 둔다**
+#   (`docs/FRAME_LOG_SCHEMA.md` ④ 오버레이 절: "앱에 요구하는 자릿수 소수 6자리 — 줄이면
+#   작은 박스가 0.000이 되고 하네스는 그 샘플을 면적 0으로 읽는다. 폐기되지 않으므로
+#   보이지도 않는다"). 여기서 3자리로 요약하면 그 요구를 **리포트 계층이 되돌린다.**
+CONDITION_SUMMARY_DIGITS = RATIO_SUMMARY_DIGITS
+
 # ── 상수 자기검사 ─────────────────────────────────────────────────────────
 # 축이 될 열이 카운트 열이 아니거나 비용 열이 어느 분류에도 없으면, 아래 시계 라벨이
 # 조용히 "미분류"가 된 채 표가 나간다. 데이터와 무관한 불변식이므로 import 시점에 닫는다.
@@ -83,6 +112,41 @@ if _unclassified:
     raise RuntimeError(
         f"비용 열이 GPU/CPU 어느 분류에도 없다: {_unclassified} — 시계 라벨을 만들 수 없다"
     )
+# 조건 열이 제 범주를 벗어나면 **값이 조용히 망가진다.** 어떤 데이터로도 드러나지 않는
+# 부류(카운트 통에 들어가면 소수부가 잘리고, 시간 통에 들어가면 면적 0인 프레임이 전부
+# 폐기된다 — 둘 다 폐기 카운트조차 정직하지 않다)라 import 시점에 닫는다.
+# 🔴 순서가 있다: **가장 구체적인 진단이 먼저**다. 버킷 축을 조건 열로도 적으면 아래
+#   두 검사에도 걸리지만(개수 열이라 비율이 아니고 카운트 통에 있다), 그때 사람이 봐야 할
+#   문장은 "범주를 잘못 골랐다"가 아니라 "표가 자기 자신을 조건으로 삼았다"다.
+_bucket_as_condition = [c for c in CONDITION_COLUMNS if c == BUCKET_COLUMN]
+if _bucket_as_condition:
+    raise RuntimeError(
+        f"조건 열이 버킷 축과 같다: {_bucket_as_condition} — 버킷을 가른 값을 그 버킷 안에서 "
+        "다시 분포로 내면 모든 줄이 상수 하나가 되고, 표가 자기 자신을 조건으로 삼는다"
+    )
+_not_ratio = [c for c in CONDITION_COLUMNS if c not in FRAME_RATIO_COLUMNS]
+if _not_ratio:
+    raise RuntimeError(
+        f"조건 열이 FRAME_RATIO_COLUMNS에 없다: {_not_ratio} — 비율 열이 아닌 것을 조건 "
+        "열로 삼으면 폐기 가드(`>= 0`)와 반올림 자릿수(6자리)가 그 열의 규약과 어긋난다"
+    )
+_miscategorized = sorted(
+    {
+        c
+        for c in CONDITION_COLUMNS
+        if c in FRAME_CPU_TIME_COLUMNS
+        or c in GPU_TIME_COLUMNS
+        or c in FRAME_COUNT_COLUMNS
+        or c in COST_COLUMNS
+    }
+)
+if _miscategorized:
+    raise RuntimeError(
+        f"조건 열이 시간/카운트/비용 목록에도 있다: {_miscategorized} — "
+        "카운트 통이면 `_to_int`가 소수부를 잘라 0.123456이 조용히 0이 되고, 시간 통이면 "
+        "`> 0` 가드가 **면적 0인 프레임을 전부 폐기**한다(야간 보행 프레임 대부분이 그렇다). "
+        "둘 다 값이 사라진 것이 표에 드러나지 않는다"
+    )
 
 
 def clock_of(column: str) -> str:
@@ -90,10 +154,39 @@ def clock_of(column: str) -> str:
 
     🔴 `stage_h_ms`(CPU 벽시계)와 `stage_i_ms`·`gpu_frame_ms`(GPU 타이머)를 한 표에 놓기
     때문에 이 라벨이 필수다. 라벨 없이 세 열을 나란히 찍으면 사람이 더한다.
+
+    🔴 **시간 열만 받는다.** 마지막 줄이 `return "GPU 타이머"`라, 이 함수는 CPU 목록에
+    없는 **모든** 열을 GPU로 라벨한다 — v8의 비율 열이 이 경로로 새면 표에
+    `overlay_fill_frac [GPU 타이머]`가 찍히고, 그건 무차원 비율에 시계를 붙인 것이다.
+    시간이 아닌 열은 `unit_of()`로 간다.
     """
     if column in FRAME_CPU_TIME_COLUMNS:
         return "CPU 벽시계"
-    return "GPU 타이머"
+    if column in GPU_TIME_COLUMNS:
+        return "GPU 타이머"
+    raise RuntimeError(
+        f"clock_of에 시간 열이 아닌 열이 들어왔다: {column!r} — 이 함수는 CPU 목록에 없는 "
+        "열을 전부 'GPU 타이머'로 라벨하므로, 비율/카운트 열이 여기로 새면 무차원 값에 "
+        "시계가 붙는다. 단위 라벨은 unit_of()를 쓸 것"
+    )
+
+
+# 🔴 비율 열의 단위 라벨. ms가 아니라는 것이 **표 안에서 보여야** 한다 — 이 표는 한 줄씩
+#   인용되므로("박스 10개일 때 면적이 얼마"), 단위가 줄에 붙어 있지 않으면 옮겨간 곳에서
+#   ms로 읽힌다.
+RATIO_UNIT_LABEL = "비율(단위 없음)"
+
+
+def unit_of(column: str) -> str:
+    """이 열의 단위 라벨. 비용 열이면 시계 이름, 조건 열이면 무차원 표시.
+
+    `clock_of`를 그대로 부르지 않는 이유는 그 함수가 이제 시간 열이 아니면 죽기 때문이다
+    (일부러 그렇게 했다). 표를 그리는 쪽은 비용·조건을 한 루프로 도는 자리가 있어서,
+    분기를 여기 한 곳에만 둔다.
+    """
+    if column in CONDITION_COLUMNS:
+        return RATIO_UNIT_LABEL
+    return clock_of(column)
 
 
 # ── 표에 반드시 붙는 경고 문장 ────────────────────────────────────────────
@@ -129,6 +222,34 @@ NOTES = {
         "⚠ 버킷의 `n`(프레임 수)과 각 열의 `count`(유효 표본 수)는 다를 수 있다 — 그 열이 "
         "그 프레임에서 기록되지 않았으면(-1) 폐기되기 때문이다. 두 값이 다르면 그 열의 "
         "분포는 그 버킷의 프레임 전부를 대표하지 않는다."
+    ),
+    "fill_frac_is_area_sum": (
+        f"⚠ `{CONDITION_COLUMNS[0]}`는 **Σ(박스 면적) ÷ 화면 면적**이고 **ms가 아니다** — "
+        "비용이 아니라 비용의 조건이다(`overlay_boxes`와 같은 취급이며 버짓 칸이 없다). "
+        "겹침·클리핑을 보정하지 않으므로 🔴 **1을 넘는 값이 정상이다** — 상한 1을 가정하고 "
+        "'화면의 몇 %'로 읽으면 틀린다. `0.0`은 정상값이고(그 프레임에 그린 박스가 없었다) "
+        "`-1`만 '기록하지 않았다'다."
+    ),
+    "fill_frac_not_painted_pixels": (
+        f"🔴 `{CONDITION_COLUMNS[0]}`는 **칠해진 픽셀의 비율이 아니다.** 함정이 "
+        "**양방향이다**: (1) 겹침은 오버드로라서 **비용에는 정직하다** — 겹친 픽셀은 실제로 "
+        "두 번 셰이딩된다. 하지만 **가림 판정에는 틀리다** — 합집합이 아니므로 '화면의 "
+        "얼마를 덮었나'로 읽으면 과대다. (2) 클리핑은 반대다 — 화면 밖 프래그먼트는 "
+        "래스터화 전에 잘리므로 이 값은 **비용을 과대평가**한다. 🔴 박스 좌표가 로그에 없어 "
+        "**어느 쪽도 보정할 수 없다.** 보정하려면 스키마에 좌표가 들어와야 한다."
+    ),
+    "fill_frac_zero_bucket_is_identity": (
+        f"🔴 `{BUCKET_COLUMN}=0` 줄의 `{CONDITION_COLUMNS[0]}` 0.0은 **관측이 아니라 "
+        "정의다.** 그릴 박스가 없으면 면적 합은 0일 수밖에 없다. 그 줄을 '면적이 0일 때 "
+        "비용이 얼마'라는 면적 근거로 인용하지 않는다 — 그건 개수가 0일 때의 비용이다. "
+        "면적의 효과는 **개수가 같은 버킷 안에서** 면적 분포가 넓은 줄로만 말할 수 있다."
+    ),
+    "no_area_bucket": (
+        f"🔴 이 표는 **면적으로 버킷을 나누지 않는다.** 버킷 축은 `{BUCKET_COLUMN}`(개수) "
+        f"하나이고, `{CONDITION_COLUMNS[0]}`는 그 버킷 **안의 분포**로만 나온다. 면적 구간 "
+        "경계를 지어내지 않기 위해서다 — fill 빌드의 실측이 아직 0건이라 지금 정하는 경계는 "
+        "데이터가 아니라 발명이다. 필요해지면 **그 런의 분위수에서** 유도하고 경계값을 표에 "
+        "함께 찍는다. 🔴 그 경계를 `lib/targets.py`에 넣지 않는다 — **판정선이 아니다.**"
     ),
     "cross_run_not_pooled": (
         "🔴 런을 **합치지 않는다.** 표의 모든 줄은 한 런에서 나온 것이고, 개요 표에도 "
@@ -203,15 +324,29 @@ def _warmup_diagnosis(csv_path: Path, warmup_sec: float) -> dict:
     return out
 
 
-def bucketize(csv_path: Path, warmup_sec: float, columns_present: list[str]) -> dict:
-    """행 정렬을 유지한 채 `overlay_boxes` → 비용 열 값들을 모은다.
+def bucketize(
+    csv_path: Path,
+    warmup_sec: float,
+    columns_present: list[str],
+    condition_present: list[str] | None = None,
+) -> dict:
+    """행 정렬을 유지한 채 `overlay_boxes` → 비용 열·조건 열 값들을 모은다.
 
     🔴 **왜 `read_frames`의 시계열을 그대로 쓸 수 없나.** 그쪽은 열마다 독립적으로 폐기하므로
     (`discarded[열]`) 반환된 리스트들이 **행 정렬이 아니다.** 버킷은 "같은 행의 개수와 비용"을
     묶는 일이라 행 단위 접근이 필요하다. 그래서 여기서 CSV를 한 번 더 읽지만, **행 스킵 규약과
     값 가드는 `read_frames`와 글자 그대로 같은 것을 쓰고**, 결과가 어긋나면 호출부가 하드
     에러를 낸다(`_cross_check`) — 두 구현이 갈라지는 것을 사람 눈에 맡기지 않는다.
+
+    🔴 **조건 열의 가드는 비용 열과 다르다.** 비용은 `not (val > MIN_POSITIVE_MS)`이고
+    조건은 **`not (val >= 0)`** — `lib/frame_log.py`의 `_collect_nonneg`와 글자 그대로 같은
+    부정형이다. 시간 열의 `> 0`을 복사하면 **면적 0인 프레임이 전부 폐기**되는데, 야간 보행
+    프레임 대부분이 박스 0개라 그게 곧 표본 대부분이다. 부정형인 이유도 그쪽과 같다 —
+    NaN은 어떤 비교에도 False를 돌려주므로 긍정형은 NaN을 통과시킨다.
     """
+    condition_present = list(condition_present or [])
+    all_value_columns = list(columns_present) + condition_present
+
     with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
 
@@ -221,6 +356,21 @@ def bucketize(csv_path: Path, warmup_sec: float, columns_present: list[str]) -> 
     rows_skipped = {"unparsable_t_recv": 0, "before_t0": 0, "warmup": 0}
     box_discarded = 0
     cost_discarded = {c: 0 for c in columns_present}
+    # 🔴 조건 폐기를 비용 폐기와 **따로** 낸다. 사유 문장이 다르다 — 비용은
+    #    "기록되지 않았거나 하한(> 0) 위반"이고, 조건은 "기록되지 않았다(-1)"뿐이다
+    #    (0.0은 정상값이라 폐기되지 않는다). 한 통에 합치면 경고 문구가 거짓이 된다.
+    condition_discarded = {c: 0 for c in condition_present}
+    # 🔴 **불가능한 짝**을 센다. 판정하지 않고 **세기만 한다** — 문장으로 단언하면 모델이
+    #    퇴행하거나 arm이 바뀌어도 같은 문장이 그대로 나간다.
+    #    같은 루프에서 센다(새 배열도 재순회도 만들지 않는다).
+    pair_counts = {
+        # 박스는 그렸는데 면적이 정확히 0. 아주 작은 박스가 반올림으로 0이 됐거나(앱이
+        # 6자리 미만으로 썼다), 면적 계산이 박스와 다른 좌표를 봤거나.
+        "boxes_positive_fill_zero": 0,
+        # 🔴 그릴 박스가 없는데 면적이 있다 — **앱 결함 지목**이다. 두 값이 같은 프레임의
+        #    같은 draw 결정에서 나와야 하는데 갈라졌다는 뜻이다(누적 리셋 누락 등).
+        "boxes_zero_fill_positive": 0,
+    }
 
     t0 = _to_int(rows[0].get("t_recv_ns")) if rows else MISSING
     cutoff = t0 + int(warmup_sec * 1e9) if t0 != MISSING else MISSING
@@ -246,7 +396,7 @@ def bucketize(csv_path: Path, warmup_sec: float, columns_present: list[str]) -> 
             box_discarded += 1
             continue
         box_seq.append(box)
-        bucket = buckets.setdefault(box, {c: [] for c in columns_present})
+        bucket = buckets.setdefault(box, {c: [] for c in all_value_columns})
         for col in columns_present:
             # 🔴 시간 열의 가드는 `> 0`이고 상한이 없다 (`_collect`의 기본 bounds).
             #    부정형으로 쓰는 이유도 그쪽과 같다 — NaN이 통과하면 백분위가 무의미해진다.
@@ -255,6 +405,21 @@ def bucketize(csv_path: Path, warmup_sec: float, columns_present: list[str]) -> 
                 cost_discarded[col] += 1
                 continue
             bucket[col].append(val)
+        for col in condition_present:
+            # 🔴 조건(비율) 열의 가드는 `>= 0`이다 (`_collect_nonneg`). 상한도 없다 —
+            #    겹침을 보정하지 않으므로 **1을 넘는 값이 정상**이라, 1을 상한으로 두면
+            #    박스가 겹친 프레임이 통째로 폐기된다.
+            val = _to_float(row.get(col))
+            if not (val >= 0):
+                condition_discarded[col] += 1
+                continue
+            bucket[col].append(val)
+            # 불가능한 짝. 조건 열이 유효할 때만 셀 수 있다(폐기된 -1은 면적을 모른다).
+            if col == CONDITION_COLUMNS[0]:
+                if box > 0 and val == 0.0:
+                    pair_counts["boxes_positive_fill_zero"] += 1
+                elif box == 0 and val > 0:
+                    pair_counts["boxes_zero_fill_positive"] += 1
 
     return {
         "buckets": buckets,
@@ -263,15 +428,28 @@ def bucketize(csv_path: Path, warmup_sec: float, columns_present: list[str]) -> 
         "rows_skipped": rows_skipped,
         "box_discarded": box_discarded,
         "cost_discarded": cost_discarded,
+        "condition_discarded": condition_discarded,
+        "pair_counts": pair_counts,
     }
 
 
-def _cross_check(series, aligned: dict, columns_present: list[str]) -> None:
+def _cross_check(
+    series,
+    aligned: dict,
+    columns_present: list[str],
+    condition_present: list[str] | None = None,
+) -> None:
     """행 정렬 재집계가 `read_frames`와 **같은 표본**을 봤는지 확인한다.
 
     🔴 어긋나면 죽는다. 조용히 다른 표본으로 표를 내면 이 스크립트의 숫자가 다른 스크립트의
     같은 열 숫자와 갈라지고, 그건 이 하네스에서 가장 나쁜 실패다.
+
+    🔴 **조건 열도 여기서 대조한다.** 이것이 `bucketize`의 `>= 0` 가드가 `read_frames`의
+    `_collect_nonneg`와 같다는 **유일한 기계적 증거**다 — 실수로 `> 0`(시간 열 가드)을
+    복사하면 면적 0인 프레임이 전부 빠지고, 표에는 그냥 "표본이 좀 적네"로 보인다.
+    표본 수 대조가 없으면 그 사고가 사람 눈에만 맡겨진다.
     """
+    condition_present = list(condition_present or [])
     problems = []
     if aligned["rows_used"] != series.rows_used:
         problems.append(
@@ -282,7 +460,7 @@ def _cross_check(series, aligned: dict, columns_present: list[str]) -> None:
             f"{BUCKET_COLUMN} 수열 길이/값 불일치 "
             f"(이쪽 {len(aligned['box_seq'])}개, read_frames {len(series.overlay_boxes)}개)"
         )
-    for col in columns_present:
+    for col in list(columns_present) + condition_present:
         mine = sum(len(b[col]) for b in aligned["buckets"].values())
         theirs = len(getattr(series, col))
         if mine != theirs:
@@ -363,6 +541,26 @@ def analyze_run(csv_path: Path, run_dir: Path, warmup_sec: float) -> dict:
     block["cost_columns_present"] = columns_present
     block["cost_columns_defined"] = list(COST_COLUMNS)
 
+    # 조건 열은 **오버레이 열 목록**에만 산다(GPU 목록에 있으면 상수 자기검사가 이미 죽였다).
+    condition_present = [c for c in CONDITION_COLUMNS if c in series.overlay_columns_present]
+    block["condition_columns_present"] = condition_present
+    block["condition_columns_defined"] = list(CONDITION_COLUMNS)
+    block["fill_frac_present"] = bool(condition_present)
+    if not condition_present:
+        # 🔴 **런을 건너뛰지 않는다.** v7 로그에는 이 열이 아예 없고, 그때의 개수 표는
+        #    지금까지처럼 그대로 유효하다(그 빌드의 I는 개수·둘레로 설명된다). 면적이
+        #    없다는 것은 **표의 한계**이지 그 런의 결함이 아니다.
+        #    선언 schema_version을 사유와 함께 실어 두 경우를 가른다:
+        #    "v7 로그였다"(정상)와 "v8 빌드인데 면적을 안 실었다"(앱 결함).
+        block["fill_frac_absent_reason"] = (
+            f"frames.csv에 `{CONDITION_COLUMNS[0]}`(면적) 열이 없다 — 개수 표는 그대로 "
+            f"내지만 **면적 축은 이 런에 없다.** 선언 schema_version="
+            f"{block.get('schema_version')}이 두 경우를 가른다: <= 7이면 fill 이전 빌드라 "
+            f"정상이고(그때의 stage_i_ms는 개수·둘레로 설명된다), 8 이상인데 열이 없으면 "
+            f"앱이 면적을 싣지 않은 것이므로 같은 개수의 큰 박스와 작은 박스를 구분할 수 "
+            f"없다 — 그 런의 stage_i_ms를 면적 조건 없이 인용하지 말 것"
+        )
+
     if BUCKET_COLUMN not in series.overlay_columns_present:
         block["skip_reason"] = "no_overlay_boxes_column"
         block["skip_detail"] = (
@@ -377,7 +575,7 @@ def analyze_run(csv_path: Path, run_dir: Path, warmup_sec: float) -> dict:
         )
         return block
 
-    aligned = bucketize(csv_path, warmup_sec, columns_present)
+    aligned = bucketize(csv_path, warmup_sec, columns_present, condition_present)
     # 🔴 교차검사 실패를 **런 하나의 스킵으로 내린다.** 예전에는 여기서 FrameLogError가
     #    그대로 올라가 `analyze_run`을 리스트 컴프리헨션으로 도는 호출자를 통째로 죽였다 —
     #    런 하나의 규약 붕괴가 나머지 전부의 분석을 같이 죽이는 것은 과하다.
@@ -387,7 +585,7 @@ def analyze_run(csv_path: Path, run_dir: Path, warmup_sec: float) -> dict:
     #    (bucketize는 박스를 몰라 그 행을 못 담고, read_frames는 열 독립이라 담는다).
     #    실측 v7 런 244개 전수에서 해당 행은 0건이었다 — 잠재 경로다.
     try:
-        _cross_check(series, aligned, columns_present)
+        _cross_check(series, aligned, columns_present, condition_present)
     except FrameLogError as exc:
         LOG.error("[%s] 교차검사 실패 — 이 런을 표에서 뺀다: %s", block["run_id"], exc)
         block["skip_reason"] = "cross_check_mismatch"
@@ -410,6 +608,12 @@ def analyze_run(csv_path: Path, run_dir: Path, warmup_sec: float) -> dict:
         for col in columns_present:
             row[col] = summarize(vals[col])
             row[f"{col}_clock"] = clock_of(col)
+            row[f"{col}_unit"] = unit_of(col)
+        for col in condition_present:
+            # 🔴 자릿수가 다르다. 3자리로 요약하면 작은 박스의 면적이 0.0으로 찍히고,
+            #    그 줄을 읽는 사람에게는 "면적이 없었다"가 된다(반올림이지 관측이 아니다).
+            row[col] = summarize(vals[col], digits=CONDITION_SUMMARY_DIGITS)
+            row[f"{col}_unit"] = unit_of(col)
         bucket_rows.append(row)
 
     flicker = overlay_flicker(
@@ -440,6 +644,13 @@ def analyze_run(csv_path: Path, run_dir: Path, warmup_sec: float) -> dict:
             "distinct_box_counts": sorted(aligned["buckets"]),
             "boxes_discarded": aligned["box_discarded"],
             "cost_discarded": aligned["cost_discarded"],
+            # 🔴 비용 폐기와 **따로** 낸다 — 사유 문장이 다르다(조건 열은 0.0이 정상값이라
+            #    폐기되는 것은 -1뿐이다).
+            "condition_discarded": aligned["condition_discarded"],
+            "condition_summary_digits": CONDITION_SUMMARY_DIGITS,
+            # 🔴 **판정하지 않고 센다.** 0이 아니면 그 자체가 조사할 사실이다.
+            "boxes_positive_fill_zero": aligned["pair_counts"]["boxes_positive_fill_zero"],
+            "boxes_zero_fill_positive": aligned["pair_counts"]["boxes_zero_fill_positive"],
             # 🔴 전이 수는 **런 전체의 순서 성질**이라 버킷 안에 넣을 수 없다.
             #    같은 계산의 주인은 analyze_frames.overlay_flicker다(재구현하지 않았다).
             "flicker": flicker,
@@ -483,16 +694,22 @@ def _print_run(block: dict) -> None:
     )
     if not block.get("window_meets_sustained"):
         LOG.warning("    ⚠ %s", block.get("window_note"))
-    cols = block.get("cost_columns_present") or []
+    # 비용 칸 뒤에 조건 칸을 붙인다. `_cell`을 그대로 쓰므로 `n=` 표기가 조건 칸에도 붙는다 —
+    # 면적 표본 수가 비용 표본 수와 다를 수 있고(그 열만 -1인 프레임), 그 사실이 보여야 한다.
+    cols = list(block.get("cost_columns_present") or []) + list(
+        block.get("condition_columns_present") or []
+    )
     header = f"    {'박스':>4} {'n':>6}"
     for c in cols:
-        header += f"  {c + ' p50/p95 [' + clock_of(c) + ']':<34}"
+        header += f"  {c + ' p50/p95 [' + unit_of(c) + ']':<38}"
     LOG.info(header)
     for row in block.get("buckets") or []:
         line = f"    {row['boxes']:>4} {row['n']:>6}"
         for c in cols:
-            line += f"  {_cell(row.get(c)):<34}"
+            line += f"  {_cell(row.get(c)):<38}"
         LOG.info(line)
+    if not block.get("fill_frac_present"):
+        LOG.warning("    ⚠ %s", block.get("fill_frac_absent_reason"))
     fl = block.get("flicker") or {}
     if fl.get("available"):
         LOG.info(
@@ -514,10 +731,33 @@ def _print_run(block: dict) -> None:
                 "    ⚠ %s 값 %s개가 폐기됐다(기록되지 않음/하한 위반) — 그 프레임들은 이 열의 "
                 "분포에 없다. 버킷 n과 count의 차이가 이것이다", name, disc,
             )
+    for name, disc in (block.get("condition_discarded") or {}).items():
+        if disc:
+            LOG.warning(
+                "    ⚠ %s 값 %s개가 폐기됐다 — 가드(`>= 0`)를 통과하지 못한 값이다. "
+                "🟢 **0.0은 폐기되지 않는다**(그 프레임에 그린 박스가 없었을 뿐이며 정상값이다). "
+                "🔴 실기기 로그에서는 이것이 **기록되지 않은 값(-1)**이지만, 이 문장을 "
+                "\"-1뿐이다\"로 읽지 말 것 — NaN·음수·파싱 불가도 같은 자리로 떨어지고 "
+                "여기서는 서로 구분되지 않는다. 버킷 n과 count의 차이가 이것이다", name, disc,
+            )
     if block.get("boxes_discarded"):
         LOG.warning(
             "    ⚠ %s 값 %s개가 폐기됐다 — 그 행은 버킷에도 전이 수열에도 없다",
             BUCKET_COLUMN, block.get("boxes_discarded"),
+        )
+    # 🔴 **판정하지 않고 센다.** 아래 두 문장은 "무엇을 세었는가"만 말하고 원인을 단정하지
+    #    않는다 — 단정하면 모델·arm이 바뀌어도 같은 진단이 그대로 나간다.
+    if block.get("boxes_positive_fill_zero"):
+        LOG.warning(
+            "    ⚠ 박스 > 0 인데 면적 == 0.0 인 프레임 %s개 — 아주 작은 박스가 앱의 "
+            "반올림으로 0이 됐거나(자릿수 부족), 면적 계산이 박스와 다른 좌표를 봤을 수 "
+            "있다. 세었을 뿐 판정하지 않는다", block.get("boxes_positive_fill_zero"),
+        )
+    if block.get("boxes_zero_fill_positive"):
+        LOG.error(
+            "    🔴 박스 == 0 인데 면적 > 0 인 프레임 %s개 — **그릴 박스가 없는데 면적이 "
+            "있다.** 두 값이 같은 프레임의 같은 draw 결정에서 나와야 하므로 앱 쪽을 볼 "
+            "지점이다. 세었을 뿐 판정하지 않는다", block.get("boxes_zero_fill_positive"),
         )
 
 
@@ -526,7 +766,7 @@ def _print_overview(usable: list[dict], all_columns: list[str]) -> None:
     LOG.info("── 개요 (버킷 순. 🔴 런을 합치지 않았다 — 줄마다 런·커밋이 붙는다)")
     header = f"  {'박스':>4} {'n':>6}  {'run':<16} {'commit':<9} {'arm':<32}"
     for c in all_columns:
-        header += f"  {c + ' p50/p95':<30}"
+        header += f"  {c + ' p50/p95':<34}"
     LOG.info(header)
     rows = []
     for block in usable:
@@ -537,12 +777,17 @@ def _print_overview(usable: list[dict], all_columns: list[str]) -> None:
             f"  {boxes:>4} {row['n']:>6}  {block['run_id']:<16} "
             f"{str(block.get('git_commit')):<9} {str(block.get('render_arm')):<32}"
         )
-        present = block.get("cost_columns_present") or []
+        present = list(block.get("cost_columns_present") or []) + list(
+            block.get("condition_columns_present") or []
+        )
         for c in all_columns:
             # 🔴 "그 런에 열이 없다"와 "열은 있는데 유효 표본이 0이다"를 **가른다.**
             #    한 칸에 뭉개면 계측 방식이 다른 arm(패스별 vs 단일 query)이 "재고 실패한
             #    런"으로 읽힌다 — frame_log가 열 존재/값 폐기를 가르는 것과 같은 이유다.
-            line += f"  {(_cell(row.get(c)) if c in present else '열없음'):<30}"
+            #    🔴 조건 열이 붙은 뒤로 이 분기가 더 중요해졌다: v7 런과 v8 런이 한 표에
+            #    서면 v7 줄의 면적 칸은 **'열없음'**이어야 하고, 그건 "면적이 0이었다"도
+            #    "표본 0"도 아니다. 뭉개면 fill 이전 빌드가 "면적을 못 잰 런"으로 읽힌다.
+            line += f"  {(_cell(row.get(c)) if c in present else '열없음'):<34}"
         LOG.info(line)
 
 
@@ -589,9 +834,16 @@ def main() -> int:
     usable = [b for b in blocks if b.get("usable")]
     skipped = [b for b in blocks if not b.get("usable")]
 
-    all_columns = [
+    cost_columns_used = [
         c for c in COST_COLUMNS if any(c in (b.get("cost_columns_present") or []) for b in usable)
     ]
+    condition_columns_used = [
+        c
+        for c in CONDITION_COLUMNS
+        if any(c in (b.get("condition_columns_present") or []) for b in usable)
+    ]
+    # 개요 표의 열 = 비용 + 조건. 어느 런에도 없는 열은 서지 않는다(빈 칸만 늘어난다).
+    all_columns = cost_columns_used + condition_columns_used
     commits = sorted({str(b.get("git_commit")) for b in usable})
     instrumentations = sorted({str(b.get("gpu_timer_instrumentation")) for b in usable})
     arms = sorted({str(b.get("render_arm")) for b in usable})
@@ -622,8 +874,21 @@ def main() -> int:
         "sustained_sec_source": "lib/targets.py:SUSTAINED_SEC",
         "bucket_column": BUCKET_COLUMN,
         "cost_columns_defined": list(COST_COLUMNS),
-        "cost_columns_used": all_columns,
+        "cost_columns_used": cost_columns_used,
+        "condition_columns_defined": list(CONDITION_COLUMNS),
+        "condition_columns_used": condition_columns_used,
         "clock_of_column": {c: clock_of(c) for c in COST_COLUMNS},
+        # 🔴 비용 열과 조건 열이 **한 표에 선다.** 단위 라벨이 요약에도 있어야 한 줄만
+        #    옮겨간 곳에서 ms인지 무차원인지 되물을 수 있다.
+        "unit_of_column": {
+            c: unit_of(c) for c in list(COST_COLUMNS) + list(CONDITION_COLUMNS)
+        },
+        "condition_summary_digits": CONDITION_SUMMARY_DIGITS,
+        "condition_summary_digits_source": (
+            "docs/FRAME_LOG_SCHEMA.md ④ 오버레이 절이 앱에 요구하는 자릿수(소수 6자리)와 "
+            "같게 둔다 — 3자리로 요약하면 작은 박스의 면적이 0.0으로 찍혀 리포트 계층이 "
+            "그 요구를 되돌린다"
+        ),
         "notes": NOTES,
         # ── 불리언 (사람이 표를 읽고 판단하게 두지 않는다) ──
         "any_usable_run": bool(usable),
@@ -638,6 +903,17 @@ def main() -> int:
         ),
         "any_run_dirty_build": any(b.get("git_dirty_is_true") for b in usable),
         "any_run_accounting_broken": any(not b.get("rows_accounted") for b in usable),
+        # 🔴 면적 열이 없는 런이 표에 섞였는가. 이 표의 개수 칸은 그래도 유효하지만,
+        #    그 런의 stage_i_ms를 **면적 조건 없이** 인용하면 안 된다.
+        "any_run_missing_fill_frac": any(not b.get("fill_frac_present") for b in usable),
+        # 🔴 세었을 뿐 판정이 아니다. True면 조사할 사실이 있다는 뜻이고, 어느 런인지는
+        #    runs[]의 같은 이름 카운터에 있다.
+        "any_run_boxes_zero_fill_positive": any(
+            b.get("boxes_zero_fill_positive") for b in usable
+        ),
+        "any_run_boxes_positive_fill_zero": any(
+            b.get("boxes_positive_fill_zero") for b in usable
+        ),
         "verdict": None,
         "verdict_note": NOTES["no_threshold"],
         "cross_build": {
@@ -662,7 +938,9 @@ def main() -> int:
         "④ 오버레이 비용 × 박스 개수 — 입력 %s런 (사용 %s / 건너뜀 %s), warmup %ss",
         len(inputs), len(usable), len(skipped), args.warmup_sec,
     )
-    for key in ("boxes_are_condition", "stage_i_upper_bound", "stage_h_cpu_clock",
+    for key in ("boxes_are_condition", "fill_frac_is_area_sum",
+                "fill_frac_not_painted_pixels", "fill_frac_zero_bucket_is_identity",
+                "no_area_bucket", "stage_i_upper_bound", "stage_h_cpu_clock",
                 "no_slope", "bucket_n_vs_sample_n", "cross_run_not_pooled", "no_threshold"):
         LOG.warning("  %s", NOTES[key])
     if mixed_builds:
