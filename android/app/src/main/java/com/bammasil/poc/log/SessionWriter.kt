@@ -79,14 +79,18 @@ class SessionFacts(
     val glSurfaceHeight: Int,
     val eglContextClientVersion: Int,
     /**
-     * 🔴 **표시 경로가 present 정점에 실제로 건 회전각.** 회전은 마지막 패스 하나에만 걸리고
-     * ④ 오버레이는 그 앞 FBO에 그려지므로 **영상과 박스가 함께 돈다.** 그 회전이 실제로
-     * 걸렸는지를 되물을 유일한 기록이다. 값의 뜻(센티넬 포함)은 [PassthroughRenderer]의
-     * 같은 이름 필드에 있다.
+     * 🔴 **표시 경로가 present 정점에 실제로 건 회전각.** 값의 뜻(센티넬 포함)은
+     * [PassthroughRenderer]의 같은 이름 필드에 있다.
      *
-     * ⚠ `camera_analysis_actual.rotation_degrees`와 **다른 축이다** — 그쪽은 ③ 모델 입력을
-     * 세우는 회전이고 이쪽은 화면에 그리는 회전이다. 한 칸에 섞지 않는다. 다만 둘 다
-     * CameraX의 `rotationDegrees`에서 오므로 **크기는 같아야 정상**이다.
+     * 🔴 **`hasCameraTransform=true`면 이 값은 0이 정상이다** — CameraX가 표시 회전을
+     * `SurfaceTexture`의 `texMatrix`에 이미 넣어 줘서 영상은 패스1 샘플링만으로 바로 서고,
+     * 여기서 또 돌리면 두 번 도는 것이다(A34에서 실제로 그렇게 돼서 영상이 90° 누웠다).
+     * 이 기계는 `hasCameraTransform=false` 경로를 위해 남아 있다.
+     *
+     * ⚠ **④ 박스의 회전은 이 값이 아니다** — 박스는 `OverlayCoordMap`이 따로 돌리고 그 각도는
+     * `overlay.coordinate_map.box_rotation_degrees`에 실린다. 두 값이 다른 것이 정상이다.
+     * ⚠ `camera_analysis_actual.rotation_degrees`와도 **다른 축이다** — 그쪽은 ③ 모델 입력을
+     * 세우는 회전이다. 한 칸에 섞지 않는다.
      */
     val previewRotationApplied: Int,
     val previewMirrorApplied: Boolean,
@@ -1910,6 +1914,33 @@ object SessionWriter {
         json.put("formula", OverlayCoordMap.FORMULA)
         json.put("assumptions", OverlayCoordMap.ASSUMPTIONS)
         json.put("flip_y", OverlayCoordMap.FLIP_Y)
+        json.put("box_rotation_clockwise", OverlayCoordMap.BOX_ROTATION_CLOCKWISE)
+        // 🔴 **박스에 실제로 건 회전각.** `render.preview_transform`이 영상의 회전을
+        //    증언하는 것과 같은 이유다 — 값 없이 코드만 보고 추론하다가 한 번 틀렸다
+        //    (알려진 이슈 67: "표시 경로가 방향 보정을 하지 않는다"는 서술이 실기기에서
+        //    거짓이었다. 영상은 서 있었고 누운 것은 박스뿐이었다).
+        //    ⚠ 상수(요청)가 아니라 **OverlaySmoother가 매핑을 돌리며 남긴 값**이다.
+        json.put(
+            "box_rotation_degrees",
+            facts.overlaySmoothing?.appliedBoxRotationDegrees
+                ?: OverlayCoordMap.BOX_ROTATION_NOT_APPLIED
+        )
+        json.put(
+            "box_rotation_note",
+            "🔴 **박스에 실제로 건 회전각.** has_camera_transform=true면 **0이 정상이다** — " +
+                "CameraX가 표시 방향을 처리하고 Preview와 ImageAnalysis가 같은 방향 기준 " +
+                "위에 있어 영상에도 박스에도 추가 회전이 필요 없다(render.preview_transform의 " +
+                "회전각도 같은 이유로 0이다). **실기기 판정이며**, 박스에 시계 90°를 걸었더니 " +
+                "영상은 바로 섰는데 박스만 시계 90° 어긋났다 — 건 만큼 어긋났으니 0이 옳다. " +
+                "⚠ **has_camera_transform=false 경로는 이 기기에서 밟히지 않았다** — 그쪽 " +
+                "각도와 box_rotation_clockwise의 방향은 **실기기 미검증**이다. " +
+                "${OverlayCoordMap.BOX_ROTATION_NOT_APPLIED}이면 매핑이 한 번도 " +
+                "돌지 않았다는 뜻이다(overlay_smoothing.run_facts.map_failed_frames와 함께 " +
+                "볼 것 — 90° 배수가 아닌 각도는 거부되고 거기서 세어진다). " +
+                "🔴 **좌표가 맞는지는 이 값 하나로 확정되지 않는다** — geometry_selfcheck는 " +
+                "자기 일관성까지만 본다. 값을 보려면 logcat의 '④ 박스 매핑 #k' 줄을 읽는다" +
+                "(런당 처음 몇 박스에 대해 원시 → 회전 후 → NDC 세 단계를 다 남긴다)."
+        )
         // 🔴 분석 치수(센서 공간) — 값을 지어내지 않는다. 분석 프레임이 없었으면 null이다.
         val analysis = facts.analysis
         if (analysis == null) {
@@ -3638,18 +3669,20 @@ object SessionWriter {
     /**
      * 🔴 **표시 경로가 실제로 건 회전과, 그것이 걸린 시점.**
      *
-     * ④ 오버레이의 박스는 `OverlayCoordMap`이 **회전 없는 센서 좌표**로 FBO NDC를 만들고,
-     * 표시 회전은 **present 정점에만** 걸린다 — 즉 회전은 오버레이가 이미 그려진 뒤에
-     * 걸리므로 **영상과 박스가 같은 행렬로 함께** 돈다. 두 축이 갈리지 않는다.
+     * 🔴 **여기 실리는 것은 영상(present 정점)의 회전 하나뿐이다.** ④ 박스의 회전은 다른
+     * 자리(`OverlayCoordMap`)에서 걸리고 `overlay.coordinate_map.box_rotation_degrees`에
+     * 따로 실린다 — **두 값이 다른 것이 정상이다.**
      *
-     * ⚠ 예전에는 이 회전이 **패스1 정점**에 걸렸고(오버레이는 그 뒤 FBO에 그려졌다) 그래서
-     * 두 축이 실제로 갈렸다. 이 블록은 **그 결함을 갈라낸 기록**이다 — A34 세로 실측에서
-     * `applied_rotation_degrees=0`인데 `last_info`의 `rotation_degrees=90`이었던 것이
-     * "회전각을 `targetRotation`에서 읽고 있다"는 원인을 가리켰다. 그래서 원값을 계속 싣는다.
+     * ⚠ `hasCameraTransform=true`면 **0이 정상**이다: CameraX가 표시 회전을 `texMatrix`에
+     * 이미 넣어 줘서 영상은 패스1 샘플링만으로 바로 선다. 여기서 또 돌리면 두 번 돈다.
+     *
+     * ⚠ 이 블록이 갈라낸 것이 그 사실이다 — 예전 빌드는 이 회전을 **패스1 정점**에 걸었고,
+     * 그 다음 빌드는 `rotationDegrees`를 present에 그대로 걸어 **바로 서 있던 영상을 90°
+     * 눕혔다**(A34 실측: `applied_rotation_degrees=90` + 육안). 원값 4개를 계속 싣는 이유다.
      *
      * 읽는 법:
-     * - `applied_rotation_degrees`가 `last_info`의 `rotation_degrees`와 다르면 **회전각
-     *   산출이 다시 틀어진 것**이다(둘은 같아야 한다).
+     * - `applied_rotation_degrees`는 `last_info`의 `has_camera_transform`이 true면 0,
+     *   false면 `rotation_degrees`와 같아야 한다. **어긋나면 산출이 다시 틀어진 것**이다.
      * - `apply_count`가 2 이상이면 **런 도중에 표시 축이 바뀌었다** — 그 런의 박스 위치를
      *   한 가지 기준으로 인용하지 말 것.
      * - `applied_at_recorded_frame`이 0 이상이면 **그 프레임에서 바뀌었다**는 뜻이고, 음수면
@@ -3668,15 +3701,18 @@ object SessionWriter {
         .put("last_info", facts.previewTransformNote)
         .put(
             "note",
-            "🔴 **표시 경로(present 정점 uPositionMatrix)가 실제로 건 회전이다.** 회전은 " +
-                "**마지막 패스 하나**에만 걸리고, ④ 오버레이 박스는 그보다 앞서 회전 전 " +
-                "FBO에 그려진다 — 그래서 **영상과 박스가 같은 행렬로 함께 돈다**(두 축이 " +
-                "갈리지 않는다). ⚠ 예전 빌드는 이 회전을 **패스1 정점**에 걸었고 오버레이는 " +
-                "그 뒤에 그려져 두 축이 갈렸다. 그 결함을 갈라낸 기록이 이 블록이다. " +
+            "🔴 **영상(present 정점 uPositionMatrix)에 건 회전이며, ④ 박스의 회전이 " +
+                "아니다.** 박스는 OverlayCoordMap이 따로 돌리고 그 각도는 " +
+                "overlay.coordinate_map.box_rotation_degrees에 실린다 — **두 값이 다른 것이 " +
+                "정상이다.** " +
+                "🔴 **has_camera_transform=true면 이 값은 0이 정상이다**: CameraX가 표시 " +
+                "회전을 SurfaceTexture의 texMatrix에 이미 넣어 줘서 영상은 패스1 샘플링만으로 " +
+                "바로 서고, 여기서 또 돌리면 두 번 돈다(A34에서 실제로 그렇게 돼서 바로 서 " +
+                "있던 영상이 90° 누웠다). 이 기계는 has_camera_transform=false 경로를 위해 " +
+                "남아 있다. " +
                 "⚠ camera_analysis_actual.rotation_degrees와 섞지 말 것: 그쪽은 " +
                 "③ 모델 입력을 세우는 회전이고 이쪽은 화면에 그리는 회전이다. " +
-                "**다만 두 값의 크기는 같아야 정상이다**(둘 다 CameraX의 rotationDegrees에서 " +
-                "온다). applied_rotation_degrees=" +
+                "applied_rotation_degrees=" +
                 "${PassthroughRenderer.PREVIEW_ROTATION_NOT_APPLIED}이면 한 번도 걸지 " +
                 "않았다는 뜻이고, applied_at_recorded_frame=" +
                 "${PassthroughRenderer.PREVIEW_ROTATION_APPLIED_WHILE_IDLE}이면 측정 중이 " +

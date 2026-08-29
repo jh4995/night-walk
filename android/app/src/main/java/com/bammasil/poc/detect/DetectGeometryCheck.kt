@@ -40,8 +40,11 @@ import com.bammasil.poc.gl.OverlayCoordMap
  * 5. **④ 센서 → NDC** — `(0,0,srcW,srcH)` → `(-1,-1,1,1)`([OverlayCoordMap]).
  *    🔴 위 넷은 ③ 안에서만 닫히고 **화면에 나가는 좌표를 확인하지 않는다** — 매핑의 스케일이나
  *    부호가 어긋나면 박스가 화면 어딘가에 **그럴듯하게** 그려지고 기계로는 아무것도 안 걸린다.
- *    ⚠ 이 검사가 확인하는 것도 **자기 일관성까지**다. [OverlayCoordMap.FLIP_Y]의 참·거짓은
- *    **눈으로만** 확인된다(그 파일의 KDoc이 이미 그렇게 적었다). 🔴 그리고 **호출부가 잘못된
+ *    ⚠ 이 검사가 확인하는 것도 **자기 일관성까지**다. [OverlayCoordMap.FLIP_Y]·
+ *    [OverlayCoordMap.BOX_ROTATION_CLOCKWISE]의 참·거짓은 **눈으로만** 확인된다.
+ *    🔴 **게다가 이 검사는 회전을 타지 않는다** — [OverlayCoordMap.ndcX]/`ndcY`를 직접
+ *    부르므로 ④의 실제 경로인 [OverlayCoordMap.mapBox](회전 포함)를 밟지 않는다. 회전 0°에
+ *    해당하는 자기 일관성만 본다는 뜻이다. 🔴 그리고 **호출부가 잘못된
  *    처리 해상도를 넘기는 실수도 잡지 못한다**(process 치수가 약분된다) — 그건
  *    `session.json`의 `overlay.coordinate_map`만이 관측한다.
  *
@@ -193,6 +196,12 @@ object DetectGeometryCheck {
                 //   기계 대조한다. 두 use case의 시야가 다르면 거기서만 보인다.
                 // 🔴 이 검사가 확인하는 것은 **자기 일관성까지**이고 FLIP_Y의 참·거짓이
                 //   아니다 — 그 값은 **눈으로만** 확인된다(OverlayCoordMap의 KDoc).
+                // 🔴 **회전도 타지 않는다.** ④의 실제 경로는 OverlayCoordMap.mapBox이고
+                //   그것이 DetectContract.Rotation.forwardBox로 축을 바꾸는데, 여기서는
+                //   ndcX/ndcY를 직접 불러 **회전 0°에 해당하는 부분만** 확인한다. 회전 축
+                //   대응 자체는 검사 3(박스 왕복)이 같은 forwardBox/inverseBox 표로 이미
+                //   보고 있으므로 사본 검사를 만들지 않는다 — 남는 미확인은 "그 표를 ④가
+                //   **어느 방향으로** 쓰는가"(BOX_ROTATION_CLOCKWISE)이고 그건 눈이 판정한다.
                 for (proc in PROCESS_SIZES) {
                     cases++
                     val pw = proc[0]

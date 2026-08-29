@@ -1,5 +1,7 @@
 package com.bammasil.poc.gl
 
+import android.util.Log
+import com.bammasil.poc.detect.DetectContract
 import com.bammasil.poc.detect.DetectOverlaySnapshot
 
 /**
@@ -214,6 +216,42 @@ class OverlaySmoother(
         private set
 
     /**
+     * 🔴 **박스에 실제로 건 회전각**([OverlayCoordMap.BOX_ROTATION_NOT_APPLIED]면 한 번도
+     * 안 걸었다). `session.json`의 `overlay.coordinate_map.box_rotation_degrees`가 이 값이다.
+     *
+     * 왜 남기는가: `render.preview_transform`이 **영상**의 회전을 증언하는 것과 같은 이유로,
+     * **박스**의 회전도 런이 스스로 증언해야 한다. 둘은 서로 다른 자리에서 걸리고
+     * (영상은 CameraX의 texMatrix, 박스는 여기) 이 기기에서는 앞의 것이 0이다 —
+     * 값 없이 코드만 보고 추론하다가 한 번 틀렸다(알려진 이슈 67).
+     *
+     * ⚠ [OverlayCoordMap.effectiveBoxRotationDegrees]를 **거친 뒤**의 값이다. 즉
+     * [OverlayCoordMap.BOX_ROTATION_CLOCKWISE]가 false면 콜백의 원값과 다르게 나온다.
+     */
+    var appliedBoxRotationDegrees = OverlayCoordMap.BOX_ROTATION_NOT_APPLIED
+        private set
+
+    /**
+     * 캐시된 회전. **프레임당 할당을 만들지 않기 위해** (각도, 치수)가 바뀔 때만 다시 만든다 —
+     * 정상 동작에서는 런당 한 번이다. null이면 아직 못 만들었거나 각도가 거부된 것이다.
+     */
+    private var rotation: DetectContract.Rotation? = null
+    private var rotationDegreesCached = Int.MIN_VALUE
+    private var rotationSrcWCached = 0
+    private var rotationSrcHCached = 0
+
+    /** [OverlayCoordMap.mapBox]의 출력 버퍼. **생성 시 한 번** 잡는다(핫패스 할당 금지). */
+    private val mapScratch = FloatArray(4)
+
+    /**
+     * 진단 로그용 **중간 단계(회전 후, NDC 이전)** 버퍼. 역시 생성 시 한 번 잡는다.
+     * 🔴 [OverlayCoordMap.mapBox]가 채워 준다 — 여기서 회전 식을 **다시 적지 않는다.**
+     */
+    private val forwardScratch = FloatArray(4)
+
+    /** 이 런에서 진단 로그를 낸 박스 수. [MAP_LOG_LIMIT]까지만 낸다. [reset]에서 내려간다. */
+    private var mapLogsEmitted = 0
+
+    /**
      * 🔴 **마지막으로 소비한 게시의 시각.** 연결·TTL 재충전을 **새 게시가 왔을 때만** 하기
      * 위한 유일한 상태다([NO_PUBLISH]면 아직 아무것도 소비하지 않았다).
      *
@@ -237,6 +275,72 @@ class OverlaySmoother(
      */
     private var publishesSeen = 0L
 
+    /**
+     * 🔴 **④ 좌표 사슬 한 줄 — 원시 → 회전 후 → NDC 세 단계를 다 남긴다.**
+     *
+     * 왜 세 단계인가: 한 단계만 남기면 **어느 자리에서 어긋났는지 못 가른다.** 회전이
+     * 틀렸는지, 정규화 치수가 틀렸는지, 아니면 상류가 준 박스 자체가 틀렸는지는 중간값을
+     * 나란히 놓아야 산수로 갈린다. `updatePreviewTransform`이 콜백 원값 4개를 다 남겨 뒀기
+     * 때문에 표시 회전 결함을 갈라낼 수 있었던 것과 **같은 이유**다.
+     *
+     * 🔴 **임시 코드가 아니다.** 좌표계 방향 결함이 이번이 세 번째이고, 세 번 다 값이 없어서
+     * 추론으로 잡으려다 라운드를 태웠다. 지우지 말 것.
+     *
+     * ⚠ 호출자가 [MAP_LOG_LIMIT]를 이미 검사한 뒤에 부른다 — 이 함수는 스스로 세지 않는다.
+     * ⚠ 문자열 조립·`String.format`의 할당은 **런당 [MAP_LOG_LIMIT]개**로 묶여 있다.
+     */
+    private fun logMapping(
+        snapshot: DetectOverlaySnapshot,
+        b: Int,
+        rot: DetectContract.Rotation,
+        processW: Int,
+        processH: Int,
+    ) {
+        Log.i(
+            TAG,
+            "④ 박스 매핑 #$mapLogsEmitted: " +
+                "src=(${snapshot.srcW}x${snapshot.srcH}) rot=${rot.degrees} " +
+                "clockwise=${OverlayCoordMap.BOX_ROTATION_CLOCKWISE}\n" +
+                "  raw=(${snapshot.boxes[b]}, ${snapshot.boxes[b + 1]}, " +
+                "${snapshot.boxes[b + 2]}, ${snapshot.boxes[b + 3]}) " +
+                "→ forward=(${forwardScratch[0]}, ${forwardScratch[1]}, " +
+                "${forwardScratch[2]}, ${forwardScratch[3]}) " +
+                "→ ndc=(${mapScratch[0]}, ${mapScratch[1]}, " +
+                "${mapScratch[2]}, ${mapScratch[3]})\n" +
+                "  process=(${processW}x$processH) " +
+                "rotated=(${rot.rotatedW}x${rot.rotatedH}) flip_y=${OverlayCoordMap.FLIP_Y}"
+        )
+    }
+
+    /**
+     * 이번 매핑에 쓸 [DetectContract.Rotation]. **(각도, 치수)가 바뀔 때만 새로 만든다** —
+     * 정상 동작에서는 런당 한 번이고, 그래서 게시를 소비하는 프레임에도 할당이 없다.
+     *
+     * 🔴 90° 배수가 아니면 [DetectContract.rotationOf]가 **null을 준다**(가장 가까운 배수로
+     * 근사하지 않는다 — 규약이 그것을 금지한다). 호출자는 그 프레임을 매핑 실패로 센다.
+     */
+    private fun ensureRotation(
+        previewRotationDegrees: Int,
+        srcW: Int,
+        srcH: Int,
+    ): DetectContract.Rotation? {
+        val degrees = OverlayCoordMap.effectiveBoxRotationDegrees(previewRotationDegrees)
+        val cached = rotation
+        if (cached != null &&
+            degrees == rotationDegreesCached &&
+            srcW == rotationSrcWCached &&
+            srcH == rotationSrcHCached
+        ) {
+            return cached
+        }
+        val made = DetectContract.rotationOf(degrees, srcW, srcH)
+        rotation = made
+        rotationDegreesCached = degrees
+        rotationSrcWCached = srcW
+        rotationSrcHCached = srcH
+        return made
+    }
+
     /** 런을 시작한다. **런 단위 상태를 전부 내린다**(남기면 남의 런 박스가 첫 프레임에 뜬다). */
     fun reset() {
         count = 0
@@ -249,6 +353,14 @@ class OverlaySmoother(
         pendingDiscarded = 0L
         droppedOverCap = 0L
         mapFailedFrames = 0L
+        appliedBoxRotationDegrees = OverlayCoordMap.BOX_ROTATION_NOT_APPLIED
+        // 🔴 진단 로그는 **런당** 처음 몇 개다. 여기서 안 내리면 앱 실행 첫 런에서만 찍히고
+        //    두 번째 런부터는 조용해진다 — 정작 다시 보고 싶은 것은 그때다.
+        //    ⚠ reset()은 PassthroughRenderer.resetRenderCounters()가 측정 시작 시 GL
+        //      스레드에서 부른다. 로그를 쓰는 곳도 GL 스레드라 경합이 없다.
+        mapLogsEmitted = 0
+        // ⚠ rotation 캐시는 지우지 않는다 — 각도·치수가 그대로면 같은 객체가 맞고, 바뀌면
+        //   아래 ensureRotation이 스스로 다시 만든다. 여기서 지우면 런 시작마다 할당이 는다.
         // ⚠ trackState·trackHistory·trackBornAtPublish는 지우지 않는다 — aliveCount=0이라
         //   전부 도달 불가이고, 태어나는 자리에서 셋 다 **무조건 다시 쓴다**(update 5단계).
         //   여기서 배열을 순회하면 런 시작마다 cap만큼의 일이 늘 뿐 얻는 것이 없다.
@@ -267,9 +379,20 @@ class OverlaySmoother(
      *
      * @param snapshot 지금 게시돼 있는 결과. null이면 아직 어떤 추론도 끝나지 않았다.
      * @param processW / [processH] FBO(처리 해상도) 치수. 0이면 매핑하지 않는다.
+     * @param previewRotationDegrees ④ 박스에 걸 회전각(`PassthroughRenderer`가 정한다).
+     *   🔴 `hasCameraTransform=true`면 **0이다** — CameraX가 표시 방향을 처리하고 Preview와
+     *   ImageAnalysis가 같은 방향 기준 위에 있어 추가 회전이 필요 없다(실기기 판정).
+     *   ⚠ 표시 회전(present 정점)과 **같은 조건으로 0이 되지만 뜻이 다른 값**이라 별도로
+     *   받는다. `hasCameraTransform=false` 경로에서 갈릴 수 있고, **그 경로는 실기기
+     *   미검증**이다.
      * @return 그릴 박스 수(= [count]). **0은 정상값이다.**
      */
-    fun update(snapshot: DetectOverlaySnapshot?, processW: Int, processH: Int): Int {
+    fun update(
+        snapshot: DetectOverlaySnapshot?,
+        processW: Int,
+        processH: Int,
+        previewRotationDegrees: Int,
+    ): Int {
         // 1) 측정을 NDC로 옮긴다. 🔴 **새 게시일 때만** 한다 — 같은 스냅샷을 다시 소비하면
         //    TTL이 영원히 재충전되고 게시가 끊긴 뒤에도 낡은 박스가 무한히 남는다.
         //    🔴 canMap이 false면 값을 지어내지 않고, **소비 표시도 하지 않는다**(FBO가 아직
@@ -282,9 +405,15 @@ class OverlaySmoother(
         var consumedPublish = false
         val isNewPublish = snapshot != null && snapshot.publishedNs != lastConsumedPublishedNs
         if (snapshot != null && isNewPublish) {
-            if (OverlayCoordMap.canMap(snapshot.srcW, snapshot.srcH, processW, processH)) {
+            // 🔴 회전까지 갖춰져야 매핑이다. 각도가 90° 배수가 아니면 ensureRotation이
+            //    null을 주고, 그러면 **값을 지어내지 않고** 아래에서 실패로 센다.
+            val rot = ensureRotation(previewRotationDegrees, snapshot.srcW, snapshot.srcH)
+            if (rot != null &&
+                OverlayCoordMap.canMap(snapshot.srcW, snapshot.srcH, processW, processH)
+            ) {
                 lastConsumedPublishedNs = snapshot.publishedNs
                 consumedPublish = true
+                appliedBoxRotationDegrees = rot.degrees
                 var i = 0
                 while (i < snapshot.count) {
                     if (measCount >= cap) {
@@ -294,14 +423,31 @@ class OverlaySmoother(
                     }
                     val b = i * 4
                     val c = i * 3
-                    measX1[measCount] =
-                        OverlayCoordMap.ndcX(snapshot.boxes[b], snapshot.srcW, processW)
-                    measY1[measCount] =
-                        OverlayCoordMap.ndcY(snapshot.boxes[b + 1], snapshot.srcH, processH)
-                    measX2[measCount] =
-                        OverlayCoordMap.ndcX(snapshot.boxes[b + 2], snapshot.srcW, processW)
-                    measY2[measCount] =
-                        OverlayCoordMap.ndcY(snapshot.boxes[b + 3], snapshot.srcH, processH)
+                    // 🔴 x와 y가 **함께** 변환된다(회전이 두 축을 섞는다) — 그래서 축별
+                    //    독립 호출(ndcX/ndcY)을 쓰지 않고 박스 하나를 통째로 넘긴다.
+                    //    출력 버퍼는 미리 잡아 둔 것이라 할당이 없다.
+                    // 🔴 **상한을 먼저 본다** — 넘어선 뒤에는 중간 단계 복사도, 문자열
+                    //    조립도 하지 않는다(핫패스 할당 0).
+                    val logThis = mapLogsEmitted < MAP_LOG_LIMIT
+                    OverlayCoordMap.mapBox(
+                        snapshot.boxes[b],
+                        snapshot.boxes[b + 1],
+                        snapshot.boxes[b + 2],
+                        snapshot.boxes[b + 3],
+                        rot,
+                        processW,
+                        processH,
+                        mapScratch,
+                        if (logThis) forwardScratch else null,
+                    )
+                    if (logThis) {
+                        mapLogsEmitted++
+                        logMapping(snapshot, b, rot, processW, processH)
+                    }
+                    measX1[measCount] = mapScratch[0]
+                    measY1[measCount] = mapScratch[1]
+                    measX2[measCount] = mapScratch[2]
+                    measY2[measCount] = mapScratch[3]
                     measR[measCount] = snapshot.colors[c]
                     measG[measCount] = snapshot.colors[c + 1]
                     measB[measCount] = snapshot.colors[c + 2]
@@ -311,6 +457,8 @@ class OverlaySmoother(
                 }
             } else {
                 // 🔴 값을 지어내지 않고 사실만 센다. 그 프레임은 박스 0개다.
+                //    ⚠ 치수가 없어서일 수도, 회전각이 90° 배수가 아니어서일 수도 있다 —
+                //      뒤쪽이면 appliedBoxRotationDegrees가 갱신되지 않아 로그에서 갈린다.
                 mapFailedFrames++
             }
         }
@@ -538,6 +686,22 @@ class OverlaySmoother(
     }
 
     private companion object {
+        private const val TAG = "OverlaySmoother"
+
+        /**
+         * 🔴 **진단 로그를 낼 박스 수의 상한**(런당). 임시 코드가 아니라 **남겨 두는 코드**다 —
+         * 같은 부류(좌표계 방향) 결함이 이번이 **세 번째**이고, 그때마다 추론으로 잡으려다
+         * 라운드를 태웠다. 값을 남겨 두면 산수로 끝난다.
+         *
+         * 왜 상한이 있는가: 이 로그는 ④ H칸(`stage_h_ms`) **안**에서 나간다. 게시마다 계속
+         * 찍으면 그 열이 로그 비용으로 오염되고 logcat도 넘친다. 처음 몇 개면 축을 가르기에
+         * 충분하다 — 방향 결함은 **첫 박스부터** 틀려 있지 나중에 생기지 않는다.
+         *
+         * ⚠ 상한 검사는 **문자열을 만들기 전에** 한다([update]) — 넘어선 뒤에는 인자 조립도
+         * 하지 않는다. 프레임당 할당 0 규약이 그것을 요구한다.
+         */
+        const val MAP_LOG_LIMIT = 8
+
         /** [update]의 최선 IoU 초기값. 0보다 작아야 "겹침 0인 후보"도 best로 잡힌다. */
         const val OVERLAY_NO_MATCH = -1f
 
@@ -590,6 +754,15 @@ class OverlaySmootherFacts(
     val pendingDiscarded: Long,
     /** 상한 초과로 **세고 버린** 박스 수(GL 스레드 쪽). 조용히 버리지 않는다. */
     val droppedOverCap: Long,
-    /** 🔴 좌표를 만들 치수가 없어 **한 박스도 매핑하지 못한** 프레임 수. */
+    /**
+     * 🔴 좌표를 만들 치수가 없거나 **회전각이 90° 배수가 아니어서** 한 박스도 매핑하지 못한
+     * 프레임 수.
+     */
     val mapFailedFrames: Long,
+    /**
+     * 🔴 **박스에 실제로 건 회전각**([OverlayCoordMap.BOX_ROTATION_NOT_APPLIED]면 한 번도
+     * 안 걸었다). 영상 쪽 회전은 `render.preview_transform`이 따로 증언한다 — **다른 자리에서
+     * 걸리는 다른 값**이고, 이 기기에서는 그쪽이 0이다.
+     */
+    val appliedBoxRotationDegrees: Int,
 )
