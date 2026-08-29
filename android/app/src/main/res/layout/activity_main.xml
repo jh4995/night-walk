@@ -63,6 +63,55 @@
             android:id="@+id/arm_spinner"
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="#CCCCCC"
+            android:textSize="12sp"
+            android:text="@string/display_mode_label" />
+
+        <Spinner
+            android:id="@+id/display_mode_spinner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <LinearLayout
+            android:id="@+id/cardboard_tuning_panel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/cardboard_fov_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#CCCCCC"
+                android:textSize="12sp" />
+
+            <SeekBar
+                android:id="@+id/cardboard_fov_seek"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="40"
+                android:progress="10" />
+
+            <TextView
+                android:id="@+id/cardboard_alignment_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#CCCCCC"
+                android:textSize="12sp" />
+
+            <SeekBar
+                android:id="@+id/cardboard_alignment_seek"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="120"
+                android:progress="44" />
+        </LinearLayout>
     </LinearLayout>
 
     <!--

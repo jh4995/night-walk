@@ -142,6 +142,10 @@ val detectModelClasses: String = (detectMeta?.get("classes") as? Map<*, *>)
 val detectDeclaredSource: String =
     if (detectMeta != null) detectMetadataRelPath else "unavailable"
 
+// Package the metadata-declared model as an APK asset. DetectRuntime installs this asset into
+// the writable app-specific models directory before ONNX Runtime opens it.
+val detectModelAssetDir = File(repoDir.parentFile, detectModelDir)
+
 android {
     namespace = "com.bammasil.poc"
 
@@ -150,6 +154,8 @@ android {
     // compileSdkMinor 는 AGP 8.13에서 제공됨을 gradle-api 8.13.2 심볼로 확인했다.
     compileSdk = 36
     compileSdkMinor = 1
+
+    sourceSets.getByName("main").assets.srcDir(detectModelAssetDir)
 
     defaultConfig {
         applicationId = "com.bammasil.poc"

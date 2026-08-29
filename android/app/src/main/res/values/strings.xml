@@ -12,4 +12,7 @@
     -->
     <string name="hud_hide">정보 숨기기</string>
     <string name="hud_show">정보 보기</string>
+    <string name="display_mode_label">표시 모드</string>
+    <string name="cardboard_fov_format">Cardboard 화면 크기: %1$d%% (작을수록 넓게 보임)</string>
+    <string name="cardboard_alignment_format">좌우 상 정렬: %1$+.1f%% (− 안쪽 / + 바깥쪽)</string>
 </resources>

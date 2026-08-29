@@ -5,6 +5,7 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtLoggingLevel
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.TensorInfo
+import android.content.res.AssetManager
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
@@ -39,6 +40,8 @@ import java.util.concurrent.Executors
  * 모델 파일 sha256도 10MB를 읽으므로 **UI/GL 스레드에 올리면 안 된다.**
  */
 class DetectRuntime(
+    /** APK에 동봉된 모델을 최초 사용 시 앱 전용 모델 디렉터리로 복사하는 데 사용한다. */
+    private val assets: AssetManager,
     /** `getExternalFilesDir(null)`. null이면 모델을 찾을 수 없다(그것도 실패다). */
     private val externalFilesDir: File?,
     /** 프로파일 JSON을 쓸 디렉토리(앱 cacheDir). 쓰기 불가면 프로파일 세션 생성이 실패한다. */
@@ -154,14 +157,16 @@ class DetectRuntime(
             ?: return failed(arm, "getExternalFilesDir(null)이 null이다 — 모델을 찾을 수 없다")
         val modelFile = File(File(dir, DetectContract.MODELS_SUBDIR), DetectContract.declaredFileName)
         if (!modelFile.isFile) {
-            return failed(
-                arm,
-                "모델 파일이 없다: ${modelFile.absolutePath}\n" +
-                    // 위와 같은 이유로 디렉토리도 BuildConfig에서 온다(사본을 만들지 않는다).
-                    "adb push ${DetectContract.expectedModelDir}/" +
-                    "${DetectContract.declaredFileName} " +
-                    "<외부 파일 디렉토리>/${DetectContract.MODELS_SUBDIR}/ 를 먼저 할 것",
-            )
+            try {
+                installBundledModel(modelFile)
+            } catch (t: Throwable) {
+                return failed(
+                    arm,
+                    "모델 파일을 찾지 못했고 APK 내장 모델 설치도 실패했다: " +
+                        "${modelFile.absolutePath}\n" +
+                        "${t.javaClass.simpleName}: ${t.message}",
+                )
+            }
         }
 
         // 2) 🔴 sha256을 **앱이 파일 바이트에서 직접** 계산해 선언값과 대조한다.
@@ -838,6 +843,32 @@ class DetectRuntime(
     }
 
     // ── 보조 ─────────────────────────────────────────────────────────────
+
+    /**
+     * APK asset은 ORT에 파일 경로로 넘길 수 없으므로 앱 전용 외부 디렉터리에 원자적으로 설치한다.
+     * 이어지는 [sha256Of] 검증이 복사된 바이트를 metadata 선언값과 다시 대조한다.
+     */
+    private fun installBundledModel(target: File) {
+        val parent = target.parentFile
+            ?: throw IllegalStateException("모델 대상 디렉터리가 없다: ${target.absolutePath}")
+        if (!parent.isDirectory && !parent.mkdirs()) {
+            throw IllegalStateException("모델 디렉터리를 만들 수 없다: ${parent.absolutePath}")
+        }
+
+        val temporary = File(parent, ".${target.name}.installing")
+        try {
+            assets.open(target.name, AssetManager.ACCESS_STREAMING).use { input ->
+                temporary.outputStream().buffered().use { output -> input.copyTo(output) }
+            }
+            if (!temporary.renameTo(target)) {
+                temporary.copyTo(target, overwrite = true)
+                temporary.delete()
+            }
+        } catch (t: Throwable) {
+            temporary.delete()
+            throw t
+        }
+    }
 
     private fun sha256Of(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")

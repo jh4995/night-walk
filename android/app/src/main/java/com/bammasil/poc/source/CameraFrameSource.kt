@@ -65,6 +65,9 @@ class CameraFrameSource(
     private var preview: Preview? = null
     private var analysis: ImageAnalysis? = null
 
+    @Volatile
+    private var targetRotation: Int = android.view.Surface.ROTATION_0
+
     /**
      * 분석 콜백 전용 스레드. **탐지 추론 스레드와 다른 스레드다** — 추론이 도는 동안에도
      * 이 스레드가 프레임을 받아야 `skipped_while_busy`가 실제로 세어진다(둘이 같은 스레드면
@@ -94,6 +97,7 @@ class CameraFrameSource(
                     .build()
                 val newPreview = Preview.Builder()
                     .setResolutionSelector(resolutionSelector)
+                    .setTargetRotation(targetRotation)
                     // 요청값이다. 기기가 이걸 준다는 보장은 없으므로 받은 값은 따로 기록한다.
                     .setTargetFrameRate(Range(request.fps, request.fps))
                     .build()
@@ -153,6 +157,13 @@ class CameraFrameSource(
         analysisConfig = null
     }
 
+    override fun updateTargetRotation(rotation: Int) {
+        targetRotation = rotation
+        preview?.targetRotation = rotation
+        analysis?.targetRotation = rotation
+        Log.i(TAG, "Camera targetRotation updated: $rotation")
+    }
+
     /**
      * ③ 탐지용 `ImageAnalysis`. 🔴 **포맷·백프레셔·close 세 가지가 이 함수의 전부다.**
      *
@@ -167,6 +178,7 @@ class CameraFrameSource(
         analysisExecutor = executor
         val useCase = ImageAnalysis.Builder()
             .setResolutionSelector(resolutionSelector)
+            .setTargetRotation(targetRotation)
             // 🔴 큐에 쌓아 처리하면 프레임타임이 실제보다 좋아 보이고 지연만 늘어난다 —
             //    실시간 보행 보조에서 의미 있는 것은 최신 프레임뿐이다.
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
@@ -233,7 +245,18 @@ class CameraFrameSource(
             },
         )
         Log.i(TAG, "Surface 제공: ${resolution.width}x${resolution.height} fps=$range")
+        surfaceRequest.setTransformationInfoListener(executor) { info ->
+            target.updatePreviewTransform(
+                PreviewTransform(
+                    rotationDegrees = info.rotationDegrees,
+                    targetRotation = info.targetRotation,
+                    hasCameraTransform = info.hasCameraTransform(),
+                    mirroring = info.isMirroring,
+                )
+            )
+        }
         surfaceRequest.provideSurface(surface, executor) { result ->
+            surfaceRequest.clearTransformationInfoListener()
             target.releaseSurface(surface, result.resultCode)
         }
     }

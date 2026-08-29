@@ -16,11 +16,13 @@ import com.bammasil.poc.log.CaptureClockVerdict
 import com.bammasil.poc.log.ClockProbeSample
 import com.bammasil.poc.log.FrameLogRecorder
 import com.bammasil.poc.source.FrameTarget
+import com.bammasil.poc.source.PreviewTransform
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.roundToInt
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
@@ -330,6 +332,12 @@ class PassthroughRenderer(
     private var arm: RenderArm = RenderArm.DEFAULT
 
     @Volatile
+    private var displayMode: DisplayMode = DisplayMode.DEFAULT
+
+    private var cardboardImageScale = DEFAULT_CARDBOARD_IMAGE_SCALE
+    private var cardboardEyeOffset = DEFAULT_CARDBOARD_EYE_OFFSET
+
+    @Volatile
     private var surfaceTexture: SurfaceTexture? = null
 
     private var cameraSurface: Surface? = null
@@ -338,6 +346,9 @@ class PassthroughRenderer(
 
     /** 패스1용(OES 샘플러). 패스스루 arm도 이것 하나만 쓴다. */
     private var oesProgram: QuadProgram? = null
+
+    private var cardboardOesProgram: QuadProgram? = null
+    private var cardboard2dProgram: QuadProgram? = null
 
     /** 패스2(복사)·패스3(표시) 공용. */
     private var blitProgram: QuadProgram? = null
@@ -455,6 +466,16 @@ class PassthroughRenderer(
     private val gpuTimer = GpuTimerRing(recorder)
 
     private val texMatrix = FloatArray(16)
+    private val positionMatrix = FloatArray(16)
+
+    @Volatile
+    private var requestedPreviewRotationDegrees = 0
+
+    @Volatile
+    private var requestedPreviewMirror = false
+
+    private var appliedPreviewRotationDegrees = Int.MIN_VALUE
+    private var appliedPreviewMirror = false
     private val vertexBuffer: FloatBuffer = ByteBuffer
         .allocateDirect(VERTEX_DATA.size * 4)
         .order(ByteOrder.nativeOrder())
@@ -476,6 +497,7 @@ class PassthroughRenderer(
 
     init {
         Matrix.setIdentityM(texMatrix, 0)
+        Matrix.setIdentityM(positionMatrix, 0)
     }
 
     // ── GLSurfaceView.Renderer ────────────────────────────────────────────
@@ -493,6 +515,16 @@ class PassthroughRenderer(
         )
         oesProgram = buildProgram(VERTEX_SHADER_OES, FRAGMENT_SHADER_OES, PROGRAM_LABEL_OES)
         blitProgram = buildProgram(VERTEX_SHADER_2D, FRAGMENT_SHADER_BLIT, PROGRAM_LABEL_BLIT)
+        cardboardOesProgram = buildProgram(
+            VERTEX_SHADER_OES,
+            FRAGMENT_SHADER_CARDBOARD_OES,
+            PROGRAM_LABEL_CARDBOARD_OES,
+        )
+        cardboard2dProgram = buildProgram(
+            VERTEX_SHADER_2D,
+            FRAGMENT_SHADER_CARDBOARD_2D,
+            PROGRAM_LABEL_CARDBOARD_2D,
+        )
         gammaProgram = buildProgram(VERTEX_SHADER_2D, FRAGMENT_SHADER_GAMMA, PROGRAM_LABEL_GAMMA)
         // ② 컴퓨트 arm 3종. 컴퓨트를 못 쓰는 컨텍스트면 각 Stage가 스스로 꺼지고 이유를 남긴다.
         // ⚠ 지금 고른 arm과 무관하게 셋 다 준비한다 — arm 전환이 GL 스레드 이벤트라
@@ -732,6 +764,20 @@ class PassthroughRenderer(
         surface.release()
     }
 
+    override fun updatePreviewTransform(transform: PreviewTransform) {
+        requestedPreviewRotationDegrees = if (transform.hasCameraTransform) {
+            when (transform.targetRotation) {
+                Surface.ROTATION_90 -> 90
+                Surface.ROTATION_180 -> 180
+                Surface.ROTATION_270 -> 270
+                else -> 0
+            }
+        } else {
+            transform.rotationDegrees
+        }
+        requestedPreviewMirror = transform.mirroring
+    }
+
     // ── arm 전환 (GL 스레드에서 부른다: glView.queueEvent) ────────────────
 
     /**
@@ -769,6 +815,21 @@ class PassthroughRenderer(
     // ── 측정 부수 정보 ───────────────────────────────────────────────────
 
     /** GL 스레드에서 부른다(표본을 소유한 스레드가 GL 스레드다). */
+    fun setDisplayMode(next: DisplayMode) {
+        displayMode = next
+        if (surfaceWidth > 0 && surfaceHeight > 0) {
+            GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
+        }
+    }
+
+    fun setCardboardTuning(imageScale: Float, eyeOffset: Float) {
+        cardboardImageScale = imageScale.coerceIn(MIN_CARDBOARD_IMAGE_SCALE, 1f)
+        cardboardEyeOffset = eyeOffset.coerceIn(
+            -MAX_CARDBOARD_EYE_OFFSET,
+            MAX_CARDBOARD_EYE_OFFSET,
+        )
+    }
+
     fun clockVerdict(): CaptureClockVerdict = CaptureClockProbe.resolve(probeSamples.toList())
 
     /** 측정 시작 시 GL 스레드에서 부른다. */
@@ -949,7 +1010,7 @@ class PassthroughRenderer(
         // 타일 기반 GPU(Mali-G68)에서 clear를 생략하면 타일 버퍼를 이전 내용으로 채워 넣는
         // load 비용이 생긴다. 화면 전체를 덮는 quad라도 clear를 부르는 쪽이 싸다.
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        drawQuad(oes, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
+        presentTexture(oes, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
     }
 
     /**
@@ -1009,7 +1070,7 @@ class PassthroughRenderer(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
+        presentTexture(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
         if (timing) gpuTimer.endPass()
     }
 
@@ -1147,7 +1208,7 @@ class PassthroughRenderer(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
+        presentTexture(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
         if (timing) gpuTimer.endPass()
     }
 
@@ -1245,7 +1306,7 @@ class PassthroughRenderer(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[0])
+        presentTexture(present, GLES20.GL_TEXTURE_2D, fboTextures[0])
         if (timing) gpuTimer.endPass()
     }
 
@@ -1379,7 +1440,7 @@ class PassthroughRenderer(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[0])
+        presentTexture(present, GLES20.GL_TEXTURE_2D, fboTextures[0])
         if (timing) gpuTimer.endPass()
     }
 
@@ -1495,7 +1556,7 @@ class PassthroughRenderer(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
+        presentTexture(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
         if (timing) gpuTimer.endPass()
     }
 
@@ -1596,7 +1657,7 @@ class PassthroughRenderer(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
+        presentTexture(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
         if (timing) gpuTimer.endPass()
     }
 
@@ -1677,7 +1738,7 @@ class PassthroughRenderer(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[0])
+        presentTexture(present, GLES20.GL_TEXTURE_2D, fboTextures[0])
         if (timing) gpuTimer.endPass()
     }
 
@@ -1763,18 +1824,92 @@ class PassthroughRenderer(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        drawQuad(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
+        presentTexture(present, GLES20.GL_TEXTURE_2D, fboTextures[1])
         if (timing) gpuTimer.endPass()
     }
 
     /** 프레임당 객체를 만들지 않는다 — 인자는 전부 원시형이고 프로그램은 미리 만들어 둔다. */
+    private fun presentTexture(program: QuadProgram, textureTarget: Int, textureId: Int) {
+        if (displayMode == DisplayMode.NORMAL) {
+            drawQuad(program, textureTarget, textureId)
+            return
+        }
+
+        val leftWidth = surfaceWidth / 2
+        val rightWidth = surfaceWidth - leftWidth
+        val eyeProgram = if (textureTarget == GLES11Ext.GL_TEXTURE_EXTERNAL_OES) {
+            cardboardOesProgram
+        } else {
+            cardboard2dProgram
+        } ?: program
+        drawCardboardEye(0, leftWidth, -1, eyeProgram, textureTarget, textureId)
+        drawCardboardEye(leftWidth, rightWidth, 1, eyeProgram, textureTarget, textureId)
+    }
+
+    private fun drawCardboardEye(
+        eyeLeft: Int,
+        eyeWidth: Int,
+        horizontalDirection: Int,
+        program: QuadProgram,
+        textureTarget: Int,
+        textureId: Int,
+    ) {
+        val sourceAspect = if (processWidth > 0 && processHeight > 0) {
+            processWidth.toFloat() / processHeight.toFloat()
+        } else {
+            16f / 9f
+        }
+        val maxWidth = eyeWidth * cardboardImageScale
+        val maxHeight = surfaceHeight * cardboardImageScale
+        var contentWidth = maxWidth
+        var contentHeight = contentWidth / sourceAspect
+        if (contentHeight > maxHeight) {
+            contentHeight = maxHeight
+            contentWidth = contentHeight * sourceAspect
+        }
+
+        val offsetPx = eyeWidth * cardboardEyeOffset * horizontalDirection
+        val viewportX = (
+            eyeLeft + (eyeWidth - contentWidth) * 0.5f + offsetPx
+        ).roundToInt()
+        val viewportY = ((surfaceHeight - contentHeight) * 0.5f).roundToInt()
+        GLES20.glViewport(
+            viewportX,
+            viewportY,
+            contentWidth.roundToInt().coerceAtLeast(1),
+            contentHeight.roundToInt().coerceAtLeast(1),
+        )
+        drawQuad(program, textureTarget, textureId)
+    }
+
+    private fun updatePositionMatrixIfNeeded() {
+        val rotation = requestedPreviewRotationDegrees
+        val mirror = requestedPreviewMirror
+        if (rotation == appliedPreviewRotationDegrees && mirror == appliedPreviewMirror) return
+
+        Matrix.setIdentityM(positionMatrix, 0)
+        if (mirror) Matrix.scaleM(positionMatrix, 0, -1f, 1f, 1f)
+        if (rotation != 0) Matrix.rotateM(
+            positionMatrix, 0, rotation.toFloat(), 0f, 0f, 1f
+        )
+        appliedPreviewRotationDegrees = rotation
+        appliedPreviewMirror = mirror
+    }
+
     private fun drawQuad(program: QuadProgram, textureTarget: Int, textureId: Int) {
         GLES20.glUseProgram(program.handle)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(textureTarget, textureId)
         GLES20.glUniform1i(program.uTexture, 0)
+        if (program.uPositionMatrix >= 0) {
+            updatePositionMatrixIfNeeded()
+            GLES20.glUniformMatrix4fv(program.uPositionMatrix, 1, false, positionMatrix, 0)
+        }
         if (program.uTexMatrix >= 0) {
             GLES20.glUniformMatrix4fv(program.uTexMatrix, 1, false, texMatrix, 0)
+        }
+        if (program.uLensDistortion >= 0) {
+            GLES20.glUniform1f(program.uLensDistortion, CARDBOARD_LENS_DISTORTION)
         }
         if (program.uGamma >= 0) {
             // 상수로 박지 않고 uniform으로 넣는다(INTERFACES.md §B-5 요청). 실제로 쓴 값은
@@ -1946,6 +2081,8 @@ class PassthroughRenderer(
             oesTextureId = 0
         }
         deleteProgram(oesProgram)
+        deleteProgram(cardboardOesProgram)
+        deleteProgram(cardboard2dProgram)
         deleteProgram(blitProgram)
         deleteProgram(gammaProgram)
         deleteProgram(dragoApplyProgram)
@@ -1956,6 +2093,8 @@ class PassthroughRenderer(
         deleteProgram(fusedApplyProgram)
         deleteProgram(bilateralProgram)
         oesProgram = null
+        cardboardOesProgram = null
+        cardboard2dProgram = null
         blitProgram = null
         gammaProgram = null
         dragoApplyProgram = null
@@ -2021,6 +2160,8 @@ class PassthroughRenderer(
             aPosition = GLES20.glGetAttribLocation(handle, "aPosition"),
             aTexCoord = GLES20.glGetAttribLocation(handle, "aTexCoord"),
             uTexture = GLES20.glGetUniformLocation(handle, "uTexture"),
+            uPositionMatrix = GLES20.glGetUniformLocation(handle, "uPositionMatrix"),
+            uLensDistortion = GLES20.glGetUniformLocation(handle, "uLensDistortion"),
             // 없는 uniform은 -1이 온다. 그 자체가 "이 프로그램에는 없다"는 뜻이라 따로
             // 플래그를 두지 않는다.
             uTexMatrix = GLES20.glGetUniformLocation(handle, "uTexMatrix"),
@@ -2083,6 +2224,8 @@ class PassthroughRenderer(
         val aPosition: Int,
         val aTexCoord: Int,
         val uTexture: Int,
+        val uPositionMatrix: Int,
+        val uLensDistortion: Int,
         /** 이 프로그램에 없으면 -1. */
         val uTexMatrix: Int,
         /** 이 프로그램에 없으면 -1. */
@@ -2119,10 +2262,18 @@ class PassthroughRenderer(
         /** FBO_A(패스1 출력) + FBO_B(패스2 출력). ②가 stateless라 2장이면 충분하다. */
         private const val FBO_COUNT = 2
 
+        private const val DEFAULT_CARDBOARD_IMAGE_SCALE = 0.90f
+        private const val DEFAULT_CARDBOARD_EYE_OFFSET = -0.08f
+        private const val MIN_CARDBOARD_IMAGE_SCALE = 0.60f
+        private const val MAX_CARDBOARD_EYE_OFFSET = 0.30f
+        private const val CARDBOARD_LENS_DISTORTION = 0.12f
+
         // 프로그램 라벨. logcat 한 줄과 `session.json`의 실패 원문을 같은 이름으로 잇는다.
         // 값은 `RenderArm`의 패스 이름 규약(`shaderSourcesByPass`의 키)과 같은 표기다.
         private const val PROGRAM_LABEL_OES = "oes_to_fbo_a"
         private const val PROGRAM_LABEL_BLIT = "blit_present"
+        private const val PROGRAM_LABEL_CARDBOARD_OES = "cardboard_lite_oes"
+        private const val PROGRAM_LABEL_CARDBOARD_2D = "cardboard_lite_2d"
         private const val PROGRAM_LABEL_GAMMA = "gamma_only_apply"
         private const val PROGRAM_LABEL_DRAGO_APPLY = "stage2_drago_apply"
         private const val PROGRAM_LABEL_CLAHE_APPLY = "stage2_clahe_apply"
@@ -2156,10 +2307,11 @@ class PassthroughRenderer(
         private val VERTEX_SHADER_OES = """
             attribute vec4 aPosition;
             attribute vec2 aTexCoord;
+            uniform mat4 uPositionMatrix;
             uniform mat4 uTexMatrix;
             varying vec2 vTexCoord;
             void main() {
-                gl_Position = aPosition;
+                gl_Position = uPositionMatrix * aPosition;
                 vTexCoord = (uTexMatrix * vec4(aTexCoord, 0.0, 1.0)).xy;
             }
         """.trimIndent()
@@ -2172,6 +2324,41 @@ class PassthroughRenderer(
             uniform samplerExternalOES uTexture;
             void main() {
                 gl_FragColor = texture2D(uTexture, vTexCoord);
+            }
+        """.trimIndent()
+
+        private val FRAGMENT_SHADER_CARDBOARD_OES = """
+            #extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            varying vec2 vTexCoord;
+            uniform samplerExternalOES uTexture;
+            uniform float uLensDistortion;
+            void main() {
+                vec2 p = (vTexCoord - 0.5) * 2.0;
+                float r2 = dot(p, p);
+                vec2 uv = 0.5 + 0.5 * p * (1.0 + uLensDistortion * r2);
+                if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+                    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                } else {
+                    gl_FragColor = texture2D(uTexture, uv);
+                }
+            }
+        """.trimIndent()
+
+        private val FRAGMENT_SHADER_CARDBOARD_2D = """
+            precision mediump float;
+            varying vec2 vTexCoord;
+            uniform sampler2D uTexture;
+            uniform float uLensDistortion;
+            void main() {
+                vec2 p = (vTexCoord - 0.5) * 2.0;
+                float r2 = dot(p, p);
+                vec2 uv = 0.5 + 0.5 * p * (1.0 + uLensDistortion * r2);
+                if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+                    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                } else {
+                    gl_FragColor = texture2D(uTexture, uv);
+                }
             }
         """.trimIndent()
 
