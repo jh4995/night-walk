@@ -46,6 +46,9 @@ interface FrameSource {
         onError: (String) -> Unit,
     )
 
+    /** Update CameraX use-case orientation after the Activity changes display orientation. */
+    fun updateTargetRotation(rotation: Int)
+
     fun stop()
 }
 
@@ -122,6 +125,16 @@ interface FrameTarget {
     /** 프레임을 받을 Surface. GL 텍스처가 아직 없으면 **null**을 돌려준다. */
     fun acquireSurface(width: Int, height: Int): Surface?
 
+    /** CameraX preview orientation metadata for custom OpenGL surface providers. */
+    fun updatePreviewTransform(transform: PreviewTransform)
+
     /** 소스가 Surface 사용을 끝냈을 때. [resultCode]는 소스별 결과 코드(진단용). */
     fun releaseSurface(surface: Surface, resultCode: Int)
 }
+
+data class PreviewTransform(
+    val rotationDegrees: Int,
+    val targetRotation: Int,
+    val hasCameraTransform: Boolean,
+    val mirroring: Boolean,
+)

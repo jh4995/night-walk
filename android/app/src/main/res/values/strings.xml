@@ -33,6 +33,9 @@
     -->
     <string name="hud_hide">정보 숨기기</string>
     <string name="hud_show">정보 보기</string>
+    <string name="display_mode_label">표시 모드</string>
+    <string name="cardboard_fov_format">Cardboard 화면 크기: %1$d%% (작을수록 넓게 보임)</string>
+    <string name="cardboard_alignment_format">좌우 상 정렬: %1$+.1f%% (− 안쪽 / + 바깥쪽)</string>
     <!--
       사용자 테스트용 on/off. ON = ①②③④가 다 든 통합 arm, OFF = passthrough.
       🔴 arm 스피너를 대체하지 않는다 — 이 버튼은 스피너의 리모컨이다.

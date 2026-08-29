@@ -3,6 +3,7 @@ package com.bammasil.poc.log
 import com.bammasil.poc.gl.ColorTransformCensus
 import com.bammasil.poc.gl.DragoClaheChainStage
 import com.bammasil.poc.gl.DragoClaheFusedStage
+import com.bammasil.poc.gl.DisplayMode
 import com.bammasil.poc.gl.GlCapabilities
 import com.bammasil.poc.gl.GlCapabilitiesProbe
 import com.bammasil.poc.gl.GpuTimerReport
@@ -55,6 +56,9 @@ class SessionFacts(
     val hudInfoHidden: Boolean,
     /** **측정 시작 시점에 잠근 arm.** 스피너의 현재 값이 아니다. */
     val arm: RenderArm,
+    val displayMode: DisplayMode,
+    val cardboardImageScale: Float,
+    val cardboardEyeOffset: Float,
     val request: FrameRequest,
     val negotiated: NegotiatedConfig?,
     /**
@@ -441,6 +445,14 @@ object SessionWriter {
         }
         root.put("pipeline_stages", stages)
         root.put("render_arm", facts.arm.id)
+        root.put("display_mode", facts.displayMode.id)
+        root.put(
+            "cardboard_tuning",
+            JSONObject()
+                .put("image_scale", facts.cardboardImageScale.toDouble())
+                .put("eye_offset", facts.cardboardEyeOffset.toDouble())
+                .put("lens_distortion", 0.12)
+        )
         root.put("lighting_condition", facts.lightingCondition)
         // 🔴 조건이지 판정이 아니다. 접기는 GLSurfaceView 밖의 View 이므로 GL 계측 창을
         //    건드리지 않지만, 지속 런에서 컴포지션·UI 일이 줄어드는 것은 조건 차이다.

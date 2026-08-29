@@ -1,7 +1,9 @@
 package com.bammasil.poc
 
 import android.Manifest
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.os.Handler
@@ -10,10 +12,12 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
+import android.view.Surface
 import android.view.WindowManager
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
@@ -28,6 +32,7 @@ import com.bammasil.poc.detect.DetectParityDumper
 import com.bammasil.poc.detect.DetectPipeline
 import com.bammasil.poc.detect.DetectRuntime
 import com.bammasil.poc.gl.PassthroughRenderer
+import com.bammasil.poc.gl.DisplayMode
 import com.bammasil.poc.gl.RenderArm
 import com.bammasil.poc.log.DetectLogRecorder
 import com.bammasil.poc.log.DetectRunFacts
@@ -60,6 +65,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var toggleButton: Button
     private lateinit var lightingSpinner: Spinner
     private lateinit var armSpinner: Spinner
+    private lateinit var displayModeSpinner: Spinner
+    private lateinit var cardboardTuningPanel: View
+    private lateinit var cardboardFovSeek: SeekBar
+    private lateinit var cardboardAlignmentSeek: SeekBar
+    private lateinit var cardboardFovLabel: TextView
+    private lateinit var cardboardAlignmentLabel: TextView
     private lateinit var frameSource: FrameSource
 
     /**
@@ -157,6 +168,10 @@ class MainActivity : ComponentActivity() {
      */
     private var armAtStart: RenderArm = RenderArm.DEFAULT
 
+    private var displayModeAtStart: DisplayMode = DisplayMode.DEFAULT
+    private var cardboardImageScaleAtStart = 0.90f
+    private var cardboardEyeOffsetAtStart = -0.08f
+
     /** 이 런의 출력 디렉토리 이름. 측정 **시작 시각**으로 정한다. */
     private var runDirName: String? = null
 
@@ -195,7 +210,7 @@ class MainActivity : ComponentActivity() {
         // ⚠ **arm 스피너 리스너보다 먼저** 만든다. 스피너는 붙는 즉시 선택 콜백을 내고,
         //   그 콜백이 ③ arm이면 여기를 만진다.
         val externalDir = getExternalFilesDir(null)
-        detectRuntime = DetectRuntime(externalDir, File(externalDir, DETECT_PROFILE_DIR))
+        detectRuntime = DetectRuntime(assets, externalDir, File(externalDir, DETECT_PROFILE_DIR))
         detectParityDumper = DetectParityDumper(File(externalDir, DETECT_PARITY_STAGING_DIR))
         detectPipeline = DetectPipeline(
             detectRuntime, detectRecorder, detectParityDumper, detectOverlayPublisher
@@ -205,6 +220,12 @@ class MainActivity : ComponentActivity() {
         toggleButton = findViewById(R.id.toggle_button)
         lightingSpinner = findViewById(R.id.lighting_spinner)
         armSpinner = findViewById(R.id.arm_spinner)
+        displayModeSpinner = findViewById(R.id.display_mode_spinner)
+        cardboardTuningPanel = findViewById(R.id.cardboard_tuning_panel)
+        cardboardFovSeek = findViewById(R.id.cardboard_fov_seek)
+        cardboardAlignmentSeek = findViewById(R.id.cardboard_alignment_seek)
+        cardboardFovLabel = findViewById(R.id.cardboard_fov_label)
+        cardboardAlignmentLabel = findViewById(R.id.cardboard_alignment_label)
         glView = findViewById(R.id.gl_view)
         infoPanel = findViewById(R.id.info_panel)
         hudButton = findViewById(R.id.hud_button)
@@ -290,6 +311,49 @@ class MainActivity : ComponentActivity() {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
 
+        displayModeSpinner.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            DisplayMode.CHOICES,
+        )
+        displayModeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(
+                parent: AdapterView<*>?,
+                view: View?,
+                position: Int,
+                id: Long,
+            ) {
+                val mode = DisplayMode.fromId(
+                    displayModeSpinner.getItemAtPosition(position)?.toString()
+                )
+                glView.queueEvent { renderer.setDisplayMode(mode) }
+                cardboardTuningPanel.visibility = if (mode == DisplayMode.CARDBOARD_SBS) {
+                    View.VISIBLE
+                } else {
+                    View.GONE
+                }
+                requestedOrientation = if (mode == DisplayMode.CARDBOARD_SBS) {
+                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                } else {
+                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
+        val tuningListener = object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                applyCardboardTuning()
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+        }
+        cardboardFovSeek.setOnSeekBarChangeListener(tuningListener)
+        cardboardAlignmentSeek.setOnSeekBarChangeListener(tuningListener)
+        applyCardboardTuning()
+
         // 사용자 테스트용 on/off. 🔴 **스피너를 통해서만 바꾼다**(위 [viewOnButton] KDoc).
         viewOnButton.setOnClickListener {
             selectArmFromButton(
@@ -307,6 +371,7 @@ class MainActivity : ComponentActivity() {
         }
 
         frameSource = CameraFrameSource(this, this, detectPipeline)
+        frameSource.updateTargetRotation(glView.display?.rotation ?: Surface.ROTATION_0)
         ensureCameraPermission()
         uiHandler.post(statusTicker)
     }
@@ -314,6 +379,14 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         glView.onResume()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (::frameSource.isInitialized) {
+            frameSource.updateTargetRotation(glView.display?.rotation ?: Surface.ROTATION_0)
+        }
+        if (::glView.isInitialized) glView.requestRender()
     }
 
     override fun onPause() {
@@ -488,7 +561,13 @@ class MainActivity : ComponentActivity() {
         armSpinner.isEnabled = false
         viewOnButton.isEnabled = false
         viewOffButton.isEnabled = false
+        displayModeSpinner.isEnabled = false
+        cardboardFovSeek.isEnabled = false
+        cardboardAlignmentSeek.isEnabled = false
         armAtStart = arm
+        displayModeAtStart = selectedDisplayMode()
+        cardboardImageScaleAtStart = 1f - cardboardFovSeek.progress / 100f
+        cardboardEyeOffsetAtStart = (cardboardAlignmentSeek.progress - 60) / 200f
         // 🔴 **조명 기본값이 `unknown`이 아니게 된 것의 짝이다**
         //    ([LightingCondition.CHOICES] 참고). 예전에는 스피너를 안 만지면 하네스가
         //    "비교 대상이 못 된다"고 소리 내어 거부했는데, 이제 안 만진 런이 **정상적인
@@ -518,6 +597,11 @@ class MainActivity : ComponentActivity() {
         glView.queueEvent {
             // 스피너 콜백을 놓쳤을 가능성을 여기서 닫는다. 이 시점 이후로 arm은 고정이다.
             renderer.setArm(arm)
+            renderer.setDisplayMode(displayModeAtStart)
+            renderer.setCardboardTuning(
+                cardboardImageScaleAtStart,
+                cardboardEyeOffsetAtStart,
+            )
             renderer.resetClockProbe()
             renderer.resetRenderCounters()
             // GPU 패스 시간 칸의 개수와 이름은 **arm이 정한다**(RenderArm.gpuColumns).
@@ -563,11 +647,18 @@ class MainActivity : ComponentActivity() {
         val arm = armAtStart
         val runName = runDirName ?: newRunDirName()
         glView.queueEvent {
-            val message = writeLogs(outDir, runName, lighting, arm, negotiated, analysis, sourceKind)
+            val message = writeLogs(
+                outDir, runName, lighting, arm, displayModeAtStart,
+                cardboardImageScaleAtStart, cardboardEyeOffsetAtStart,
+                negotiated, analysis, sourceKind,
+            )
             uiHandler.post {
                 toggleButton.isEnabled = true
                 lightingSpinner.isEnabled = true
                 armSpinner.isEnabled = true
+                displayModeSpinner.isEnabled = true
+                cardboardFovSeek.isEnabled = true
+                cardboardAlignmentSeek.isEnabled = true
                 // ⚠ writeLogs가 도는 동안에는 toggleButton과 **같은 창**으로 잠겨 있었다 —
                 //   그 창에서 arm이 바뀌면 armAtStart와 실제가 갈린다.
                 viewOnButton.isEnabled = true
@@ -584,6 +675,9 @@ class MainActivity : ComponentActivity() {
         runName: String,
         lighting: String,
         arm: RenderArm,
+        displayMode: DisplayMode,
+        cardboardImageScale: Float,
+        cardboardEyeOffset: Float,
         negotiated: NegotiatedConfig?,
         analysis: AnalysisConfig?,
         sourceKind: String,
@@ -656,6 +750,9 @@ class MainActivity : ComponentActivity() {
                     // 정지 시점의 값이다. 런 내내 한 상태였다는 뜻이 아니다.
                     hudInfoHidden = hudInfoHidden,
                     arm = arm,
+                    displayMode = displayMode,
+                    cardboardImageScale = cardboardImageScale,
+                    cardboardEyeOffset = cardboardEyeOffset,
                     request = FRAME_REQUEST,
                     negotiated = negotiated,
                     // ③ 분석 use case가 실제로 물어온 조건. Preview 값과 **섞지 않는다**.
@@ -794,9 +891,26 @@ class MainActivity : ComponentActivity() {
     private fun newRunDirName(): String =
         SimpleDateFormat(RUN_DIR_PATTERN, Locale.US).format(Date())
 
+    private fun applyCardboardTuning() {
+        val imageScale = 1f - cardboardFovSeek.progress / 100f
+        val eyeOffset = (cardboardAlignmentSeek.progress - 60) / 200f
+        cardboardFovLabel.text = getString(
+            R.string.cardboard_fov_format,
+            (imageScale * 100f).toInt(),
+        )
+        cardboardAlignmentLabel.text = getString(
+            R.string.cardboard_alignment_format,
+            eyeOffset * 100f,
+        )
+        glView.queueEvent { renderer.setCardboardTuning(imageScale, eyeOffset) }
+        glView.requestRender()
+    }
+
     private fun selectedArm(): RenderArm =
         RenderArm.fromId(armSpinner.selectedItem?.toString())
 
+    private fun selectedDisplayMode(): DisplayMode =
+        DisplayMode.fromId(displayModeSpinner.selectedItem?.toString())
     /**
      * on/off 버튼 → **[armSpinner]의 선택을 바꾼다.** 🔴 `renderer.setArm`·
      * [prepareDetectIfNeeded]·[rebindSourceIfAnalysisChanged]를 **직접 부르지 않는다** —
