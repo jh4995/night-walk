@@ -292,10 +292,14 @@ class MainActivity : ComponentActivity() {
 
         // 사용자 테스트용 on/off. 🔴 **스피너를 통해서만 바꾼다**(위 [viewOnButton] KDoc).
         viewOnButton.setOnClickListener {
-            selectArmFromButton(RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT, R.string.view_on)
+            selectArmFromButton(
+                RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT, R.string.view_on, R.string.assist_on_toast,
+            )
         }
         viewOffButton.setOnClickListener {
-            selectArmFromButton(RenderArm.PASSTHROUGH, R.string.view_off)
+            selectArmFromButton(
+                RenderArm.PASSTHROUGH, R.string.view_off, R.string.assist_off_toast,
+            )
         }
 
         toggleButton.setOnClickListener {
@@ -445,7 +449,10 @@ class MainActivity : ComponentActivity() {
 
     private fun startRecording() {
         if (!sourceStarted) {
-            showMessage("카메라가 아직 준비되지 않았다 — 권한과 프리뷰를 먼저 확인할 것")
+            showMessage(
+                getString(R.string.camera_not_ready),
+                "카메라가 아직 준비되지 않았다 — 권한과 프리뷰를 먼저 확인할 것",
+            )
             return
         }
         val arm = selectedArm()
@@ -491,11 +498,20 @@ class MainActivity : ComponentActivity() {
         //      (hudButton) 거기 적으면 정작 필요한 때 보이지 않는다.
         //    ⚠ 앱은 조명을 알 수 없다 — 이 값은 **사람의 신고**이고 여기서 하는 것은
         //      검증이 아니라 **확인**이다. 틀린 신고를 앱이 잡아낼 방법은 없다.
+        val lightingNow = lightingSpinner.selectedItem?.toString() ?: LightingCondition.UNKNOWN
+        // 🔴 **틀렸을 때만 시끄럽게 한다.** 매번 "실내면 바꿔라"를 띄우면 참가자에게는
+        //    뜻 없는 말이고 측정자에게는 곧 배경이 되어 진짜 실수 때도 안 읽힌다.
+        //    야외 야간이 아니면(= 실내거나 unknown이면) 그때만 경고를 붙인다.
+        val lightingLooksIndoor = !lightingNow.startsWith("outdoor_")
         showMessage(
-            getString(
-                R.string.lighting_confirm,
-                lightingSpinner.selectedItem?.toString() ?: LightingCondition.UNKNOWN,
-            )
+            getString(R.string.rec_start, lightingNow) +
+                if (lightingLooksIndoor) {
+                    "\n" + getString(R.string.rec_start_lighting_warn, lightingNow)
+                } else {
+                    ""
+                },
+            "측정 시작 — lighting_condition=$lightingNow arm=${arm.id}" +
+                if (lightingLooksIndoor) " 🔴 야외 야간이 아니다 — 실내에서 재는 것이 맞는지 확인할 것" else "",
         )
         runDirName = newRunDirName()
         val startedNs = SystemClock.elapsedRealtimeNanos()
@@ -788,7 +804,7 @@ class MainActivity : ComponentActivity() {
      * 표시와 [selectedArm](= [startRecording]이 읽는 값)이 갈리지 않는다. 갈리면
      * `session.json`이 실제로 돈 arm과 **다른 arm**을 적는다.
      */
-    private fun selectArmFromButton(arm: RenderArm, labelRes: Int) {
+    private fun selectArmFromButton(arm: RenderArm, labelRes: Int, toastRes: Int) {
         // 측정 중에는 조건을 바꾸지 않는다. 버튼도 잠겨 있지만 경로 자체를 닫아 둔다
         // (스피너 잠금과 같은 이유 — 런 도중 arm이 바뀌면 그 분포는 오염된 것이다).
         if (recording) return
@@ -802,9 +818,14 @@ class MainActivity : ComponentActivity() {
         // ⚠ 프리뷰가 잠깐 끊기는 것은 **정상 동작**이다: ③ 분석 use case의 유무가 달라지면
         //   카메라를 다시 바인딩한다(rebindSourceIfAnalysisChanged). 알리지 않으면
         //   측정자가 고장으로 읽는다.
+        // 🔴 토스트는 **참가자**가 읽는다 — arm id도 use case도 쓰지 않는다.
+        //    화면이 끊기는 사실은 참가자에게도 알린다(안 알리면 고장으로 읽는다).
+        //    ⚠ arm id는 로그와 HUD(updateStatus)에 남는다 — HUD가 기본 접힘이 되면서
+        //      토스트가 유일한 즉시 확인 수단이 됐으므로, 로그에서 빼지 않는다.
         showMessage(
+            getString(toastRes),
             "${getString(labelRes)} — arm을 ${arm.id}로 바꿨다. ③ 분석 use case의 유무가 " +
-                "달라지면 카메라를 다시 바인딩하므로 프리뷰가 잠깐 끊긴다(정상 동작이다)"
+                "달라지면 카메라를 다시 바인딩하므로 프리뷰가 잠깐 끊긴다(정상 동작이다)",
         )
         // 화면이 arm을 바로 반영하게 한다(다음 상태 틱을 기다리지 않는다).
         uiHandler.post { updateStatus() }
@@ -868,9 +889,20 @@ class MainActivity : ComponentActivity() {
         hudButton.setText(if (hudInfoHidden) R.string.hud_show else R.string.hud_hide)
     }
 
-    private fun showMessage(message: String) {
-        Log.i(TAG, message)
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    /**
+     * 화면(Toast)과 로그에 알린다. 🔴 **두 청중이 다르다.**
+     *
+     * - [toast] — **사용자 테스트 참가자**가 읽는 말. 기술어(arm·use case·바인딩·프리뷰)를
+     *   쓰지 않는다. 문구는 `strings.xml`의 "참가자가 읽는 문구" 절에 둔다.
+     * - [log] — **측정자**용 정밀 문장. 기본값은 [toast]와 같고, 다르게 주면 토스트만
+     *   쉬워지고 추적 정보는 그대로 남는다.
+     *
+     * ⚠ **실패·거부 경로는 가르지 않는다** — 런이 왜 안 도는지를 나르는 문장은 측정자가
+     * 현장에서 바로 봐야 하므로 토스트에 그대로 띄운다(③ 게이트·탐지 기록 실패 등).
+     */
+    private fun showMessage(toast: String, log: String = toast) {
+        Log.i(TAG, log)
+        Toast.makeText(this, toast, Toast.LENGTH_LONG).show()
     }
 
     private companion object {
