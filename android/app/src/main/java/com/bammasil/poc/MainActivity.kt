@@ -470,6 +470,21 @@ class MainActivity : ComponentActivity() {
         viewOnButton.isEnabled = false
         viewOffButton.isEnabled = false
         armAtStart = arm
+        // 🔴 **조명 기본값이 `unknown`이 아니게 된 것의 짝이다**
+        //    ([LightingCondition.CHOICES] 참고). 예전에는 스피너를 안 만지면 하네스가
+        //    "비교 대상이 못 된다"고 소리 내어 거부했는데, 이제 안 만진 런이 **정상적인
+        //    야간 런으로 조용히 통과**한다. 그 신호를 여기서 되살린다 — 실내에서 재면서
+        //    조명을 안 바꾼 것을 **시작하는 순간** 알아채야 한다.
+        //    ⚠ HUD(statusText)가 아니라 Toast인 이유: 촬영 중에는 HUD를 접어 두므로
+        //      (hudButton) 거기 적으면 정작 필요한 때 보이지 않는다.
+        //    ⚠ 앱은 조명을 알 수 없다 — 이 값은 **사람의 신고**이고 여기서 하는 것은
+        //      검증이 아니라 **확인**이다. 틀린 신고를 앱이 잡아낼 방법은 없다.
+        showMessage(
+            getString(
+                R.string.lighting_confirm,
+                lightingSpinner.selectedItem?.toString() ?: LightingCondition.UNKNOWN,
+            )
+        )
         runDirName = newRunDirName()
         val startedNs = SystemClock.elapsedRealtimeNanos()
         glView.queueEvent {
