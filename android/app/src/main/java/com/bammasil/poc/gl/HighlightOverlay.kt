@@ -23,11 +23,18 @@ import kotlin.math.abs
  * 🔴 **빨강 금지** · 🔴 **깜빡임 금지** · 두께는 **짧은 변 비례로 720p 기준 4px**.
  * 값은 [RenderArm]의 `HIGHLIGHT_*` 상수에서 오며 이 파일에 숫자를 박지 않는다.
  *
- * 🔴 **이 빌드는 그중 '비채움'에서 벗어난다** — 박스 **안쪽**을 클래스 색으로 옅게 채운다
- * (알파 [RenderArm.OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE]). 사용자 지시이며 대가는
- * [RenderArm.HIGHLIGHT_FILL_DEVIATION]에 적혀 `session.json`으로 나간다. 🔴 **알파는 빌드
- * 상수이고 프레임 간·시간에 따라 변하지 않는다** — 알파 변조는 광과민 안전 규약 위반이다
- * ([RenderArm.OVERLAY_NO_FLICKER_DESIGN] (1)).
+ * 🔴 **이 빌드는 그중 '비채움'에서 벗어난다 — 단, arm마다 다르다.** fill arm은 박스
+ * **안쪽**을 클래스 색으로 옅게 채운다(알파 [RenderArm.OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE]).
+ * 사용자 지시이며 대가는 [RenderArm.HIGHLIGHT_FILL_DEVIATION]에 적혀 `session.json`으로
+ * 나간다. 🔴 **알파는 빌드 상수이고 프레임 간·시간에 따라 변하지 않는다** — 알파 변조는
+ * 광과민 안전 규약 위반이다([RenderArm.OVERLAY_NO_FLICKER_DESIGN] (1)).
+ *
+ * 🔴 **fill 여부는 arm이 정한다** — 이 클래스는 상태로 갖지 않고 [draw]·[setDynamicGeometry]의
+ * `fill` 인자로 받는다(유일한 출처는 [RenderArm.drawsOverlayFill]). false인 arm
+ * ([RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL])에서는 **fill 기하를 정점 버퍼에 아예 쓰지
+ * 않는다** — 알파 0으로 그리는 것이 아니다(알파 0은 프래그먼트 비용이 같아 대조군이 되지
+ * 못한다 — [RenderArm.HIGHLIGHT_NOFILL_CONTROL_NOTE]). 정점 수 분기는
+ * [vertsPerBox] 한 함수에만 있다.
  *
  * ### 🔴 색을 **인덱스로 고르지 않는다**
  * 색의 출처는 [OverlayClassColors] 하나이고 키는 **클래스 이름**이다. ③ 결과 경로에서는
@@ -121,6 +128,13 @@ class HighlightOverlay {
     private var geometryHeight = 0
 
     /**
+     * 🔴 **캐시 키의 셋째 축이다.** 안 두면 개수·해상도가 같을 때 fill 여부가 바뀌어도
+     * [ensureStaticGeometry]가 조기 반환해 **낡은 기하를 재사용한다** — 대조군 arm이 fill을
+     * 그린 채 측정되거나 그 반대가 되는데, 로그에는 아무 흔적이 남지 않는다.
+     */
+    private var geometryFill = false
+
+    /**
      * 🔴 **[MAX_BOX_COUNT]개분으로 컨텍스트당 한 번 잡는다.** 이후 모든 갱신은 in-place다
      * (위 KDoc "프레임당 할당 0").
      */
@@ -210,11 +224,14 @@ class HighlightOverlay {
         //    박스 출처는 arm이 정하고 `overlay.box_source`가 arm별로 말한다.
         status =
             "준비 완료 — ④ 오버레이 **1패스**(사각형 quad, glDrawArrays " +
-                "${GL_PRIMITIVE_NAME} 1회). 이중 스트로크(검정 밑선 + 대비색 본선) + " +
-                "**박스 안쪽을 클래스 색으로 채운다**(알파 " +
+                "${GL_PRIMITIVE_NAME} 1회). 이중 스트로크(검정 밑선 + 대비색 본선)를 그린다. " +
+                "**정점에 알파 속성(aAlpha)이 있어 박스 안쪽 fill quad를 그릴 수 있다**(알파 " +
                 "${RenderArm.OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE}, 빌드 상수라 시간 변조가 " +
-                "없다 — 상류 '비채움' 명세로부터의 이탈이며 사유는 overlay.fill_deviation). " +
-                "그리기 순서는 **fill 전량 → 스트로크 전량**이고 드로우콜은 그대로 1회다. " +
+                "없다) — ⚠ **실제로 그리는지는 arm이 정하고 overlay.fill_enabled가 말한다.** " +
+                "채우는 arm에서는 상류 '비채움' 명세로부터의 이탈이며 사유는 " +
+                "overlay.fill_deviation다. " +
+                "fill을 그릴 때의 순서는 **fill 전량 → 스트로크 전량**이고 드로우콜은 어느 " +
+                "쪽이든 1회다. " +
                 "두께는 **처리 해상도의 짧은 변에서 계산**한다 " +
                 "(720p 기준 ${RenderArm.HIGHLIGHT_STROKE_PX_AT_720P}px). " +
                 "정점 버퍼는 최대 ${MAX_BOX_COUNT}개분을 **컨텍스트당 한 번** 잡고 이후 " +
@@ -274,9 +291,13 @@ class HighlightOverlay {
      *
      * @param boxCount 이 arm이 **선언한** 정적 박스 수([RenderArm.highlightBoxCount]).
      *   🔴 ③ 결과 경로에서는 이 함수를 부르지 않는다 — [setDynamicGeometry] + [drawPrepared]다.
+     * @param fill fill quad를 그리는가([RenderArm.drawsOverlayFill]). 🔴 **인자로 받는다 —
+     *   이 클래스에 상태로 두지 않는다.** `PassthroughRenderer.setArm`이
+     *   `if (arm == next) return`으로 조기 반환하는 경로가 있어서, 상태로 두면 초기 arm에
+     *   플래그가 안 실리는 **무음 실패**가 생긴다.
      */
-    fun draw(boxCount: Int) {
-        ensureStaticGeometry(boxCount)
+    fun draw(boxCount: Int, fill: Boolean) {
+        ensureStaticGeometry(boxCount, fill)
         drawPrepared()
     }
 
@@ -335,8 +356,13 @@ class HighlightOverlay {
      * 🔴 **클램프하지 않는다.** 프레임 밖 좌표는 그대로 넘기고 GL 뷰포트가 자른다.
      * ⚠ 그래서 박스가 프레임 가장자리에 붙으면 **검정 밑선이 한쪽만 잘려 보인다** —
      * 이 기하 선택의 알려진 결과이며([RenderArm.HIGHLIGHT_DEVIATION] (4)) 결함이 아니다.
+     *
+     * @param fill fill quad를 그리는가([RenderArm.drawsOverlayFill]). false면 **fill 루프의
+     *   [putQuad] 호출을 건너뛴다** — 알파 0으로 그리는 것이 아니다(알파 0은 프래그먼트
+     *   비용이 같다 — [RenderArm.HIGHLIGHT_NOFILL_CONTROL_NOTE]). 🔴 상태로 두지 않는 이유는
+     *   [draw]의 같은 인자 설명에 있다.
      */
-    fun setDynamicGeometry(list: OverlaySmoother) {
+    fun setDynamicGeometry(list: OverlaySmoother, fill: Boolean) {
         val buffer = vertexBuffer
         val w = processWidth
         val h = processHeight
@@ -378,11 +404,19 @@ class HighlightOverlay {
             val y1 = list.ndc[b + 3]
             // fill 사각형은 **박스 원 좌표 그대로**다(안쪽 인셋 없음). 두께보다 얇은 박스에서
             // putRing의 클램프와 규칙이 갈라지면 그 틈이 그대로 보인다.
-            putQuad(
-                buffer, x0, y0, x1, y1, dynamicColor,
-                RenderArm.OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE
-            )
+            // 🔴 **fill 대조군에서는 이 호출만 건너뛴다** — 알파 0으로 그리지 않는다
+            //    (알파 0이면 quad가 그대로 래스터라이즈돼 프래그먼트 비용이 똑같이 든다).
+            if (fill) {
+                putQuad(
+                    buffer, x0, y0, x1, y1, dynamicColor,
+                    RenderArm.OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE
+                )
+            }
             // 면적 축(overlay_fill_frac). 이미 도는 루프 안이고 새 배열·문자열을 만들지 않는다.
+            // 🔴 **fill을 건너뛰어도 이 합산은 그대로 돈다** — 그 열의 정의는 **기하 통계**
+            //    (Σ박스 면적 ÷ 화면 면적)이고 그리기 여부와 무관하다. 여기서 0으로 내리면
+            //    대조군의 면적 분포를 잃고, 하네스가 boxes>0 · fill_frac=0을 **불가능 짝**으로
+            //    세기 시작했으므로 그 카운터까지 오작동시킨다.
             areaSum += abs((x1 - x0) * (y1 - y0))
         }
         for (i in 0 until n) {
@@ -402,7 +436,7 @@ class HighlightOverlay {
             )
         }
         buffer.position(0)
-        vertexCount = n * VERTS_PER_BOX
+        vertexCount = n * vertsPerBox(fill)
         overlayFillFrac = areaSum / NDC_TOTAL_AREA
     }
 
@@ -415,9 +449,12 @@ class HighlightOverlay {
      * arm에서도 화면 전체에 퍼지게 했다. **박스 크기가 arm 간 같으므로** 32개 arm의 값을
      * 4개 arm과 나란히 놓아 개당 비용 기울기로 쓸 수 있다 — 격자를 개수에 맞춰 바꾸면
      * 박스마다 둘레가 달라져 그 기울기가 성립하지 않는다.
+     *
+     * @param fill fill quad를 그리는가([RenderArm.drawsOverlayFill]). 🔴 **캐시 키에 들어
+     *   있다**([geometryFill]) — 빠뜨리면 개수·해상도가 같을 때 낡은 기하를 재사용한다.
      */
-    private fun ensureStaticGeometry(boxCount: Int) {
-        if (geometryBoxCount == boxCount &&
+    private fun ensureStaticGeometry(boxCount: Int, fill: Boolean) {
+        if (geometryBoxCount == boxCount && geometryFill == fill &&
             geometryWidth == processWidth && geometryHeight == processHeight
         ) {
             return
@@ -437,7 +474,7 @@ class HighlightOverlay {
         val underHalfX = underlinePx / w
         val underHalfY = underlinePx / h
 
-        val verts = boxCount * VERTS_PER_BOX
+        val verts = boxCount * vertsPerBox(fill)
         buffer.position(0)
         // 🔴 **fill 전량 → 스트로크 전량.** [setDynamicGeometry]와 같은 순서·같은 이유다
         //    (알파 fill이 뒤에 오면 앞 박스의 스트로크를 물들인다). 정적 경로는 개수·해상도가
@@ -452,11 +489,15 @@ class HighlightOverlay {
             val ny0 = ((row + CELL_INSET) / CELL_ROWS) * 2f - 1f
             val ny1 = ((row + 1f - CELL_INSET) / CELL_ROWS) * 2f - 1f
             // fill 사각형은 **박스 원 좌표 그대로**다(안쪽 인셋 없음).
-            putQuad(
-                buffer, nx0, ny0, nx1, ny1,
-                OverlayClassColors.colorFor(staticColorName(i)),
-                RenderArm.OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE
-            )
+            // 🔴 **fill 대조군에서는 이 호출만 건너뛴다**(알파 0으로 그리지 않는다).
+            if (fill) {
+                putQuad(
+                    buffer, nx0, ny0, nx1, ny1,
+                    OverlayClassColors.colorFor(staticColorName(i)),
+                    RenderArm.OVERLAY_FILL_ALPHA_MEASUREMENT_VALUE
+                )
+            }
+            // 🔴 면적 합산은 **그리기 여부와 무관하게** 돈다(setDynamicGeometry의 같은 주석).
             areaSum += abs((nx1 - nx0) * (ny1 - ny0))
         }
         for (i in 0 until boxCount) {
@@ -490,6 +531,7 @@ class HighlightOverlay {
         vertexCount = verts
         overlayFillFrac = areaSum / NDC_TOTAL_AREA
         geometryBoxCount = boxCount
+        geometryFill = fill
         geometryWidth = w
         geometryHeight = h
     }
@@ -500,8 +542,11 @@ class HighlightOverlay {
      *
      * **이 함수는 박스 내부를 칠하지 않는다** — 좌·우 띠의 y 범위를 위·아래 띠만큼 줄여
      * 모서리를 두 번 덮지도 않는다(겹치면 색은 같지만 오버드로가 생기고 그만큼 I칸이 부푼다).
-     * ⚠ **박스 내부는 별도의 fill quad가 칠한다**(호출자가 이 함수보다 **먼저** 넣는다) —
-     * 이 함수의 불변식은 "띠 밖에서 아무것도 안 그린다"이지 "박스 안이 비어 있다"가 아니다.
+     * ⚠ **fill을 그리는 arm에서는 박스 내부를 별도의 fill quad가 칠한다**(호출자가 이 함수보다
+     * **먼저** 넣는다) — 그 arm에서 이 함수의 불변식은 "띠 밖에서 아무것도 안 그린다"이지
+     * "박스 안이 비어 있다"가 아니다. 🔴 fill을 건너뛰는 arm
+     * ([RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL])에서는 박스 안이 실제로 비어 있고, 이
+     * 함수의 기하는 **두 arm에서 글자 그대로 같다.**
      *
      * @param alpha 스트로크는 항상 [STROKE_ALPHA]다. 인자로 받는 것은 [putVertex]까지
      *   같은 경로를 쓰기 위한 것이며, 🔴 **시간에 따라 바뀌는 값을 넣지 말 것**(알파 변조는
@@ -621,8 +666,27 @@ class HighlightOverlay {
         /** 박스 안쪽 fill 사각형 하나 = 삼각형 2개 × 정점 3개. */
         const val VERTS_PER_FILL = 6
 
-        /** fill 1 + 스트로크 2벌. 🔴 정점 버퍼 용량이 이 상수 하나에서 나온다. */
-        const val VERTS_PER_BOX = VERTS_PER_FILL + VERTS_PER_RING * 2
+        /**
+         * 이중 스트로크 2벌의 정점 수. **fill을 건너뛰는 arm의 박스당 정점 수**이기도 하다
+         * ([vertsPerBox]). 🔴 새 리터럴이 아니라 [VERTS_PER_RING]의 파생이다.
+         */
+        const val VERTS_PER_STROKES = VERTS_PER_RING * 2
+
+        /**
+         * fill 1 + 스트로크 2벌. 🔴 **정점 버퍼 용량이 계속 이 상수 하나에서 나온다** —
+         * fill을 건너뛰는 arm에서도 버퍼는 이 크기로 잡는다(용량을 arm에 따라 줄이지 않는다.
+         * 줄이면 arm을 되돌릴 때 버퍼를 다시 잡아야 하고 그것이 곧 프레임당 할당이다).
+         */
+        const val VERTS_PER_BOX = VERTS_PER_FILL + VERTS_PER_STROKES
+
+        /**
+         * 이 arm의 **박스당 정점 수**. 🔴 **fill 여부에 따른 정점 수 분기는 이 함수 하나에만
+         * 존재한다** — 다른 곳에 정점 수를 다시 적으면 값을 바꾸는 날 둘이 갈리고,
+         * `session.json`이 실제로 그린 것과 다른 정점 수를 선언하게 된다.
+         *
+         * @param fill fill quad를 그리는가([RenderArm.drawsOverlayFill]).
+         */
+        fun vertsPerBox(fill: Boolean): Int = if (fill) VERTS_PER_BOX else VERTS_PER_STROKES
 
         /**
          * 스트로크(검정 밑선 · 대비색 본선)의 알파. **불투명이다** — 이 값 덕에 스트로크

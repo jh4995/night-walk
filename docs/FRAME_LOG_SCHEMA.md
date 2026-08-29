@@ -310,6 +310,15 @@ v5 자기검사와 같은 모양이다 — 들어가 있으면 모듈이 죽는�
   (조건)이고 이쪽은 **그 프레임에 실제로 덮은 면적**(관측)이다. `box_count` ↔ `overlay_boxes`와
   같은 구조다.
 
+🔴 **fill 대조 arm(`detect_cpu_chain_highlight_nofill`)에서 이 열은 *그리지 않은* fill
+면적이다.** 열 이름에 "fill"이 들어 있고 그 arm은 칠하지 않으므로 나중에 오독을 만들 자리다 —
+그러나 **이 열의 정의는 기하 통계(Σ 박스 면적 ÷ 화면 면적)이고 그리기 여부와 무관하다**(위
+표: *"칠해진 픽셀의 비율이 아니다"*). 그래서 대조 arm도 **면적을 그대로 싣는다** — 예외가
+아니라 **정의를 따르는 것**이다. 0으로 내면 (a) 버킷 안 면적 분포가 사라져 fill↔nofill을
+**같은 면적 조건에서** 비교할 수 없고, (b) `scripts/overlay_cost_by_boxes.py`의 불가능 짝
+카운터 `boxes_positive_fill_zero`가 정상 런을 이상으로 세기 시작한다.
+🔴 **열 이름을 바꾸지 않는다** — v8 시계열과 `FRAME_RATIO_COLUMNS`가 끊긴다.
+
 🔴 **`t_overlay_source_ns`는 박스가 0개여도 적는다.** "탐지가 아무것도 못 찾았다"도 게시된
 결과다 — 거기에 `-1`을 적으면 "결과가 없다"와 "빈 결과가 있다"가 구분되지 않고 신선도 분포가
 **박스가 있는 프레임 쪽으로만** 치우친다. `-1`은 **아직 어떤 결과도 게시되지 않았다**(첫 추론
@@ -984,7 +993,8 @@ p95로 tail을 관리하는 하네스가 느린 쪽 샘플을 버리면 존재 �
 | `box_count_provenance` | 그 개수를 그렇게 정한 근거(상류 대조) |
 | `box_source` | 🔴 **정적 더미 박스이며 ③ 탐지 결과가 아니다**(③ 미구현). 프레임마다 같아서 재현 가능하다 |
 | `shape` · `fill` | 🔴 **v8에서 뜻이 뒤집혔다.** 이중 스트로크(검정 밑선 + 대비색 본선) **+ 박스 안쪽 반투명 fill**이다. `fill`은 이제 "**채운다**"고 말하며 그것이 상류 명세('비채움') **이탈**임을 함께 밝힌다(전문 → `fill_deviation`). 스트로크가 경계 밖을 덮는 것은 **별개의 이탈**이고 `upstream_deviation`에 있다. ⚠️ 옛 로그(v7 이하)의 `fill`은 "비채움"이라고 적혀 있다 — **그 문장이 그 런의 사실**이므로 새 런의 문장으로 덮어 읽지 말 것 |
-| `fill_alpha` (v8) | 🔴 **이 런이 박스 안을 칠한 알파**(double). 🔴 **`baseline_diff.py`의 비교 조건이다**(아래 §비교 조건) — 정적 더미 arm 3개는 fill이 들어와도 **arm id가 그대로**라 이 키가 없으면 다른 렌더가 "조건 동일"로 비교된다 |
+| `fill_enabled` (2026-08-29) | 🔴 **이 런이 박스 안을 칠했는가**(불리언). fill arm=`true` / fill 대조 arm(`detect_cpu_chain_highlight_nofill`)=`false`. 🔴 **`baseline_diff.py`의 비교 조건이며, fill↔nofill 판정의 하중을 받는 키가 이것이다**(아래 §비교 조건) — `fill_alpha`만으로는 부족하다: 대조 arm이 내는 **명시적 null**과 v7 로그의 **키 부재**를 `_dig`가 구분하지 못한다 |
+| `fill_alpha` (v8) | 🔴 **이 런이 박스 안을 칠한 알파**(double, **nullable**). 🔴 **fill 대조 arm에서는 `null`이다** — `0`이 아니다(*"알파 0으로 그렸다"*와 *"안 그렸다"*는 비용이 다르므로 구분돼야 한다). 그 null의 사유 문장이 옆 키에 함께 실린다. 🔴 **`baseline_diff.py`의 비교 조건이다**(아래 §비교 조건) — 정적 더미 arm 3개는 fill이 들어와도 **arm id가 그대로**라 이 키가 없으면 다른 렌더가 "조건 동일"로 비교된다 |
 | `fill_alpha_provenance` (v8) | 그 알파를 그렇게 정한 근거. **계약값이 아니라 측정용 임의값**이라는 사실이 여기 있다(`INTERFACES.md`에 항목 자체가 없다 — `☐`가 아니라 **항목 부재**) |
 | `fill_blend` (v8) | 블렌드 상태의 전문(`glBlendFuncSeparate` + 알파 채널 보존 + 같은 함수 안에서 `glDisable`). 🔴 **정적 상수 알파이며 시간 변조가 없다**는 선언을 포함한다 — 광과민 안전 규약(`no_blink_reason`)과 같은 자리다 |
 | `fill_draw_order` (v8) | 🔴 **fill 전량 → 스트로크 전량**(박스별 인터리브가 아니다). 알파 fill이 뒤에 그려지면 앞 박스의 스트로크를 물들여 겹친 박스에서 대비가 깎인다 |
@@ -1233,12 +1243,17 @@ id로 개수만 바꾸면 **조건 차이가 무경고로 "비교 가능"을 통
 🔴 **2026-08-25에 셋이 늘었다.** 처음에는 9패스 본진 하나뿐이었고 그래서 상한만 나왔다.
 아래 넷을 **같은 세션에서** 재야 I칸의 상한과 하한이 둘 다 나온다.
 
+⚠️ **표의 5번째 행(`_nofill`, 2026-08-29)은 그 세트가 아니다.** 상한·하한을 만드는 넷과 달리
+그것은 **fill 켬/끔의 대조군**이며, 짝이 되는 것은 `detect_cpu_chain_highlight` 하나다
+→ 아래 "fill 대조 arm" 절. **"네 arm이 한 세트"라는 위 문장은 그대로 유효하다.**
+
 | 값 | 렌더 | 계측 | 무엇을 재는가 |
 |---|---|---|---|
 | `detect_cpu_chain_highlight` | **9패스** (② Drago→CLAHE 체인 + ④ 오버레이) | 패스별 GPU query 9열 + `stage_h_ms` + `overlay_boxes` + `t_overlay_source_ns` | **본진.** ② 개선된 화면 **위에** 박스를 얹은 구성의 D·I·H. I는 **상한** |
 | `detect_cpu_chain_highlight_1q` | **위와 글자 그대로 같은 9패스** | 프레임 단일 query → `gpu_frame_ms` **한 열** + 오버레이 3열(`stage_h_ms`·`overlay_boxes`·`t_overlay_source_ns`)은 **싣는다** | I **하한의 분자** |
 | `detect_cpu_chain_1q` | 아래 arm과 **글자 그대로 같은 8패스** (② 체인 7 + present, ④ 없음) | 프레임 단일 query → `gpu_frame_ms` **한 열**. 오버레이 열 **없음** | 🔴 I **하한의 분모** |
 | `detect_cpu_chain` | **8패스.** 렌더는 `drago_clahe_chain`과 같고 **탐지가 돈다**. 오버레이 없음 | 패스별 GPU query **8열** + `detect.csv` | 패스7↔8 병합 진단(탐지 부하 아래의 ② 체인)이며 `detect_cpu_chain_1q`의 **패스별 짝** |
+| `detect_cpu_chain_highlight_nofill` (2026-08-29) | 본진과 **같은 9패스인데 박스 안쪽 fill 기하를 건너뛴다**(스트로크는 그대로) | 본진과 같다 — 패스별 GPU query 9열 + 오버레이 **4열**(v8. `overlay_fill_frac` 포함) | 🔴 **fill 대조군.** 위 넷의 상한·하한 세트가 아니다 → 아래 "fill 대조 arm" 절 |
 
 `pipeline_stages`(9패스 짝) = `["blit_2pass", "stage2_drago", "stage2_clahe", "detect", "stage4_highlight", "stage4_smoothing"]`
 — **기존 토큰 6개를 나열한다. 새 토큰을 만들지 않는다**(조합 arm 규칙과 같은 이유 → 아래
@@ -1343,6 +1358,40 @@ arm 중 `stage2_*` 보유 **12개** · `stage4_*` 보유 **5개**인데 **교집
 - **올리면 오히려 거짓 경고가 난다.** v8로 올리면 기존·현행 앱이 내는 `schema_version=7`
   로그가 전부 *"앱이 하네스보다 뒤처졌다"* 경고를 받는데, 그 경고가 나열할 **"늘어난 열"은
   '없음'**이다. 근거 없는 경고는 곧 아무도 안 보게 된다.
+
+##### fill 대조 arm (2026-08-29) — `detect_cpu_chain_highlight_nofill`
+
+| 값 | 렌더 | session.json | 무엇을 재는가 |
+|---|---|---|---|
+| `detect_cpu_chain_highlight_nofill` | 본진과 **같은 9패스**. 박스 안쪽 **fill 기하를 건너뛴다**(스트로크는 그대로 그린다) | `overlay.fill_enabled=false` · 🔴 `overlay.fill_alpha=null` | `detect_cpu_chain_highlight`(fill 켬)와의 차 = **fill이 I칸에 더한 양** |
+
+**왜 arm을 가르나:** v8에서 ④ 오버레이가 박스 안을 **빌드 상수 알파**로 채우기 시작했다
+(→ §④ 오버레이 session 키의 `fill_alpha`). 알파가 컴파일 시점에 박히므로 **같은 세션에
+대조군이 없다.** 코드 경로가 갈리면 arm id를 가르는 것이 이 저장소의 선례다
+(`highlight_boxes` ↔ `_stress`는 박스 개수, `_1q`는 계측 방식).
+
+🔴 **알파만 0으로 둔 대조군은 쓸모없다.** fill quad가 그대로 래스터라이즈돼 프래그먼트 비용이
+똑같이 든다 — 그러면 대조군이 본진과 같은 값을 내고 **"fill은 공짜"라는 거짓 결론**이 나온다.
+그래서 이 arm은 **fill 기하 자체를 건너뛰는 코드 경로**여야 한다.
+
+🔴 **`overlay.fill_alpha=null`이고 `0`이 아니다.** `0`으로 내면 *"알파 0으로 그렸다"*와
+*"안 그렸다"*가 구분되지 않는데 **그 둘은 비용이 다르다.** 대신 앱이 그 null의 사유 문장을
+옆에 싣는다. 조건 판정의 하중은 `fill_alpha`가 아니라 **`fill_enabled`(불리언)**가 받는다 —
+`baseline_diff.py`의 `_dig`는 **명시적 null과 키 부재를 구분하지 못하기** 때문이다
+(→ §비교 조건).
+
+🔴 **`SCHEMA_VERSION`을 올리지 않는다 — v8 그대로다.** `frames.csv` 열이 하나도 늘지 않고
+(이 arm도 v8 오버레이 4열을 그대로 싣는다) 바뀐 것은 `session.json`의 **정책 블록**뿐이다.
+그래서 스키마 버전으로는 이 arm을 가를 수 없고, 판별 축은 **`render_arm` +
+`overlay.fill_enabled`** 둘이다 — `hold_frames` ↔ `hold_publishes`와 **글자 그대로 같은
+상황**이다(그 전환도 버전을 올리지 않았고 "키의 존재 여부가 유일한 판별 축"이라고 적었다).
+
+⚠️ **`_1q` 짝은 아직 없다.** 이 arm의 I는 **상한**만 나온다(패스별 계측의 중복 계상 → 알려진
+이슈 21). 하한이 필요해지면 위 `_1q` 절의 앱 쪽 요구(`singleFrameQueryPeer` ·
+`renderPassCount` 등록)를 그대로 받고 그 표의 전수 개수도 함께 고친다.
+
+🔴 **fill의 I칸 비용은 미측정이다** — 이 arm의 실기기 로그가 아직 하나도 없다. 하네스는 어휘와
+조건 키만 준비돼 있다.
 
 ##### `detect_parity_*` = **이식 정확성 대조 전용 arm** (v6)
 
@@ -1472,6 +1521,7 @@ F(그리고 그것을 포함하는 모든 값)에 **자기 비용을 얹는다.*
 | `session.pipeline_stages` | 빈 배열 = 빈 파이프라인. 이게 다르면 성능 비교가 성립하지 않는다 |
 | `session.render_arm` | **그 런이 실제로 무엇을 그렸는지**를 정한다. `pipeline_stages`가 이것을 담지 못한다는 것이 실증됐다 — ② 하위 패스 열에는 대응 토큰이 없어서 `blit_2pass` 런과 `clahe_gamma` 런이 **둘 다 `["blit_2pass"]`** 였고, 처리량이 완전히 다른데도 무경고로 "회귀 없음"이 나왔다. 조명과 정확히 같은 성격의 조건이다 |
 | `session.overlay.fill_alpha` (v8) | 🔴 **박스 안을 얼마나 칠했는가.** 정적 더미 arm 3개(`highlight_boxes` / `_stress` / `_1q`)는 fill이 들어와도 **arm id가 그대로**라 `render_arm`이 이 조건을 담지 못한다 — `blit_2pass` ↔ `clahe_gamma`가 둘 다 `["blit_2pass"]`여서 무경고로 "회귀 없음"이 나온 실패와 **동형**이다. 오버레이를 그리지 않는 arm은 `overlay` 블록 자체가 없어 양쪽 `None`이 되고, 그때는 조건이 실제로 같다 |
+| `session.overlay.fill_enabled` (2026-08-29) | 🔴 **박스 안을 칠했는가 안 칠했는가.** fill 대조 arm(`detect_cpu_chain_highlight_nofill`)이 `fill_alpha=null`을 내는데 **`_dig`는 명시적 null과 키 부재를 구분하지 못한다**(`lib/frame_log.py`의 `session_field`와 달리 `key_present`를 주지 않는다 — 이 파일은 기존 관행을 유지한다). 그래서 하중은 이 키가 받는다: fill↔nofill은 `true != false`, v7 승격본↔nofill은 `None != false`. 뒤쪽은 **정직한 판정**이다 — 그 옛 로그는 자기가 채웠는지 실제로 기록하지 않았다. 오버레이를 그리지 않는 arm은 양쪽 `None`이라 경고가 뜨지 않고, 그때는 조건이 실제로 같다 |
 | `session.lighting_condition` | 저조도에서 카메라 AE가 노출을 늘리면 **공급 fps 자체가 떨어진다.** 밝은 방 런과 야간 런을 비교하면 코드가 그대로여도 "회귀"로 오판정된다 |
 | `source.warmup_sec` | 워밍업 구간이 다르면 같은 로그도 다른 분포가 된다 |
 
@@ -1488,6 +1538,14 @@ F(그리고 그것을 포함하는 모든 값)에 **자기 비용을 얹는다.*
 > 새 규칙을 만들지 않았다 — `_dig`가 없는 키에 `None`을 돌려주는 **기존 관행 그대로**이며,
 > 그 옛 로그는 자기가 어떤 알파로 그렸는지 실제로 기록하지 않았다("fill이 없었다"는 우리의
 > 추론이다). 🔴 중요한 것은 **조용히 '같다'로 판정되지 않는다**는 점이다.
+>
+> 🔴 **`overlay.fill_enabled`(2026-08-29)를 더한 이유는 그 대가가 아니라 `_dig`의 한계다.**
+> fill 대조 arm은 `fill_alpha=null`을 내는데 이 파일의 `_dig`는 **명시적 null과 키 부재에
+> 똑같이 `None`을 돌려준다**(`lib/frame_log.py`의 `session_field`는 `key_present`를 함께
+> 주지만 `baseline_diff.py`는 그 관행을 쓰지 않는다 — 새 관행을 만들지 않았다). 그래서
+> `fill_alpha`에만 맡기면 **fill↔nofill 짝이 "옛 로그와 비교했다"와 같은 모양의 경고**로
+> 나와 사유를 읽을 수 없다. `fill_enabled`가 있으면 `true != false`로 갈리고 경고 문장이
+> fill 켬/끔을 **이름으로** 지목한다.
 
 ### 조건이 아니라 **결과**인 것 (비교하지 않고 기록·보고만 한다)
 
