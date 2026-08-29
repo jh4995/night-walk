@@ -489,6 +489,56 @@ class PassthroughRenderer(
 
     private var appliedPreviewRotationDegrees = Int.MIN_VALUE
     private var appliedPreviewMirror = false
+
+    /**
+     * 🔴 **CameraX가 준 표시 변환의 원값**(사람이 읽는 문장). `session.json`으로 나간다.
+     *
+     * 왜 남기는가: 표시 경로의 회전은 [updatePositionMatrixIfNeeded]가 **패스1 정점에만**
+     * 걸고, ④ 오버레이 좌표계([OverlayCoordMap])는 회전 없는 **센서 기준** 그대로다. 두 축이
+     * 어긋난 프레임이 실제로 있었는지 되물을 수단이 이 필드들 이전에는 없었다 — logcat에도
+     * `session.json`에도 없어서 "가끔 박스가 가로 기준으로 찍힌다"는 제보를 **재현 없이는
+     * 판별할 수 없었다.**
+     *
+     * ⚠ **관측 기록이지 보정이 아니다.** 두 축이 어긋나는 결함 자체는 그대로 남아 있다.
+     */
+    @Volatile
+    var previewTransformNote: String = NO_PREVIEW_TRANSFORM_NOTE
+        private set
+
+    /**
+     * 표시 변환 콜백이 **몇 번** 왔는가. arm을 바꾸면 ③ 분석 use case의 유무가 달라져 카메라를
+     * 다시 바인딩하고 그때 리스너가 새로 붙으므로, 한 앱 실행에서 1보다 클 수 있다.
+     */
+    @Volatile
+    var previewTransformArrivals = 0
+        private set
+
+    /**
+     * 패스1 정점에 **실제로 건** 회전각. [PREVIEW_ROTATION_NOT_APPLIED]면 한 번도 걸지
+     * 않았다(단위행렬 그대로 그렸다).
+     */
+    @Volatile
+    var previewRotationApplied = PREVIEW_ROTATION_NOT_APPLIED
+        private set
+
+    /** 패스1 정점에 실제로 건 좌우 반전. */
+    @Volatile
+    var previewMirrorApplied = false
+        private set
+
+    /** 행렬을 실제로 다시 만든 횟수. **2 이상이면 표시 축이 도중에 바뀐 것이다.** */
+    @Volatile
+    var previewRotationApplyCount = 0
+        private set
+
+    /**
+     * 마지막 적용이 **그 런의 몇 번째 기록 프레임**에서 일어났는가.
+     * [PREVIEW_ROTATION_APPLIED_WHILE_IDLE]이면 측정 중이 아닐 때(런 시작 전) 적용된 것이고,
+     * 0 이상이면 **런 도중에 바뀐 것**이다 — 그 프레임 앞뒤로 영상의 기준 축이 다르다.
+     */
+    @Volatile
+    var previewRotationAppliedAtRecordedFrame = PREVIEW_ROTATION_APPLIED_WHILE_IDLE
+        private set
     private val vertexBuffer: FloatBuffer = ByteBuffer
         .allocateDirect(VERTEX_DATA.size * 4)
         .order(ByteOrder.nativeOrder())
@@ -791,6 +841,20 @@ class PassthroughRenderer(
             transform.rotationDegrees
         }
         requestedPreviewMirror = transform.mirroring
+        // 🔴 **원값을 그대로 남긴다.** 위 분기는 `hasCameraTransform`이 참이면
+        //    `targetRotation`(표시 방향 상수)을, 거짓이면 `rotationDegrees`(센서→타깃 회전)를
+        //    쓴다 — **서로 다른 양이다.** 어느 쪽이 실제로 돌았는지 값 없이는 되물을 수 없어
+        //    둘 다 적는다. ⚠ **여기서 분기를 고치지 않는다** — 이 변경은 관측만 붙인다.
+        // ⚠ 이 콜백은 main executor 하나에서만 온다(CameraFrameSource.provideSurface)라
+        //    증가 연산에 락이 필요 없다. 읽는 쪽이 GL 스레드라 @Volatile은 필요하다.
+        previewTransformArrivals += 1
+        previewTransformNote =
+            "도착 #$previewTransformArrivals: rotation_degrees=${transform.rotationDegrees} " +
+                "target_rotation=${transform.targetRotation} " +
+                "has_camera_transform=${transform.hasCameraTransform} " +
+                "mirroring=${transform.mirroring} " +
+                "→ 이 경로가 쓰기로 한 회전각=$requestedPreviewRotationDegrees"
+        Log.i(TAG, "표시 변환 $previewTransformNote")
     }
 
     // ── arm 전환 (GL 스레드에서 부른다: glView.queueEvent) ────────────────
@@ -1948,6 +2012,23 @@ class PassthroughRenderer(
         )
         appliedPreviewRotationDegrees = rotation
         appliedPreviewMirror = mirror
+        // 🔴 **여기가 표시 축이 갈리는 유일한 순간이다.** ④ 오버레이는 이 행렬을 타지 않는다
+        //    ([HighlightOverlay]의 정점 셰이더에는 uPositionMatrix가 없다) — 그래서 이 시점
+        //    앞뒤로 **영상과 박스의 기준 축이 달라진다.** 언제였는지를 남긴다.
+        previewRotationApplied = rotation
+        previewMirrorApplied = mirror
+        previewRotationApplyCount += 1
+        previewRotationAppliedAtRecordedFrame = if (recorder.isRecording) {
+            recorder.recordedFrames
+        } else {
+            PREVIEW_ROTATION_APPLIED_WHILE_IDLE
+        }
+        Log.i(
+            TAG,
+            "표시 회전 적용 #$previewRotationApplyCount: ${rotation}도 mirror=$mirror " +
+                "(기록 프레임=$previewRotationAppliedAtRecordedFrame — " +
+                "${PREVIEW_ROTATION_APPLIED_WHILE_IDLE}면 측정 중이 아니었다)"
+        )
     }
 
     private fun drawQuad(program: QuadProgram, textureTarget: Int, textureId: Int) {
@@ -2306,6 +2387,16 @@ class PassthroughRenderer(
 
     companion object {
         const val TAG = "PassthroughRenderer"
+
+        /** 표시 변환 콜백이 아직 한 번도 오지 않았다. */
+        const val NO_PREVIEW_TRANSFORM_NOTE =
+            "아직 도착하지 않았다 — CameraX의 TransformationInfo 콜백 전이다"
+
+        /** 패스1 정점에 회전을 **한 번도 걸지 않았다**(단위행렬로 그렸다). */
+        const val PREVIEW_ROTATION_NOT_APPLIED = -1
+
+        /** 마지막 적용이 **측정 중이 아닐 때** 일어났다(런이 시작되기 전에 이미 걸려 있었다). */
+        const val PREVIEW_ROTATION_APPLIED_WHILE_IDLE = -1
 
         /** 새 프레임이 없음을 뜻하는 센티넬. 스키마의 "없는 값 = -1"과 같은 뜻이다. */
         private const val NO_FRAME = -1L

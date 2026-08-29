@@ -21,6 +21,7 @@ import com.bammasil.poc.gl.LabGlsl
 import com.bammasil.poc.gl.OverlayClassColors
 import com.bammasil.poc.gl.OverlayCoordMap
 import com.bammasil.poc.gl.OverlaySmootherFacts
+import com.bammasil.poc.gl.PassthroughRenderer
 import com.bammasil.poc.gl.RenderArm
 import com.bammasil.poc.source.AnalysisConfig
 import com.bammasil.poc.source.FrameRequest
@@ -77,6 +78,24 @@ class SessionFacts(
     val glSurfaceWidth: Int,
     val glSurfaceHeight: Int,
     val eglContextClientVersion: Int,
+    /**
+     * 🔴 **표시 경로가 패스1 정점에 실제로 건 회전각.** ④ 오버레이 좌표계는 이 회전을 타지
+     * 않으므로 두 축이 어긋날 수 있고, 그 사실을 되물을 유일한 기록이다. 값의 뜻(센티넬
+     * 포함)은 [PassthroughRenderer]의 같은 이름 필드에 있다.
+     *
+     * ⚠ `camera_analysis_actual.rotation_degrees`와 **다른 축이다** — 그쪽은 ③ 모델 입력을
+     * 세우는 회전이고 이쪽은 화면에 그리는 회전이다. 한 칸에 섞지 않는다.
+     */
+    val previewRotationApplied: Int,
+    val previewMirrorApplied: Boolean,
+    /** 표시 축이 실제로 갈린 횟수. **2 이상이면 런 도중에 바뀌었다.** */
+    val previewRotationApplyCount: Int,
+    /** 마지막 적용이 일어난 기록 프레임 번호. 음수면 측정 중이 아닐 때 적용된 것이다. */
+    val previewRotationAppliedAtRecordedFrame: Int,
+    /** CameraX의 표시 변환 콜백이 온 횟수. 재바인딩마다 리스너가 새로 붙는다. */
+    val previewTransformArrivals: Int,
+    /** 마지막 콜백의 **원값**(사람이 읽는 문장). 어느 분기가 돌았는지가 여기서 보인다. */
+    val previewTransformNote: String,
     /** `onSurfaceCreated`에서 실측한 GL 능력. 수집 실패 시 null. */
     val gl: GlCapabilities?,
     /** 3패스가 실제로 쓴 처리 해상도. 협상 전이면 0. */
@@ -3602,12 +3621,53 @@ object SessionWriter {
         json.put("gpu_status", facts.stage2Status)
     }
 
+    /**
+     * 🔴 **표시 경로가 실제로 건 회전과, 그것이 걸린 시점.**
+     *
+     * ④ 오버레이의 박스는 `OverlayCoordMap`이 **회전 없는 센서 좌표**로 FBO NDC를 만들고,
+     * 표시 회전은 **패스1 정점에만** 걸린다. 두 축이 어긋나면 화면에서 박스가 90° 돌아간
+     * 기준으로 찍히는데, **그 사실을 로그로 되물을 수단이 이 블록 이전에는 없었다** — 회전
+     * 기록은 `camera_analysis_actual` 쪽뿐이었고 그것은 ③ 모델 입력을 세우는 **다른 축**이다.
+     *
+     * 읽는 법:
+     * - `applied_rotation_degrees`가 0이 아닌데 ④ 박스가 이상하면 **두 축이 갈린 런**이다.
+     * - `apply_count`가 2 이상이면 **런 도중에 표시 축이 바뀌었다** — 그 런의 박스 위치를
+     *   한 가지 기준으로 인용하지 말 것.
+     * - `applied_at_recorded_frame`이 0 이상이면 **그 프레임에서 바뀌었다**는 뜻이고, 음수면
+     *   런이 시작되기 전에 이미 걸려 있었다.
+     *
+     * ⚠ **이 블록은 관측이지 보정이 아니다.** 축이 어긋나는 결함은 그대로 있다.
+     */
+    private fun buildPreviewTransform(facts: SessionFacts): JSONObject = JSONObject()
+        .put("applied_rotation_degrees", facts.previewRotationApplied)
+        .put("applied_mirror", facts.previewMirrorApplied)
+        .put("apply_count", facts.previewRotationApplyCount)
+        .put("applied_at_recorded_frame", facts.previewRotationAppliedAtRecordedFrame)
+        .put("arrivals", facts.previewTransformArrivals)
+        .put("last_info", facts.previewTransformNote)
+        .put(
+            "note",
+            "🔴 **표시 경로(패스1 정점 uPositionMatrix)가 실제로 건 회전이다.** ④ 오버레이는 " +
+                "이 행렬을 타지 않는다(HighlightOverlay의 정점 셰이더에 uPositionMatrix가 " +
+                "없다) — 그래서 이 값이 0이 아니면 **영상과 박스의 기준 축이 그만큼 " +
+                "어긋난다.** ⚠ camera_analysis_actual.rotation_degrees와 섞지 말 것: 그쪽은 " +
+                "③ 모델 입력을 세우는 회전이고 이쪽은 화면에 그리는 회전이다. " +
+                "applied_rotation_degrees=" +
+                "${PassthroughRenderer.PREVIEW_ROTATION_NOT_APPLIED}이면 한 번도 걸지 " +
+                "않았다는 뜻이고, applied_at_recorded_frame=" +
+                "${PassthroughRenderer.PREVIEW_ROTATION_APPLIED_WHILE_IDLE}이면 측정 중이 " +
+                "아닐 때 적용됐다는 뜻이다(런 시작 전부터 걸려 있었다). apply_count가 2 " +
+                "이상이면 런 도중에 축이 바뀌었으므로 그 런의 박스 위치를 한 기준으로 " +
+                "인용하지 말 것. ⚠ **관측이지 보정이 아니다.**"
+        )
+
     private fun buildRender(facts: SessionFacts): JSONObject {
         val json = JSONObject()
         json.put("display_path", "2-C: CameraX Preview -> 우리 SurfaceTexture(OES) -> GL")
         json.put("arm", facts.arm.id)
         json.put("gl_surface_size", "${facts.glSurfaceWidth}x${facts.glSurfaceHeight}")
         json.put("egl_context_client_version", facts.eglContextClientVersion)
+        json.put("preview_transform", buildPreviewTransform(facts))
         json.put("render_mode", "RENDERMODE_WHEN_DIRTY (onFrameAvailable에서 requestRender)")
         json.put(
             "draw_call",

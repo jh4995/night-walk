@@ -168,6 +168,14 @@ class MainActivity : ComponentActivity() {
      */
     private var armAtStart: RenderArm = RenderArm.DEFAULT
 
+    /**
+     * **실제 경로에 반영이 끝난 arm.** 스피너의 선택([selectedArm])이 아니라 `renderer.setArm`
+     * 까지 태운 값이다. 🔴 [applyArmSelection]을 버튼 경로와 스피너 리스너가 **둘 다** 부를 수
+     * 있어(정보 패널이 펴져 있으면 리스너도 온다) 중복 실행을 여기서 막는다 — 막지 않으면
+     * 카메라를 두 번 재바인딩하고 ③ 준비를 두 번 건다.
+     */
+    private var appliedArm: RenderArm? = null
+
     private var displayModeAtStart: DisplayMode = DisplayMode.DEFAULT
     private var cardboardImageScaleAtStart = 0.90f
     private var cardboardEyeOffsetAtStart = -0.08f
@@ -301,11 +309,11 @@ class MainActivity : ComponentActivity() {
                 position: Int,
                 id: Long,
             ) {
-                // GL 자원을 만지므로 GL 스레드에서 바꾼다.
-                val arm = RenderArm.fromId(armSpinner.getItemAtPosition(position)?.toString())
-                glView.queueEvent { renderer.setArm(arm) }
-                prepareDetectIfNeeded(arm)
-                rebindSourceIfAnalysisChanged(arm)
+                // 🔴 반영은 **[applyArmSelection] 한 곳**이다 — on/off 버튼도 같은 함수를
+                //    부른다(왜 버튼이 이 리스너에 기댈 수 없는지는 그 KDoc에 있다).
+                applyArmSelection(
+                    RenderArm.fromId(armSpinner.getItemAtPosition(position)?.toString())
+                )
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
@@ -494,6 +502,42 @@ class MainActivity : ComponentActivity() {
         frameSource.start(FRAME_REQUEST, renderer, bindAnalysis) { message ->
             uiHandler.post { showMessage(message) }
         }
+    }
+
+    /**
+     * 스피너 선택을 **실제 경로에 반영한다.** 스피너 리스너와 on/off 버튼이 **같은 함수**를
+     * 부른다.
+     *
+     * 🔴 **왜 버튼이 리스너에만 기댈 수 없나:** `armSpinner`는 정보 패널 안에 있고 그 패널은
+     * 기본이 `View.GONE`이다([hudInfoHidden]의 기본값이 true다). `AdapterView.setSelection`의
+     * `onItemSelected`는 **레이아웃 패스에서 전달**되므로 `GONE`인 부모 아래에서는 오지
+     * 않는다 — 그래서 on/off 버튼을 눌러도 arm이 반영되지 않았고, 정보 보기로 패널을 펴는
+     * 순간 밀려 있던 선택이 그제야 발화했다(측정자가 "버튼이 안 먹는다"로 겪은 것이 이것이다).
+     * ⚠ 그때도 `getSelectedItemPosition()`은 새 값을 돌려주므로 **HUD와 [selectedArm]은 이미
+     * 새 arm을 가리켰다** — 화면만 옛 arm이었다. [startRecording]의 `renderer.setArm` 안전망이
+     * 런의 arm은 지켜 왔다(그래서 기록된 런은 오염되지 않았다).
+     *
+     * 🔴 **선택은 여전히 스피너가 쥔다**(`setSelection`) — 스피너 표시와 [selectedArm]
+     * (= [startRecording]이 읽는 값)이 갈리면 `session.json`이 실제로 돈 arm과 다른 arm을
+     * 적는다. 이 함수가 하는 것은 **반영**뿐이다.
+     */
+    private fun applyArmSelection(arm: RenderArm) {
+        // 같은 arm을 두 번 반영하지 않는다(위 [appliedArm] KDoc).
+        if (appliedArm == arm) return
+        appliedArm = arm
+        // GL 자원을 만지므로 GL 스레드에서 바꾼다.
+        glView.queueEvent { renderer.setArm(arm) }
+        prepareDetectIfNeeded(arm)
+        rebindSourceIfAnalysisChanged(arm)
+        // 🔴 `RENDERMODE_WHEN_DIRTY`라 **새 카메라 프레임이 오기 전에는 그리지 않는다.** arm이
+        //    바뀌면 ③ 분석 use case의 유무가 달라져 카메라를 다시 바인딩하는데, 그 사이에는
+        //    프레임이 없어 화면이 **옛 arm의 마지막 그림에 멈춘다.** 한 장을 강제로 다시 그려
+        //    바뀐 결과가 바로 보이게 한다([applyCardboardTuning]·[onConfigurationChanged]와
+        //    같은 관행이다).
+        //    ⚠ 측정 중에는 이 경로가 닫혀 있다(스피너·버튼 잠금 + [selectArmFromButton]의
+        //      recording 가드) — 그래서 이 강제 드로우가 런의 `draws_without_new_frame`에
+        //      섞이지 않는다.
+        glView.requestRender()
     }
 
     /**
@@ -767,6 +811,16 @@ class MainActivity : ComponentActivity() {
                     glSurfaceWidth = renderer.surfaceWidth,
                     glSurfaceHeight = renderer.surfaceHeight,
                     eglContextClientVersion = EGL_CONTEXT_CLIENT_VERSION,
+                    // 🔴 표시 경로가 **실제로 건** 회전. ④ 오버레이 좌표계는 이 회전을 타지
+                    //    않으므로 두 축이 어긋날 수 있다 — 그 사실을 남기는 유일한 기록이다
+                    //    (session.json의 render.preview_transform).
+                    previewRotationApplied = renderer.previewRotationApplied,
+                    previewMirrorApplied = renderer.previewMirrorApplied,
+                    previewRotationApplyCount = renderer.previewRotationApplyCount,
+                    previewRotationAppliedAtRecordedFrame =
+                        renderer.previewRotationAppliedAtRecordedFrame,
+                    previewTransformArrivals = renderer.previewTransformArrivals,
+                    previewTransformNote = renderer.previewTransformNote,
                     gl = renderer.capabilities,
                     processWidth = renderer.processWidth,
                     processHeight = renderer.processHeight,
@@ -912,11 +966,17 @@ class MainActivity : ComponentActivity() {
     private fun selectedDisplayMode(): DisplayMode =
         DisplayMode.fromId(displayModeSpinner.selectedItem?.toString())
     /**
-     * on/off 버튼 → **[armSpinner]의 선택을 바꾼다.** 🔴 `renderer.setArm`·
-     * [prepareDetectIfNeeded]·[rebindSourceIfAnalysisChanged]를 **직접 부르지 않는다** —
-     * `setSelection`이 스피너의 `onItemSelected`를 깨워 그 셋이 전부 돌고, 그래야 스피너
-     * 표시와 [selectedArm](= [startRecording]이 읽는 값)이 갈리지 않는다. 갈리면
-     * `session.json`이 실제로 돈 arm과 **다른 arm**을 적는다.
+     * on/off 버튼 → **[armSpinner]의 선택을 바꾸고, 그 선택을 [applyArmSelection]으로
+     * 반영한다.**
+     *
+     * 🔴 **예전에는 `setSelection` 하나였다** — "`onItemSelected`가 깨어나 반영까지 된다"는
+     * 전제였는데 **그 전제가 거짓이었다**: 스피너가 접힌 정보 패널(`View.GONE`) 안에 있으면
+     * 레이아웃 패스가 돌지 않아 콜백이 오지 않는다. 그래서 버튼을 눌러도 화면이 바뀌지 않고
+     * 정보 보기를 눌러야 그제야 바뀌었다. 자세한 것은 [applyArmSelection]의 KDoc에 있다.
+     *
+     * 🔴 그래도 **선택은 여전히 스피너가 쥔다** — 스피너 표시와 [selectedArm]
+     * (= [startRecording]이 읽는 값)이 갈리면 `session.json`이 실제로 돈 arm과 **다른 arm**을
+     * 적는다. 바뀐 것은 "반영을 콜백에 맡기지 않는다"뿐이다.
      */
     private fun selectArmFromButton(arm: RenderArm, labelRes: Int, toastRes: Int) {
         // 측정 중에는 조건을 바꾸지 않는다. 버튼도 잠겨 있지만 경로 자체를 닫아 둔다
@@ -929,6 +989,9 @@ class MainActivity : ComponentActivity() {
             return
         }
         armSpinner.setSelection(index)
+        // 🔴 **콜백을 기다리지 않고 여기서 반영한다**(위 KDoc). 패널이 펴져 있으면 리스너도
+        //    같은 함수를 부르지만 appliedArm 가드가 두 번째를 막는다.
+        applyArmSelection(arm)
         // ⚠ 프리뷰가 잠깐 끊기는 것은 **정상 동작**이다: ③ 분석 use case의 유무가 달라지면
         //   카메라를 다시 바인딩한다(rebindSourceIfAnalysisChanged). 알리지 않으면
         //   측정자가 고장으로 읽는다.
