@@ -416,6 +416,10 @@ class DragoClaheChainStage {
             oesFragment: String,
             blitVertex: String,
             blitFragment: String,
+            // 🔴 present 정점은 blit 정점과 **다른 문자열**이다(present에만 uPositionMatrix가
+            //    있다). 하나로 묶으면 이 목록이 실제로 컴파일되는 것과 어긋나고, "같은
+            //    String 객체라 텍스트와 어긋날 수 없다"는 이 함수의 근거가 무너진다.
+            presentVertex: String,
         ): List<Pair<String, List<String>>> = listOf(
             "oes_to_fbo_a" to listOf(oesVertex, oesFragment),
             "stage2_drago_analyze" to listOf(DRAGO_ANALYZE_SHADER),
@@ -424,7 +428,7 @@ class DragoClaheChainStage {
             "stage2_clahe_analyze" to listOf(CLAHE_ANALYZE_SHADER),
             "stage2_clahe_build" to listOf(CLAHE_BUILD_SHADER),
             "stage2_clahe_apply" to listOf(ES31_QUAD_VERTEX_SHADER, CLAHE_APPLY_SHADER),
-            "present" to listOf(blitVertex, blitFragment),
+            "present" to listOf(presentVertex, blitFragment),
         )
     }
 }

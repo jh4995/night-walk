@@ -351,10 +351,29 @@ class PassthroughRenderer(
     private var oesProgram: QuadProgram? = null
 
     private var cardboardOesProgram: QuadProgram? = null
+
+    /**
+     * cardboard SBS의 **2D 눈 그리기**용. 🔴 이것도 present 전용이므로
+     * [VERTEX_SHADER_PRESENT]로 만든다 — 오프스크린 패스에서는 절대 쓰이지 않는다.
+     */
     private var cardboard2dProgram: QuadProgram? = null
 
-    /** 패스2(복사)·패스3(표시) 공용. */
+    /**
+     * 🔴 **오프스크린 복사 전용.** 회전 수단이 없다([VERTEX_SHADER_2D]에 `uPositionMatrix`가
+     * 없다) — 그게 이 프로그램이 present와 갈라진 이유다. present는 [presentProgram]이다.
+     */
     private var blitProgram: QuadProgram? = null
+
+    /**
+     * **마지막 패스(화면) 전용.** [blitProgram]과 프래그먼트는 같고 정점만 다르다
+     * ([VERTEX_SHADER_PRESENT] — `uPositionMatrix`가 있다).
+     *
+     * ⚠ `FRAME_BUDGET.md`가 "`gpu_present_ms`는 전 arm에서 글자 그대로 같은 셰이더"를
+     * 분석의 기둥으로 쓰는데, **그 전제는 이 커밋 경계에서 바뀐다** — 이 커밋 이후의
+     * `gpu_present_ms`는 정점에 mat4 곱이 하나 더 붙은 셰이더의 값이다(전 arm이 같은
+     * 프로그램을 쓴다는 사실 자체는 그대로다). 커밋을 가로질러 present 비용을 비교하지 말 것.
+     */
+    private var presentProgram: QuadProgram? = null
 
     /** 패스2(감마). ② 자리의 비용 하한. */
     private var gammaProgram: QuadProgram? = null
@@ -493,13 +512,19 @@ class PassthroughRenderer(
     /**
      * 🔴 **CameraX가 준 표시 변환의 원값**(사람이 읽는 문장). `session.json`으로 나간다.
      *
-     * 왜 남기는가: 표시 경로의 회전은 [updatePositionMatrixIfNeeded]가 **패스1 정점에만**
-     * 걸고, ④ 오버레이 좌표계([OverlayCoordMap])는 회전 없는 **센서 기준** 그대로다. 두 축이
-     * 어긋난 프레임이 실제로 있었는지 되물을 수단이 이 필드들 이전에는 없었다 — logcat에도
-     * `session.json`에도 없어서 "가끔 박스가 가로 기준으로 찍힌다"는 제보를 **재현 없이는
-     * 판별할 수 없었다.**
+     * 왜 남기는가: 표시 경로의 회전은 [updatePositionMatrixIfNeeded]가 **present 정점에만**
+     * 걸고, ④ 오버레이 박스는 그보다 앞서 회전 전 FBO에 그려지므로 **영상과 박스가 같은
+     * 행렬로 함께 돈다.** 그 회전이 실제로 걸렸는지를 되물을 수단은 이 필드들뿐이다.
      *
-     * ⚠ **관측 기록이지 보정이 아니다.** 두 축이 어긋나는 결함 자체는 그대로 남아 있다.
+     * 🔴 **이 필드들이 결함 하나를 갈라냈다.** 예전에는 회전이 **패스1 정점**에 걸렸고
+     * 오버레이는 그 뒤 FBO에 그려져 두 축이 실제로 갈렸는데, 게다가 회전각을
+     * `targetRotation`(표시 방향 상수)에서 읽고 있어 각도 자체가 0으로 죽어 있었다.
+     * A34 세로 실측에서 `applied_rotation_degrees=0`인데 이 문장의 `rotation_degrees=90`
+     * 이었던 것이 원인을 가리켰다 — **원값 4개를 다 적어 두지 않았다면 되물을 수 없었다.**
+     * 그래서 분기가 사라진 지금도 원값을 전부 남긴다.
+     *
+     * ⚠ **관측 기록이지 보정이 아니다** — 보정은 [updatePositionMatrixIfNeeded]와 present
+     * 패스가 한다. 이 문장은 그것이 무엇을 근거로 돌았는지만 말한다.
      */
     @Volatile
     var previewTransformNote: String = NO_PREVIEW_TRANSFORM_NOTE
@@ -514,14 +539,18 @@ class PassthroughRenderer(
         private set
 
     /**
-     * 패스1 정점에 **실제로 건** 회전각. [PREVIEW_ROTATION_NOT_APPLIED]면 한 번도 걸지
+     * present 정점에 **실제로 건** 회전각. [PREVIEW_ROTATION_NOT_APPLIED]면 한 번도 걸지
      * 않았다(단위행렬 그대로 그렸다).
+     *
+     * ⚠ 회전이 걸리는 곳은 **마지막 패스 하나**이고 ④ 오버레이는 그 앞 FBO에 그려지므로,
+     * 이 값이 0이 아니어도 영상과 박스는 **함께** 돈다(축이 갈리지 않는다).
+     * 🔴 **부호(90 대 270)는 이 값으로 확인되지 않는다** — [PREVIEW_ROTATION_SIGN] 참고.
      */
     @Volatile
     var previewRotationApplied = PREVIEW_ROTATION_NOT_APPLIED
         private set
 
-    /** 패스1 정점에 실제로 건 좌우 반전. */
+    /** present 정점에 실제로 건 좌우 반전. 회전과 같은 행렬·같은 자리에서 걸린다. */
     @Volatile
     var previewMirrorApplied = false
         private set
@@ -578,13 +607,23 @@ class PassthroughRenderer(
         )
         oesProgram = buildProgram(VERTEX_SHADER_OES, FRAGMENT_SHADER_OES, PROGRAM_LABEL_OES)
         blitProgram = buildProgram(VERTEX_SHADER_2D, FRAGMENT_SHADER_BLIT, PROGRAM_LABEL_BLIT)
+        // present는 blit과 프래그먼트가 같고 정점만 다르다. 실패하면 buildProgram이 라벨과
+        // 함께 원문을 남기고 null을 돌려주며, dispatchDraw의 null 검사가 패스스루로 떨군다 —
+        // 조용히 넘어가는 경로는 없다.
+        presentProgram = buildProgram(
+            VERTEX_SHADER_PRESENT,
+            FRAGMENT_SHADER_BLIT,
+            PROGRAM_LABEL_PRESENT,
+        )
         cardboardOesProgram = buildProgram(
             VERTEX_SHADER_OES,
             FRAGMENT_SHADER_CARDBOARD_OES,
             PROGRAM_LABEL_CARDBOARD_OES,
         )
+        // 🔴 cardboard 2D도 **present 전용**이라 회전 셰이더로 만든다. 라벨은 그대로 둔다 —
+        //    역할이 같으므로 로그 키를 바꾸면 예전 런과 대조가 끊긴다.
         cardboard2dProgram = buildProgram(
-            VERTEX_SHADER_2D,
+            VERTEX_SHADER_PRESENT,
             FRAGMENT_SHADER_CARDBOARD_2D,
             PROGRAM_LABEL_CARDBOARD_2D,
         )
@@ -661,18 +700,21 @@ class PassthroughRenderer(
             oesFragment = FRAGMENT_SHADER_OES,
             blitVertex = VERTEX_SHADER_2D,
             blitFragment = FRAGMENT_SHADER_BLIT,
+            presentVertex = VERTEX_SHADER_PRESENT,
         )
         val fusedSources = DragoClaheFusedStage.shaderSourcesByPass(
             oesVertex = VERTEX_SHADER_OES,
             oesFragment = FRAGMENT_SHADER_OES,
             blitVertex = VERTEX_SHADER_2D,
             blitFragment = FRAGMENT_SHADER_BLIT,
+            presentVertex = VERTEX_SHADER_PRESENT,
         )
         val overlaySources = HighlightOverlay.shaderSourcesByPass(
             oesVertex = VERTEX_SHADER_OES,
             oesFragment = FRAGMENT_SHADER_OES,
             blitVertex = VERTEX_SHADER_2D,
             blitFragment = FRAGMENT_SHADER_BLIT,
+            presentVertex = VERTEX_SHADER_PRESENT,
         )
         val chainSites = ColorTransformCensus.countByPass(chainSources)
         val overlaySites = ColorTransformCensus.countByPass(overlaySources)
@@ -830,21 +872,17 @@ class PassthroughRenderer(
     }
 
     override fun updatePreviewTransform(transform: PreviewTransform) {
-        requestedPreviewRotationDegrees = if (transform.hasCameraTransform) {
-            when (transform.targetRotation) {
-                Surface.ROTATION_90 -> 90
-                Surface.ROTATION_180 -> 180
-                Surface.ROTATION_270 -> 270
-                else -> 0
-            }
-        } else {
-            transform.rotationDegrees
-        }
+        // 🔴 **`rotationDegrees` 하나만 쓴다 — `targetRotation`은 회전각이 아니다.**
+        //    예전에는 `hasCameraTransform`이 참이면 `targetRotation`(= `Surface.ROTATION_*`,
+        //    0/1/2/3의 **표시 방향 상수**)을 degrees로 바꿔 썼다. A34 세로 실측에서
+        //    `rotation_degrees=90`인데 `target_rotation=0`이라 **회전이 통째로 사라졌다**
+        //    (`applied_rotation_degrees=0`). 두 값은 서로 다른 양이고, 표시 경로가 필요로
+        //    하는 것은 "센서 프레임을 바로 세우려면 몇 도"인 `rotationDegrees` 쪽이다.
+        requestedPreviewRotationDegrees = transform.rotationDegrees
         requestedPreviewMirror = transform.mirroring
-        // 🔴 **원값을 그대로 남긴다.** 위 분기는 `hasCameraTransform`이 참이면
-        //    `targetRotation`(표시 방향 상수)을, 거짓이면 `rotationDegrees`(센서→타깃 회전)를
-        //    쓴다 — **서로 다른 양이다.** 어느 쪽이 실제로 돌았는지 값 없이는 되물을 수 없어
-        //    둘 다 적는다. ⚠ **여기서 분기를 고치지 않는다** — 이 변경은 관측만 붙인다.
+        // 🔴 **원값 4개를 그대로 남긴다.** 위 원인을 갈라낸 것이 이 기록이다 —
+        //    `rotation_degrees`와 `target_rotation`을 나란히 찍어 두지 않았다면 "어느 값을
+        //    썼는가"를 되물을 수 없었다. 분기가 사라진 지금도 지우지 않는다.
         // ⚠ 이 콜백은 main executor 하나에서만 온다(CameraFrameSource.provideSurface)라
         //    증가 연산에 락이 필요 없다. 읽는 쪽이 GL 스레드라 @Volatile은 필요하다.
         previewTransformArrivals += 1
@@ -853,7 +891,9 @@ class PassthroughRenderer(
                 "target_rotation=${transform.targetRotation} " +
                 "has_camera_transform=${transform.hasCameraTransform} " +
                 "mirroring=${transform.mirroring} " +
-                "→ 이 경로가 쓰기로 한 회전각=$requestedPreviewRotationDegrees"
+                "→ 이 경로가 쓰기로 한 회전각=$requestedPreviewRotationDegrees " +
+                "(출처는 rotation_degrees 하나다. target_rotation은 표시 방향 상수라 " +
+                "degrees가 아니며 참고로만 싣는다)"
         Log.i(TAG, "표시 변환 $previewTransformNote")
     }
 
@@ -977,7 +1017,10 @@ class PassthroughRenderer(
             drawPassthrough(oes)
             return
         }
-        val present = blitProgram
+        // 🔴 **present는 blitProgram이 아니다.** 마지막 패스만 표시 회전을 걸어야 하므로
+        //    `uPositionMatrix`가 있는 전용 프로그램을 쓴다. 오프스크린 복사 자리(② 자리)는
+        //    여전히 blitProgram이다 — 거기가 돌면 ④ 오버레이와 축이 다시 갈린다.
+        val present = presentProgram
         // 🔴 **usesHighlightOverlay 분기보다 앞에 있어야 한다.** 통합 arm도
         //    usesHighlightOverlay가 true이므로(overlay 블록·overlayStatus의 게이트다) 뒤에
         //    두면 9패스 arm이 4패스 단순 복사 경로로 떨어진다 — ② 체인이 조용히 사라지고
@@ -1001,14 +1044,20 @@ class PassthroughRenderer(
             return
         }
         if (arm.usesHighlightOverlay) {
-            // ② 자리는 단순 복사이므로 blit 프로그램 하나를 복사·표시에 함께 쓴다
-            // (3패스 골격의 blit_2pass arm과 같다).
-            if (present == null || !highlightOverlay.ready || !ensureOffscreen()) {
+            // ② 자리는 단순 복사다(3패스 골격의 blit_2pass arm과 같다).
+            // 🔴 예전에는 여기에 `present`를 두 번 넘겨 복사와 표시가 **같은 프로그램**을
+            //    썼다. 이제는 다르다 — 복사는 회전이 없는 blitProgram, 표시는 회전을 거는
+            //    presentProgram이다. 한 개로 되돌리면 ② 자리 FBO가 함께 돌아
+            //    ④ 오버레이가 회전 뒤 좌표계에 그려진다(축이 다시 갈린다).
+            val stage2Copy = blitProgram
+            if (present == null || stage2Copy == null ||
+                !highlightOverlay.ready || !ensureOffscreen()
+            ) {
                 offscreenFallbackDraws++
                 drawPassthrough(oes)
                 return
             }
-            drawHighlightOverlay(oes, present, present, instrument)
+            drawHighlightOverlay(oes, stage2Copy, present, instrument)
             return
         }
         if (arm.usesChainedBilateral) {
@@ -1946,10 +1995,20 @@ class PassthroughRenderer(
         return (frac.toDouble() * FrameLogRecorder.FILL_FRAC_SCALE + 0.5).toLong()
     }
 
-    /** 프레임당 객체를 만들지 않는다 — 인자는 전부 원시형이고 프로그램은 미리 만들어 둔다. */
+    /**
+     * 프레임당 객체를 만들지 않는다 — 인자는 전부 원시형이고 프로그램은 미리 만들어 둔다.
+     *
+     * 🔴 **표시 회전이 걸리는 유일한 지점이다**(cardboard 눈은 [drawCardboardEye]로 이어진다).
+     * 여기까지 오는 텍스처는 회전 전 좌표계이고 ④ 오버레이도 그 좌표계에 그려져 있으므로,
+     * 이 한 번의 회전이 **영상과 박스를 함께** 돌린다.
+     *
+     * ⚠ **종횡비 보정(S5)은 아직 없다.** 아래 normal 경로는 호출자가 세운 뷰포트를 그대로
+     * 쓰고, 90/270°에서는 소스와 뷰포트의 종횡비가 뒤집혀 늘어나 보인다 — 정책이 미정이라
+     * (STATUS 이슈 68) 이번에는 손대지 않는다. 들어온다면 자리는 여기다.
+     */
     private fun presentTexture(program: QuadProgram, textureTarget: Int, textureId: Int) {
         if (displayMode == DisplayMode.NORMAL) {
-            drawQuad(program, textureTarget, textureId)
+            drawQuad(program, textureTarget, textureId, applyPreviewTransform = true)
             return
         }
 
@@ -1985,6 +2044,11 @@ class PassthroughRenderer(
             contentHeight = maxHeight
             contentWidth = contentHeight * sourceAspect
         }
+        // ⚠ [sourceAspect]는 **회전 전** 처리 해상도의 종횡비다. present가 회전을 걸게 된 뒤로
+        //    90/270°에서는 이 비가 뒤집혀야 맞지만, 종횡비 정책이 미정이라(STATUS 이슈 68)
+        //    이번 변경에서는 건드리지 않는다. 실제로 cardboard는 MainActivity가 LANDSCAPE를
+        //    강제해 rotationDegrees가 0/180이 되므로 회전이 사실상 없어질 것으로 보는데,
+        //    **그것은 실기기에서 확인할 항목**이다 — 코드에 분기를 만들지 않는다.
 
         val offsetPx = eyeWidth * cardboardEyeOffset * horizontalDirection
         val viewportX = (
@@ -1997,7 +2061,8 @@ class PassthroughRenderer(
             contentWidth.roundToInt().coerceAtLeast(1),
             contentHeight.roundToInt().coerceAtLeast(1),
         )
-        drawQuad(program, textureTarget, textureId)
+        // cardboard도 normal과 **같은 게이트**를 탄다 — 표시 경로는 하나다.
+        drawQuad(program, textureTarget, textureId, applyPreviewTransform = true)
     }
 
     private fun updatePositionMatrixIfNeeded() {
@@ -2007,14 +2072,16 @@ class PassthroughRenderer(
 
         Matrix.setIdentityM(positionMatrix, 0)
         if (mirror) Matrix.scaleM(positionMatrix, 0, -1f, 1f, 1f)
+        // 부호는 [PREVIEW_ROTATION_SIGN] 하나에서만 온다 — 유도와 뒤집는 법은 그 상수에 있다.
         if (rotation != 0) Matrix.rotateM(
-            positionMatrix, 0, rotation.toFloat(), 0f, 0f, 1f
+            positionMatrix, 0, PREVIEW_ROTATION_SIGN * rotation.toFloat(), 0f, 0f, 1f
         )
         appliedPreviewRotationDegrees = rotation
         appliedPreviewMirror = mirror
-        // 🔴 **여기가 표시 축이 갈리는 유일한 순간이다.** ④ 오버레이는 이 행렬을 타지 않는다
-        //    ([HighlightOverlay]의 정점 셰이더에는 uPositionMatrix가 없다) — 그래서 이 시점
-        //    앞뒤로 **영상과 박스의 기준 축이 달라진다.** 언제였는지를 남긴다.
+        // 🔴 **이 행렬이 걸리는 자리는 present 정점 하나다**(패스1은 항등 행렬을 받는다) —
+        //    그래서 ④ 오버레이 박스는 **회전 전 FBO**에 그려지고 present가 영상과 박스를
+        //    **함께** 돌린다. 두 축이 갈리지 않는다는 것이 이 배치의 목적이다.
+        //    ⚠ 그래도 언제 걸렸는지는 남긴다 — 런 도중에 바뀌면 그 런의 화면 축이 둘이다.
         previewRotationApplied = rotation
         previewMirrorApplied = mirror
         previewRotationApplyCount += 1
@@ -2031,14 +2098,36 @@ class PassthroughRenderer(
         )
     }
 
-    private fun drawQuad(program: QuadProgram, textureTarget: Int, textureId: Int) {
+    /**
+     * @param applyPreviewTransform 표시 회전을 이 드로우에 걸 것인가. 🔴 **기본값 false가
+     *   핵심이다** — 패스1(OES → FBO)을 포함한 오프스크린 드로우 전부가 인자를 안 적으므로
+     *   자동으로 회전이 꺼진다. 드로우 사이트를 하나씩 켜고 끄는 방식이었다면 여덟 자리 중
+     *   하나만 빠져도 그 arm의 화면이 조용히 180°(또는 90°) 어긋난다.
+     *   **true로 부르는 곳은 [presentTexture]와 [drawCardboardEye] 둘뿐이다.**
+     */
+    private fun drawQuad(
+        program: QuadProgram,
+        textureTarget: Int,
+        textureId: Int,
+        applyPreviewTransform: Boolean = false,
+    ) {
         GLES20.glUseProgram(program.handle)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(textureTarget, textureId)
         GLES20.glUniform1i(program.uTexture, 0)
         if (program.uPositionMatrix >= 0) {
-            updatePositionMatrixIfNeeded()
-            GLES20.glUniformMatrix4fv(program.uPositionMatrix, 1, false, positionMatrix, 0)
+            // 🔴 **false에서 업로드를 건너뛰면 안 된다.** 유니폼 값은 프로그램에 남으므로
+            //    `oesProgram`처럼 패스1(회전 없음)과 passthrough present(회전 있음)에서
+            //    함께 쓰이는 프로그램은 직전 드로우의 회전 행렬을 그대로 물려받는다.
+            //    항등 행렬을 **명시적으로** 올린다(할당은 없다 — 상수 배열이다).
+            if (applyPreviewTransform) {
+                updatePositionMatrixIfNeeded()
+                GLES20.glUniformMatrix4fv(program.uPositionMatrix, 1, false, positionMatrix, 0)
+            } else {
+                GLES20.glUniformMatrix4fv(
+                    program.uPositionMatrix, 1, false, IDENTITY_POSITION_MATRIX, 0
+                )
+            }
         }
         if (program.uTexMatrix >= 0) {
             GLES20.glUniformMatrix4fv(program.uTexMatrix, 1, false, texMatrix, 0)
@@ -2219,6 +2308,7 @@ class PassthroughRenderer(
         deleteProgram(cardboardOesProgram)
         deleteProgram(cardboard2dProgram)
         deleteProgram(blitProgram)
+        deleteProgram(presentProgram)
         deleteProgram(gammaProgram)
         deleteProgram(dragoApplyProgram)
         deleteProgram(claheApplyProgram)
@@ -2231,6 +2321,7 @@ class PassthroughRenderer(
         cardboardOesProgram = null
         cardboard2dProgram = null
         blitProgram = null
+        presentProgram = null
         gammaProgram = null
         dragoApplyProgram = null
         claheApplyProgram = null
@@ -2392,7 +2483,7 @@ class PassthroughRenderer(
         const val NO_PREVIEW_TRANSFORM_NOTE =
             "아직 도착하지 않았다 — CameraX의 TransformationInfo 콜백 전이다"
 
-        /** 패스1 정점에 회전을 **한 번도 걸지 않았다**(단위행렬로 그렸다). */
+        /** present 정점에 회전을 **한 번도 걸지 않았다**(단위행렬로 그렸다). */
         const val PREVIEW_ROTATION_NOT_APPLIED = -1
 
         /** 마지막 적용이 **측정 중이 아닐 때** 일어났다(런이 시작되기 전에 이미 걸려 있었다). */
@@ -2414,9 +2505,56 @@ class PassthroughRenderer(
         private const val CARDBOARD_LENS_DISTORTION = 0.12f
 
         // 프로그램 라벨. logcat 한 줄과 `session.json`의 실패 원문을 같은 이름으로 잇는다.
-        // 값은 `RenderArm`의 패스 이름 규약(`shaderSourcesByPass`의 키)과 같은 표기다.
+        // 표기는 `RenderArm`의 패스 이름 규약을 따르지만, **전부가 `shaderSourcesByPass`의
+        // 키인 것은 아니다** — 키와 같은 것은 `oes_to_fbo_a` 하나이고 나머지(`blit_present`,
+        // `present_rotate`, `cardboard_lite_*`, `gamma_only_apply` …)는 프로그램 식별용
+        // 이름일 뿐이다. 라벨을 키라고 믿고 대조하면 없는 키를 찾게 된다.
         private const val PROGRAM_LABEL_OES = "oes_to_fbo_a"
+
+        /**
+         * 오프스크린 복사 프로그램([blitProgram])의 라벨.
+         *
+         * ⚠ **이름이 `blit_present`지만 present에는 쓰이지 않는다.** present는 회전을 걸어야
+         * 해서 [PROGRAM_LABEL_PRESENT](`present_rotate`)로 갈라졌고, 이 프로그램은 그 뒤로
+         * ② 자리 FBO 복사에만 쓰인다. 🚫 **값을 고치지 않는다** — 예전 런의 `session.json`과
+         * 실패 원문 키가 끊긴다. 오칭인 채로 두고 여기서 설명한다.
+         */
         private const val PROGRAM_LABEL_BLIT = "blit_present"
+
+        /**
+         * present 전용(회전을 거는) 2D 프로그램. 라벨을 `blit_present`와 **따로** 둔다 —
+         * 같은 라벨을 쓰면 두 프로그램 중 어느 쪽이 거부됐는지 `session.json`에서 갈리지
+         * 않는다(둘이 서로 다른 정점 셰이더를 쓴다).
+         */
+        private const val PROGRAM_LABEL_PRESENT = "present_rotate"
+
+        /**
+         * 🔴 **표시 회전의 부호를 뒤집는 자리는 여기 하나다.**
+         *
+         * 유도:
+         * 1. `PreviewTransform.rotationDegrees`는 CameraX가 준 값이고 뜻은 **"바로 세우려면
+         *    시계 방향으로 몇 도 돌려야 하는가"**다. 같은 규약이 `DetectContract`의 회전
+         *    규약(`degrees`는 `ImageProxy.imageInfo.rotationDegrees`, 시계 방향)에 문장으로
+         *    이미 있고, 이 값과 **같은 축·같은 부호**다.
+         * 2. `Matrix.rotateM(m, 0, θ, 0, 0, 1)`은 z축 양의 방향 회전이다. NDC는 +x가 오른쪽,
+         *    +y가 위인 오른손 좌표계이므로 화면에서 보면 θ>0은 **반시계**다.
+         * 3. 정점을 반시계로 θ 돌리면 그려지는 내용도 반시계로 θ 돈다. 내용을 **시계**로 R도
+         *    돌리려면 θ = −R이어야 한다. → 부호는 −1.
+         *
+         * 🔴 **이 값은 화면으로만 확정된다.** 위 유도가 한 곳에서 틀리면 90과 270이 서로
+         * 바뀌고(180은 부호와 무관해 멀쩡하다), 그 오류를 잡아 줄 기계가 이 앱에 없다 —
+         * GPU query도 `DetectGeometryCheck`도 자기 일관성까지만 본다. **실기기 세로 화면에서
+         * 영상이 반대로 누워 보이면 이 상수 하나만 +1f로 바꾼다.**
+         *
+         * 🔴 **그러나 이 상수와 [OverlayCoordMap.FLIP_Y]는 독립이 아니다.** 위 유도 3단계
+         * ("정점을 반시계로 θ 돌리면 내용도 반시계로 돈다")는 **텍스처와 화면 사이에 상하
+         * 뒤집힘이 없다**는 가정을 깔고 있다. 패스1은 드라이버가 준 `texMatrix`를 그대로
+         * 쓰므로 그 가정이 깨질 수 있고, 깨지면 **이 부호의 옳은 값도 함께 뒤집힌다.**
+         * ⚠ 그래서 화면이 이상할 때 이 상수만 의심하면 안 된다 — 실기기에서는
+         * (`PREVIEW_ROTATION_SIGN`, `FLIP_Y`) **네 조합**을 하나씩 봐야 갈린다. 두 스위치가
+         * 서로 다른 파일에 있는 것은 각각 한 곳에만 두기 위해서지, 서로 무관해서가 아니다.
+         */
+        private const val PREVIEW_ROTATION_SIGN = -1f
         private const val PROGRAM_LABEL_CARDBOARD_OES = "cardboard_lite_oes"
         private const val PROGRAM_LABEL_CARDBOARD_2D = "cardboard_lite_2d"
         private const val PROGRAM_LABEL_GAMMA = "gamma_only_apply"
@@ -2429,6 +2567,17 @@ class PassthroughRenderer(
 
         /** bf 패스. 체인+bf와 융합+bf가 **같은 프로그램**을 쓰므로 라벨도 하나다. */
         private const val PROGRAM_LABEL_BILATERAL = "stage2_bilateral"
+
+        /**
+         * 🔴 **회전을 걸지 않는 드로우가 올릴 항등 행렬.** 유니폼은 **프로그램별로 값이
+         * 남으므로** "안 올린다"는 "직전에 올린 값을 그대로 쓴다"와 같다. `oesProgram`은
+         * 패스1(회전 없음)과 passthrough arm의 present(회전 있음) **양쪽**에서 쓰이므로,
+         * 건너뛰면 직전 프레임의 회전 행렬이 패스1에 그대로 남아 FBO가 돌아 버린다.
+         *
+         * ⚠ 한 번만 만든다 — [drawQuad]는 핫패스라 프레임당 할당을 만들지 않는다.
+         *   **읽기 전용으로만 쓴다**(어디서도 이 배열에 쓰지 않는다).
+         */
+        private val IDENTITY_POSITION_MATRIX = FloatArray(16).also { Matrix.setIdentityM(it, 0) }
 
         /** x, y, u, v — 화면 전체를 덮는 triangle strip 4정점. */
         private val VERTEX_DATA = floatArrayOf(
@@ -2518,6 +2667,33 @@ class PassthroughRenderer(
             varying vec2 vTexCoord;
             void main() {
                 gl_Position = aPosition;
+                vTexCoord = aTexCoord;
+            }
+        """.trimIndent()
+
+        /**
+         * **present(마지막 패스) 전용 정점 셰이더.** [VERTEX_SHADER_2D]에 `uPositionMatrix`만
+         * 더한 것이다.
+         *
+         * 🔴 **[VERTEX_SHADER_2D]를 고쳐 쓰지 않는다.** 그 문자열은 `blit_2pass` arm의 패스2와
+         * `gamma_only`의 패스2가 **함께 쓰는** 것이고 승격 베이스라인 재현 경로다 — 거기에
+         * 회전 수단이 생기면 오프스크린 패스가 회전할 위험이 생기고, 그 arm의 이전 숫자와
+         * 글자 그대로 같다는 전제도 깨진다. 그래서 문자열을 **하나 더** 둔다.
+         *
+         * ⚠ 회전은 **present에서만** 건다. 그래야 회전 없는 FBO 좌표계에 그린 ④ 오버레이
+         * 박스가 영상과 **같은 행렬로 함께** 돌아간다(`OverlayCoordMap` 참고).
+         *
+         * ⚠ **종횡비 보정은 여기 없다**(정책 미정 — STATUS 이슈 68). 90/270°에서 소스와
+         * 뷰포트의 종횡비가 뒤집히므로 화면이 늘어나 보이는데, 그 보정이 들어온다면
+         * `uPositionMatrix`에 스케일을 곱하는 형태로 **이 셰이더를 고치지 않고** 들어온다.
+         */
+        private val VERTEX_SHADER_PRESENT = """
+            attribute vec4 aPosition;
+            attribute vec2 aTexCoord;
+            uniform mat4 uPositionMatrix;
+            varying vec2 vTexCoord;
+            void main() {
+                gl_Position = uPositionMatrix * aPosition;
                 vTexCoord = aTexCoord;
             }
         """.trimIndent()
