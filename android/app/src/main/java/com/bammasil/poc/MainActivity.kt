@@ -64,7 +64,8 @@ class MainActivity : ComponentActivity() {
 
     /**
      * 접을 수 있는 정보 패널(상태 텍스트 + 조명·arm 스피너). ④ 강조가 실제로 어떻게 보이는지
-     * 촬영·캡처할 때 화면 절반을 가리기 때문에 [hudButton]으로 접는다.
+     * 촬영·캡처할 때 화면 절반을 가리기 때문에 **기본이 접힘**이고, 필요할 때 [hudButton]으로
+     * 편다(08-29 이전에는 반대였다 — 런마다 '접기 전 몇 초'가 달라 조건이 흔들렸다).
      *
      * ⚠ 이 패널은 [glView]와 **별 서피스**라 접어도 GL 스레드의 계측 창
      * (`t_render_start_ns` ~ `t_render_end_ns`, GPU query)은 달라지지 않는다. 다만 지속 런에서
@@ -93,8 +94,14 @@ class MainActivity : ComponentActivity() {
      * 정보 패널이 접혀 있는가. 🔴 **측정 시작 시점의 값이 아니라 현재 값이다** — 런 도중에도
      * 접을 수 있고(촬영이 그 목적이다) 그래서 `session.json`에는 **정지 시점의 값**이 실린다.
      * 런 내내 한 상태였는지는 이 값이 말해 주지 않는다.
+     *
+     * 🔎 **기본값이 `true`다(08-29).** 촬영이 이 앱의 상시 용도라 매번 접는 것이 실수를 부르고,
+     * 접기 전 몇 초가 런마다 달라 **조건이 흔들렸다.** 🔴 **초기 UI 반영을 잊지 말 것** —
+     * 이 값만 바꾸면 변수는 '숨김'인데 화면은 펼쳐진 자기모순이 된다([applyHudVisibility]).
+     * ⚠ `baseline_diff`의 조건키는 **아니다.** 즉 이 변경은 승격본과의 비교를 끊지 않지만,
+     * 기존 승격본은 전부 `false` 상태에서 잰 것이다.
      */
-    private var hudInfoHidden = false
+    private var hudInfoHidden = true
 
     private val recorder = FrameLogRecorder()
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -225,12 +232,17 @@ class MainActivity : ComponentActivity() {
         }
 
         // 정보 패널 접기/펴기. 측정 중에도 눌릴 수 있게 잠그지 않는다 — ④ 강조가 도는 모습을
+        // 🔴 **초기 상태를 여기서 반영한다.** 레이아웃에는 visibility 선언이 없어 XML 기본이
+        //    `visible`이고, [hudInfoHidden]의 기본값은 `true`다 — 반영하지 않으면 변수와 화면이
+        //    어긋난 채 시작하고 버튼 글자도 거꾸로 뜬다.
+        applyHudVisibility()
+
         // 찍는 것이 이 버튼의 목적이고, 렌더 경로를 건드리지 않으므로 잠글 이유가 없다.
-        // ⚠ GONE 을 쓴다(INVISIBLE 이 아니다) — INVISIBLE 은 자리를 그대로 차지해 화면이 안 열린다.
+        // 🔴 초기 반영과 **같은 함수**를 부른다 — 두 곳에 같은 식을 적으면 한쪽만 고쳐지는 날
+        //    화면과 버튼 글자가 갈린다.
         hudButton.setOnClickListener {
             hudInfoHidden = !hudInfoHidden
-            infoPanel.visibility = if (hudInfoHidden) View.GONE else View.VISIBLE
-            hudButton.setText(if (hudInfoHidden) R.string.hud_show else R.string.hud_hide)
+            applyHudVisibility()
         }
 
         val thread = HandlerThread("frame-signal").apply { start() }
@@ -844,6 +856,16 @@ class MainActivity : ComponentActivity() {
         statusText.text =
             head + detectLine + detectRunLine + saved +
                 "\n(진행 확인용 — 인용은 frames.csv / session.json 으로만)"
+    }
+
+    /**
+     * [hudInfoHidden]을 화면에 반영한다. **초기화와 버튼이 같이 부른다.**
+     *
+     * ⚠ `GONE`을 쓴다(`INVISIBLE`이 아니다) — `INVISIBLE`은 자리를 그대로 차지해 화면이 안 열린다.
+     */
+    private fun applyHudVisibility() {
+        infoPanel.visibility = if (hudInfoHidden) View.GONE else View.VISIBLE
+        hudButton.setText(if (hudInfoHidden) R.string.hud_show else R.string.hud_hide)
     }
 
     private fun showMessage(message: String) {
