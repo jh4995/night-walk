@@ -60,6 +60,7 @@ from lib.frame_log import (  # noqa: E402
     DETECT_WALL_SERIES,
     FRAME_COUNT_COLUMNS,
     FRAME_CPU_TIME_COLUMNS,
+    FRAME_RATIO_COLUMNS,
     GPU_TIME_COLUMNS,
     OVERLAY_FRESHNESS_SERIES,
     LIGHTING_CONDITIONS,
@@ -262,6 +263,43 @@ if _overlay_compare_errors:
     raise RuntimeError(
         "run_session.py 상수 불일치 — ④ 오버레이 비교 열의 성질이 어긋난다: "
         + "; ".join(_overlay_compare_errors)
+    )
+
+# ── ④ 오버레이 **조건**의 면적 축 (v8) ──────────────────────────────────────
+# 🔴 **위 세 목록과 정반대 성질이다.** 저 셋은 전부 비용(ms) 열이고 이것은 **비용의 조건**이다.
+#   bbox 안을 채우기 시작한 뒤(스키마 v8) I칸의 설명 변수가 **개수 하나에서 개수와 면적 둘**로
+#   늘었다 — 면적을 옮기지 않으면 면적이 다른 두 런이 arm 차분 표에서 "같은 조건"인 것처럼
+#   나란히 읽힌다.
+#
+# 🔴 **그래서 비교 열 목록에 넣지 않는다.** 넣으면 `diff_metrics`가 값을 a_ms/b_ms/delta_ms로
+#   이름 붙여 **비율이 ms로 라벨된다** — `overlay_boxes`를 뺀 것과 글자 그대로 같은 이유다.
+#   위 `_overlay_stray` 검사가 그 시도를 import 시점에 죽인다. **우회하지 않는다.**
+#   면적은 `overlay_condition`으로 숫자 **옆에** 나간다(개수와 같은 자리).
+OVERLAY_CONDITION_RATIO_COLUMN = FRAME_RATIO_COLUMNS[0]
+
+# 위 비교 열 검사들과 **같은 부류**다: 이 파일이 전제하는 성질이 깨지면 import에서 죽는다.
+_overlay_condition_errors = []
+if len(FRAME_RATIO_COLUMNS) != 1:
+    # `overlay_condition`의 면적 칸(`overlay_fill_frac_*` / `fill_frac_*`)이 **열 하나**를
+    # 전제한다 — 위 OVERLAY_COMPARE_COLUMNS 개수 검사와 같은 논거다. 열이 늘면 두 번째부터는
+    # 조건에서 조용히 빠지므로, 그때 조건 블록을 열별 dict로 함께 고치게 죽인다.
+    _overlay_condition_errors.append(
+        f"FRAME_RATIO_COLUMNS의 원소가 1개가 아니다({list(FRAME_RATIO_COLUMNS)}) — "
+        f"overlay_condition의 면적 칸이 첫 열만 보므로 나머지가 조건에서 조용히 빠진다"
+    )
+_ratio_in_cost = [
+    name for name, cols in _compare_sets.items() if OVERLAY_CONDITION_RATIO_COLUMN in cols
+]
+if _ratio_in_cost:
+    _overlay_condition_errors.append(
+        f"{OVERLAY_CONDITION_RATIO_COLUMN}이 {_ratio_in_cost}에 있다 — 그것은 **비용의 조건**"
+        f"이지 비용이 아니다. diff_metrics가 a_ms/b_ms/delta_ms로 이름 붙이므로 **비율이 "
+        f"ms로 라벨된다**(overlay_boxes를 뺀 것과 같은 이유). 조건은 overlay_condition으로 낸다"
+    )
+if _overlay_condition_errors:
+    raise RuntimeError(
+        "run_session.py 상수 불일치 — ④ 오버레이 조건의 면적 축이 어긋난다: "
+        + "; ".join(_overlay_condition_errors)
     )
 
 FRAMETIME_KEY = "frametime_primary"
@@ -1341,9 +1379,16 @@ def summary_metrics(summary: dict) -> dict:
 def overlay_condition(summary: dict) -> dict | None:
     """④ 오버레이 숫자의 **조건**. 비용이 아니므로 metrics(diff 대상)에 넣지 않는다.
 
-    🔴 **H칸은 박스 개수의 함수다.** 개수 없는 `stage_h_ms`는 조건이 없는 숫자이고, 이 하네스는
-    같은 부류의 실패(열 이름·arm·박스 개수를 숫자와 떼어 옮긴 것)를 이미 여러 번 닫았다.
-    그래서 Δ가 인용되는 자리마다 이 조건이 **함께** 실린다.
+    🔴 **H칸은 박스 개수의 함수이고, I칸은 v8부터 개수와 면적 둘의 함수다.** 개수 없는
+    `stage_h_ms`는 조건이 없는 숫자이고, 박스 안을 채우기 시작한 뒤(스키마 v8)로는 면적
+    (`overlay_fill_frac`) 없는 `stage_i_ms`도 같다 — **같은 개수라도** 큰 박스 하나가 화면
+    절반을 덮으면 fill 비용이 다르다. 이 하네스는 같은 부류의 실패(열 이름·arm·박스 개수를
+    숫자와 떼어 옮긴 것)를 이미 여러 번 닫았다. 그래서 Δ가 인용되는 자리마다 이 조건이
+    **함께** 실린다.
+
+    🔴 **면적은 여기까지만 온다.** `OVERLAY_COMPARE_COLUMNS`에 넣지 않는다 — `diff_metrics`가
+    a_ms/b_ms/delta_ms로 이름 붙여 **비율이 ms로 라벨되기** 때문이고, `overlay_boxes`를 뺀
+    것과 글자 그대로 같은 이유다(위 상수 자기검사가 강제한다).
 
     🔴 **환산하지 않는다.** `stage_h_n` / `frames_rows_used`를 나란히 두는 것은 "H가 매 프레임
     돌았는지"를 사람이 되물을 수 있게 하는 것뿐이다 — 탐지 주기 N이 `INTERFACES.md`에서 아직
@@ -1358,6 +1403,14 @@ def overlay_condition(summary: dict) -> dict | None:
     재지 않았다), `analyze_frames` 쪽도 열이 있을 때만 "재지 못했다" 경고를 낸다 — 그 정보가
     여기까지 오지 않아서 이 한 자리에서만 뭉개졌다. 그래서 열의 존재 여부와 폐기 개수를
     **함께** 싣는다(`stage_h_column_present` / `stage_h_discarded`).
+
+    🔴 **면적에도 같은 세 갈래가 있고, 셋이 전부 다른 사실이다.**
+    (a) `fill_frac_column_present=false` = **v7 이전 로그라 열이 없다**(재지 않았다),
+    (b) `true`인데 `overlay_fill_frac_n=0` = 쟀는데 **전부 폐기됐다**(`-1` = 미기록),
+    (c) `p50=0.0` = **정상 관측이다** — 그 프레임에 그릴 박스가 없었다. 면적의 폐기 하한은
+    `>= 0`이라 `0.0`은 폐기되지 않으며(`overlay_boxes`의 0과 **글자 그대로 같은 규약**),
+    따라서 `p50=0.0`을 "면적을 재지 못했다"로 읽으면 틀린다.
+    `fill_frac_discarded`도 H와 같이 **`None`(폐기 회계가 없다)과 `0`(폐기가 없었다)을 가른다.**
     """
     ov = summary.get("overlay") or {}
     cols = ov.get("columns_present") or []
@@ -1380,6 +1433,18 @@ def overlay_condition(summary: dict) -> dict | None:
         reasons = ((summary.get("source") or {}).get("discarded_samples") or {}).get(h_col)
         if isinstance(reasons, dict):
             h_discarded = sum(reasons.values())
+    # ── 면적 축 (v8). **위 H 블록과 글자 그대로 같은 틀이다** — 열의 존재 여부와 폐기
+    #   개수를 값과 함께 싣고, 폐기 회계가 없는 것(None)과 폐기가 0인 것(0)을 가른다.
+    #   🔴 여기서 `or {}` 뒤에 `sum()`을 걸면 "전부 폐기됐는데 폐기 0개"라는 자기모순
+    #   문장이 나간다(H가 이미 닫은 함정이다).
+    fill_col = OVERLAY_CONDITION_RATIO_COLUMN
+    fill = ov.get(fill_col) or {}
+    fill_present = fill_col in cols
+    fill_discarded = None
+    if fill_present:
+        fill_reasons = ((summary.get("source") or {}).get("discarded_samples") or {}).get(fill_col)
+        if isinstance(fill_reasons, dict):
+            fill_discarded = sum(fill_reasons.values())
     fl = ov.get("flicker") or {}
     return {
         "columns_present": list(cols),
@@ -1387,6 +1452,17 @@ def overlay_condition(summary: dict) -> dict | None:
         "overlay_boxes_p95": boxes.get("p95"),
         "overlay_boxes_max": boxes.get("max"),
         "overlay_boxes_n": boxes.get("count"),
+        # 🔴 **개수의 짝인 면적 축**(v8). 개수 바로 옆에 둔다 — 둘이 떨어지면 한쪽만
+        #    복사돼 나가고, 그게 이 파일이 계속 막아 온 "조건 없는 숫자"의 만들어지는 방식이다.
+        #    ⚠ `overlay_fill_frac_p50 == 0.0`은 **정상 관측**이다(그릴 박스가 없었다).
+        #    "재지 못했다"는 `fill_frac_column_present=false`(열 없음) 또는 n=0(전부 폐기)이다.
+        "fill_frac_column": fill_col,
+        "fill_frac_column_present": fill_present,
+        "fill_frac_discarded": fill_discarded,
+        "overlay_fill_frac_p50": fill.get("p50"),
+        "overlay_fill_frac_p95": fill.get("p95"),
+        "overlay_fill_frac_max": fill.get("max"),
+        "overlay_fill_frac_n": fill.get("count"),
         "stage_h_column": h_col,
         # 🔴 `stage_h_n == 0`을 읽기 전에 이 둘을 본다. False면 "재지 않았다",
         #    True인데 n이 0이면 "쟀는데 값이 전부 폐기됐다"(앱이 -1을 쓰거나 소수 자릿수가
@@ -1408,6 +1484,15 @@ def overlay_condition(summary: dict) -> dict | None:
         "note": (
             "🔴 stage_h_ms(H칸)를 인용할 때 **박스 개수 분포를 함께** 옮긴다 — 오버레이 비용은 "
             "개수에 딸린 양이므로 개수 없는 H는 조건이 없는 숫자다. "
+            "🔴 stage_i_ms(I칸)는 **v8부터 개수와 면적 둘의 함수다**(박스 안을 채운다) — "
+            "overlay_fill_frac 분포도 **함께** 옮긴다. 같은 개수라도 면적이 다르면 그 Δ는 "
+            "fill 비용의 차이가 아니라 면적 차이일 수 있다. "
+            "⚠ overlay_fill_frac은 **비율이지 ms가 아니다** — 어떤 합에도 들어가지 않고 "
+            "버짓 칸도 없다(비용이 아니라 비용의 조건이라 diff 표에 두지 않는다). "
+            "⚠ overlay_fill_frac_p50=0.0은 **정상 관측**이다(그 프레임에 그릴 박스가 없었다) — "
+            "'면적을 재지 못했다'가 아니다. 재지 못한 것은 fill_frac_column_present=false"
+            "(v7 로그에는 열이 아예 없다)이거나 overlay_fill_frac_n=0(전부 폐기)이다"
+            "(fill_frac_discarded 참고: null=폐기 회계 없음, 0=폐기 없었음). "
             "⚠ stage_h_n이 frames_rows_used보다 작으면 H가 **매 프레임 돌지 않았다**는 사실이며, "
             "그렇다고 프레임당 평균으로 환산하지 않는다(탐지 주기 N이 ☐ 미정이다). "
             "⚠ stage_h_ms는 **CPU 벽시계**라 gpu_sum_ms·stage_d_total_ms 어느 합에도 들어가지 "
@@ -1447,6 +1532,56 @@ def stage_h_sample_phrase(cond: dict) -> str:
     return f"H 표본 {n}/{rows}프레임"
 
 
+def fill_frac_sample_phrase(cond: dict) -> str:
+    """면적 축을 **'열 없음' / '전부 폐기' / '면적 0'이 갈리게** 말한다 (v8).
+
+    🔴 `stage_h_sample_phrase`와 **같은 틀**이되 갈래가 하나 더 있다. H는 0ms가 정상값이
+    아니지만 **면적의 `0.0`은 정상값이다** — 그 프레임에 그릴 박스가 없었다는 관측이고,
+    폐기 하한이 `>= 0`이라 폐기되지도 않는다(`overlay_boxes`의 0과 같은 규약). 그래서
+    "p50=0.0"을 "면적을 재지 못했다"로 읽지 않도록 **끝까지 0이었던 런은 그렇다고 쓴다.**
+    """
+    col = cond.get("fill_frac_column") or "overlay_fill_frac"
+    if "fill_frac_column_present" not in cond:
+        # 🔴 **면적 축이 생기기 전 하네스가 저장한 조건이다.** `--report`는 진행 파일에
+        #    저장된 조건 dict를 **재계산하지 않고 그대로 문구로 만든다** — 그래서 키의
+        #    부재를 "열이 없었다"로 읽으면 **로그가 거짓을 말한다**(같은 dict의
+        #    columns_present가 그 문장을 반박할 수 있다). 이 저장소가 반복해 닫아 온
+        #    "0이냐 없음이냐"의 세 번째 갈래이며, 여기서는 **"모른다"**가 정답이다.
+        if col in (cond.get("columns_present") or []):
+            return (
+                f"면적 축 없음 — 🔴 이 조건은 **면적 축이 생기기 전 하네스가 저장한 것**이다"
+                f"(그 런의 columns_present에는 {col}이 있었다). 면적을 보려면 그 런의 "
+                f"summary로 조건을 다시 만든다"
+            )
+        return (
+            f"면적 축 없음 — 🔴 이 조건은 **면적 축이 생기기 전 하네스가 저장한 것**이다. "
+            f"그 런에 {col} 열이 있었는지는 이 조건만으로 알 수 없다"
+        )
+    if not cond.get("fill_frac_column_present"):
+        # v7 이전 로그에는 이 열이 아예 없다. **0이 아니라 '없음'이라고 쓴다.**
+        return f"면적 열 없음({col}을 그 런이 재지 않았다 — '면적 0'이 아니다)"
+    n = cond.get("overlay_fill_frac_n")
+    if not n:
+        d = cond.get("fill_frac_discarded")
+        # 🔴 H와 같은 갈래: 폐기 수가 **없는 것**과 **0인 것**을 갈라 말한다.
+        why = (
+            f"(폐기 {d}개)" if isinstance(d, int)
+            else "(폐기 회계가 그 요약에 없다 — 몇 개가 왜 빠졌는지는 이 로그로 알 수 없다)"
+        )
+        return (
+            f"면적 열은 있는데 유효 표본 0 — **전부 폐기됐다**{why}. "
+            f"'면적이 0이었다'가 아니라 재지 못한 것이다"
+        )
+    text = (
+        f"면적 p50={cond.get('overlay_fill_frac_p50')} "
+        f"p95={cond.get('overlay_fill_frac_p95')} "
+        f"max={cond.get('overlay_fill_frac_max')} (n={n})"
+    )
+    if cond.get("overlay_fill_frac_max") == 0:
+        text += " — 끝까지 0(그릴 박스가 없었다). **재지 못한 것이 아니라 관측된 0이다**"
+    return text
+
+
 def flicker_phrase(cond: dict) -> str:
     """깜빡임 지표 셋을 **떼어 갈 수 없게 붙여서** 낸다 (F3).
 
@@ -1474,12 +1609,17 @@ def flicker_phrase(cond: dict) -> str:
 
 
 def overlay_condition_phrase(cond: dict | None) -> str:
-    """`박스 p50=3.0 ... (n=810), H 표본 810/810프레임, 깜빡임 전이 107회 (0인 프레임 비율 ...)`"""
+    """`박스 p50=3.0 ... (n=810), 면적 p50=0.0 ... (n=810), H 표본 810/810프레임, 깜빡임 ...`
+
+    🔴 **개수 바로 뒤에 면적이 온다.** v8부터 I칸의 설명 변수가 둘이라, 개수만 실린 문구는
+    면적이 다른 두 런을 "같은 조건"으로 보이게 한다(`overlay_condition` docstring).
+    """
     if not cond:
         return "④ 열 없음(그 런은 오버레이를 재지 않았다 — '박스 0개'가 아니다)"
     return (
         f"박스 p50={cond.get('overlay_boxes_p50')} p95={cond.get('overlay_boxes_p95')} "
         f"max={cond.get('overlay_boxes_max')} (n={cond.get('overlay_boxes_n')}), "
+        f"{fill_frac_sample_phrase(cond)}, "
         f"{stage_h_sample_phrase(cond)}, {flicker_phrase(cond)}"
     )
 
@@ -1504,7 +1644,9 @@ def overlay_condition_block(cond_by_run: dict, run_ns: list[int], what: str) -> 
             f"{what}의 ④ 조건: "
             + " / ".join(f"#{n} {overlay_condition_phrase(cond_by_run[n])}" for n in run_ns)
             + " — 🔴 H칸 Δ를 인용할 때 **두 런의 박스 개수를 함께** 옮긴다(개수가 다르면 그 Δ는 "
-            "평활 비용의 차이가 아니라 개수 차이일 수 있다). ⚠ 프레임당으로 환산하지 않는다"
+            "평활 비용의 차이가 아니라 개수 차이일 수 있다). 🔴 I칸 Δ에는 **개수와 면적 둘 다** "
+            "옮긴다(v8부터 박스 안을 채운다 — 같은 개수라도 면적이 다르면 fill 비용이 다르다). "
+            "⚠ 프레임당으로 환산하지 않는다"
         )
     return {
         "runs": list(run_ns),
@@ -1818,8 +1960,9 @@ def execute_run(
     attempt["verdict"] = summary.get("verdict")
     attempt["safety_regression"] = summary.get("safety_regression")
     attempt["metrics"] = summary_metrics(summary)
-    # ④ 오버레이 조건. **metrics(diff 대상)와 가른다** — 박스 개수는 비용이 아니라 비용의
-    # 조건이고, diff_metrics에 넣으면 개수가 `delta_ms`로 라벨된다(overlay_condition 주석).
+    # ④ 오버레이 조건. **metrics(diff 대상)와 가른다** — 박스 개수도 면적(v8)도 비용이
+    # 아니라 비용의 조건이고, diff_metrics에 넣으면 개수·비율이 `delta_ms`로 라벨된다
+    # (overlay_condition 주석 + OVERLAY_CONDITION_RATIO_COLUMN 상수 검사).
     attempt["overlay"] = overlay_condition(summary)
     attempt["analyze_warnings"] = summary.get("warnings") or []
     attempt["conforms"] = not attempt["mismatches"]
@@ -2414,8 +2557,12 @@ def build_report(state: dict, args, run_ts: str) -> dict:
         report["caveats"].append(
             "④ 오버레이 조건: "
             + ", ".join(f"#{n} {overlay_condition_phrase(c)}" for n, c in overlay_runs)
-            + " — 🔴 **stage_h_ms(H칸)·stage_i_ms(I칸)를 인용할 때 박스 개수를 함께 옮긴다**"
-            "(개수 없는 값은 조건이 없는 숫자다). ⚠ 깜빡임 전이 수는 **관측이지 판정이 "
+            + " — 🔴 **stage_h_ms(H칸)·stage_i_ms(I칸)를 인용할 때 박스 개수와 면적을 함께 "
+            "옮긴다**(조건 없는 값은 숫자가 아니다). 🔴 I칸은 **v8부터 개수와 면적 둘의 "
+            "함수다** — 박스 안을 채우기 시작해 같은 개수라도 큰 박스가 화면을 더 덮으면 "
+            "비용이 다르다. ⚠ 면적 p50=0.0은 '재지 못했다'가 아니라 **그릴 "
+            "박스가 없었다**는 관측이다(열 자체가 없는 v7 런은 '면적 열 없음'으로 뜬다). "
+            "⚠ 깜빡임 전이 수는 **관측이지 판정이 "
             "아니다**(판정선이 없다) — 전이가 장면 변화인지 갱신 끊김인지는 정답 라벨이 "
             "없어 가를 수 없다(safety_regression). ⚠ H를 프레임당으로 환산하지 않는다"
         )
