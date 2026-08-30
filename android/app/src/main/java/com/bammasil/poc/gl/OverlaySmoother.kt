@@ -380,11 +380,11 @@ class OverlaySmoother(
      * @param snapshot 지금 게시돼 있는 결과. null이면 아직 어떤 추론도 끝나지 않았다.
      * @param processW / [processH] FBO(처리 해상도) 치수. 0이면 매핑하지 않는다.
      * @param previewRotationDegrees ④ 박스에 걸 회전각(`PassthroughRenderer`가 정한다).
-     *   🔴 `hasCameraTransform=true`면 **0이다** — CameraX가 표시 방향을 처리하고 Preview와
-     *   ImageAnalysis가 같은 방향 기준 위에 있어 추가 회전이 필요 없다(실기기 판정).
-     *   ⚠ 표시 회전(present 정점)과 **같은 조건으로 0이 되지만 뜻이 다른 값**이라 별도로
-     *   받는다. `hasCameraTransform=false` 경로에서 갈릴 수 있고, **그 경로는 실기기
-     *   미검증**이다.
+     *   🔴 `hasCameraTransform=true`면 **`rotationDegrees`다**(A34 세로에서 90) — 박스는
+     *   `texMatrix`를 타지 않으므로 CameraX가 영상에 해 준 회전을 ④가 직접 건다.
+     *   ⚠ 표시 회전(present 정점)과 **정확히 반대 조건으로 켜지는** 값이라 별도로 받는다:
+     *   `박스 + present ≡ rotationDegrees (mod 360)`이고, `hasCameraTransform=false`면
+     *   present가 다 지므로 여기가 0이다. **그 경로는 실기기 미검증**이다.
      * @return 그릴 박스 수(= [count]). **0은 정상값이다.**
      */
     fun update(

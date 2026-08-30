@@ -542,13 +542,15 @@ class PassthroughRenderer(
     private var requestedPreviewMirror = false
 
     /**
-     * 🔴 **④ 박스에 걸 회전각.** [requestedPreviewRotationDegrees]와 **같은 조건으로 0이
-     * 된다**(`hasCameraTransform=true`) — CameraX가 표시 방향을 처리하고 Preview와
-     * ImageAnalysis가 같은 방향 기준 위에 있으므로 어느 쪽에도 추가 회전이 필요 없다.
+     * 🔴 **④ 박스에 걸 회전각.** [requestedPreviewRotationDegrees]와 **정확히 반대 조건으로
+     * 켜진다**: `hasCameraTransform=true`면 present가 0이므로 **이 값이 `rotationDegrees`를
+     * 다 진다**(A34 세로에서 90°). false면 present가 다 지므로 이 값이 0이다. 근거는 ④가
+     * present **앞의** FBO_A에 그려진다는 것 하나다 — 회전 예산 불변식은
+     * `박스 + present ≡ rotationDegrees (mod 360)`이고 `render.rotation_budget`이 대조한다.
      *
-     * ⚠ **그래도 별도 필드로 둔다.** 두 값은 뜻이 다르고(하나는 present 정점, 하나는 센서
-     * 좌표 매핑) `hasCameraTransform=false` 경로에서 갈릴 수 있다. 한 필드로 합치면 그때
-     * 한쪽이 조용히 틀리고, 이 세션에서 이미 두 번 그렇게 틀렸다.
+     * ⚠ **그래서 별도 필드여야 한다.** 두 값은 뜻이 다르고(하나는 present 정점, 하나는 센서
+     * 좌표 매핑) **분기 조건이 서로 반대다.** 한 필드로 합치면 한쪽이 조용히 틀리고, 실제로
+     * 옛 코드는 두 분기를 **맞바꿔 쓰고 있었다**(2026-08-30에 갈렸다).
      *
      * 실제로 걸린 각도는 [OverlaySmoother.appliedBoxRotationDegrees]가 증언한다.
      */
@@ -994,20 +996,7 @@ class PassthroughRenderer(
         //    값이 0이 될 뿐이고, 패스1이 영상만 돌리던 구조적 불일치를 없앤 것도 유효하다.
         requestedPreviewRotationDegrees =
             if (transform.hasCameraTransform) 0 else transform.rotationDegrees
-        // 🔴 **박스 회전도 같은 조건으로 0이다.** `hasCameraTransform=true`면 Preview와
-        //    ImageAnalysis가 **같은 방향 기준 위에** 있고 CameraX가 표시 방향을 처리하므로,
-        //    영상에도 박스에도 추가 회전이 필요 없다.
-        //    ⚠ 이것은 실기기 판정이다: `표시 0 · 박스 90`으로 빌드했더니 영상은 바로 섰고
-        //      (스크린샷 확정) **박스만 시계 90° 어긋났다** — 우리가 건 것이 시계 90°이므로
-        //      옳은 값은 0이다.
-        //    🔴 그렇게 보면 결함이 하나로 정리된다: 세로 normal에서 옛 코드는
-        //      `targetRotation=ROTATION_0`이라 0이 나와 **원래 맞았고**, cardboard에서
-        //      `ROTATION_90`이 1도가 아니라 90도로 읽혀 **영상만 돌았다**(박스는 안 돌았다).
-        //      진짜 결함은 처음부터 **"회전각을 `targetRotation`에서 뽑은 것" 하나뿐**이었다.
-        //    ⚠ **`hasCameraTransform=false` 경로는 이 기기에서 한 번도 밟히지 않았다** —
-        //      그쪽 각도(그리고 [OverlayCoordMap.BOX_ROTATION_CLOCKWISE]의 방향)는
-        //      **실기기 미검증**이다. 기계장치를 남겨 두는 이유가 그 경로다.
-        // 🔴 **2026-08-30: 위 서술과 반대로 고쳤다 — 두 분기가 서로 바뀌어 있었다.**
+        // 🔴 **박스 회전각. `hasCameraTransform=true`면 박스가 rotationDegrees를 다 진다.**
         //    회전 예산 불변식은 `박스 + present ≡ rotationDegrees (mod 360)`이다: ④ 오버레이는
         //    present **앞의** FBO_A에 그려지므로(패스8) present 회전은 영상과 박스를 **함께**
         //    돌리고, 따라서 박스가 스스로 메워야 하는 각도는 "rotationDegrees − present"다.
@@ -1022,9 +1011,13 @@ class PassthroughRenderer(
         //      (각도에 나타나지 않는다) 그것은 화면 몫이다. 회전 **방향**은
         //      다르다: BOX_ROTATION_CLOCKWISE를 뒤집으면 box가 360−deg가 되어 그 검사가
         //      consistent=false를 낸다(결함이 아니라 스위치를 뒤집은 결과다).
-        //    ⚠ **바로 위 주석 블록과 KDoc·FORMULA·ASSUMPTIONS의 "박스 회전각 0이 정상"
-        //      서술은 이 줄과 어긋난 채로 남아 있다** — 화면 판정(사진)을 받은 뒤에 한꺼번에
-        //      고치기로 했다. 근거 없이 서술을 뒤집는 것이 이 결함을 세 번 늘린 원인이다.
+        //    ⚠ **`hasCameraTransform=false` 경로는 이 기기에서 한 번도 밟히지 않았다** —
+        //      그쪽에서 박스 각도는 0이고 도는 것은 present뿐이다. **실기기 미검증**이다.
+        //    🔴 **옛 서술("박스도 0이 정상 / 90을 걸었더니 박스만 어긋났다")은 반증됐다.**
+        //      그 실험은 [OverlayCoordMap.FLIP_Y]가 false인 채로 회전만 건 것이라 세로가
+        //      거울인 결과가 나왔고, 두 스위치가 독립이 아니라는 사실을 놓쳐 "회전이 틀렸다"로
+        //      읽혔다. 판정 장면도 볼라드 1개였다 — 전치는 대각선 위의 점을 그대로 두므로
+        //      **단일 박스 장면은 이 결함을 원리적으로 못 잡는다.**
         requestedOverlayRotationDegrees =
             if (transform.hasCameraTransform) transform.rotationDegrees else 0
         requestedPreviewMirror = transform.mirroring
@@ -1043,10 +1036,13 @@ class PassthroughRenderer(
                 "mirroring=${transform.mirroring} " +
                 "→ 표시(present 정점) 회전각=$requestedPreviewRotationDegrees " +
                 "· ④ 박스 회전각=$requestedOverlayRotationDegrees " +
-                "(🔴 **has_camera_transform=true면 둘 다 0이 정상이다** — CameraX가 표시 " +
-                "방향을 처리하고 Preview와 ImageAnalysis가 같은 기준 위에 있어 영상에도 " +
-                "박스에도 추가 회전이 필요 없다. 실기기 판정이며, 박스를 90 돌렸더니 " +
-                "박스만 시계 90° 어긋났다. false 경로는 **실기기 미검증**이다. " +
+                "(🔴 **두 각도의 합이 rotation_degrees여야 한다** — ④ 오버레이는 present " +
+                "앞의 FBO_A에 그려지므로 present가 돌면 영상과 박스가 함께 돈다. " +
+                "has_camera_transform=true면 present=0이라 **박스가 전부 진다**(여기서 90), " +
+                "false면 present가 다 지므로 박스가 0이다. 기계 대조는 " +
+                "render.rotation_budget이 한다. ⚠ 옛 서술 '둘 다 0이 정상'은 반증됐다 — " +
+                "그 상태에서 정규화 좌표가 전치돼 박스가 화면 왼쪽에 세로로 늘어섰다" +
+                "(런 20260830_194714). false 경로는 **실기기 미검증**이다. " +
                 "target_rotation은 표시 방향 상수라 degrees가 아니며 참고로만 싣는다)"
         Log.i(TAG, "표시 변환 $previewTransformNote")
     }
@@ -2764,20 +2760,28 @@ class PassthroughRenderer(
          * GPU query도 `DetectGeometryCheck`도 자기 일관성까지만 본다. **실기기 세로 화면에서
          * 영상이 반대로 누워 보이면 이 상수 하나만 +1f로 바꾼다.**
          *
-         * 🔴 **그 뒤집힘은 이제 추정이 아니라 관측된 사실이다.** 커밋 `34ad86f`에서 이 값으로
-         * `rotateM(-90)`(위 유도상 **반시계** 90°)을 걸었더니 **화면에는 시계 90°로
-         * 나타났다**(A34 세로, 육안). 즉 NDC와 화면 사이에 **홀수 번의 뒤집힘이 실재한다** —
-         * 패스1이 드라이버가 준 `texMatrix`를 그대로 쓰고 그 행렬이 v를 뒤집는 것이 유력하다.
+         * 🔴 **여기 있던 "홀수 번의 뒤집힘이 실재한다"는 결론은 철회한다(2026-08-30).**
+         * 그 근거는 커밋 `34ad86f`에서 `rotateM(-90)`을 걸었더니 **화면에 시계 90°로
+         * 나타났다**(A34 세로, 육안)는 관측이었고, 옛 문장은 `-90`을 *"위 유도상 반시계"*로
+         * 읽었다. **그 읽기가 위 유도 2단계와 모순된다** — 2단계는 `θ>0`이 화면에서 반시계라고
+         * 말하므로 `θ = −90`은 **이미 시계**다. 즉 그 관측은 *뒤집힘이 없을 때* 예상되는
+         * 결과이고, 뒤집힘의 증거가 아니었다.
          *
-         * 🔴 **따라서 이 상수와 [OverlayCoordMap.FLIP_Y]는 독립이 아니다.** 위 유도 3단계
-         * ("정점을 반시계로 θ 돌리면 내용도 반시계로 돈다")가 깔고 있던 "상하 뒤집힘이
-         * 없다"는 가정이 **실측으로 깨졌고**, 그러면 이 부호의 옳은 값도 함께 뒤집힌다.
-         * ⚠ 화면이 이상할 때 이 상수만 의심하면 안 된다 — 실기기에서는
-         * (`PREVIEW_ROTATION_SIGN`, `FLIP_Y`) **네 조합**을 하나씩 봐야 갈린다. 두 스위치가
-         * 서로 다른 파일에 있는 것은 각각 한 곳에만 두기 위해서지, 서로 무관해서가 아니다.
+         * 🔴 **실측이 그 철회를 뒷받침한다.** 센서 좌표계에 정의한 L자 마커를 프로덕션
+         * [OverlayCoordMap.mapBox]에 태워 화면을 찍었더니(런 `20260830_212611`) 예측 자리에
+         * **3~12px** 오차로 앉았다. 마커는 `texMatrix`를 **타지 않는** 경로로 그려지므로,
+         * NDC와 화면 사이에 여분의 뒤집힘이 있었다면 그 자리에 올 수 없다.
+         * → **FBO NDC ↔ 화면은 GL 표준이고 여분의 뒤집힘이 없다.**
          *
-         * ⚠ **지금 이 상수는 A34에서 잠자고 있다** — `hasCameraTransform=true`라 회전각이
-         * 0이라서 행렬이 항등이다. 값이 옳은지는 그 플래그가 false인 기기·경로에서만 드러난다.
+         * ⚠ **그래도 이 상수와 [OverlayCoordMap.FLIP_Y]가 무관하다는 뜻은 아니다.** 둘 다
+         * "화면에서 위가 어느 쪽인가"에 걸려 있어 한 스위치만 뒤집으면 가로만 맞고 세로가
+         * 거울인 상태가 나온다 — 옛 라운드가 정확히 그 상태를 "회전이 틀렸다"로 오독했다.
+         * 다시 어긋나 보이면 조합을 하나씩 빌드하지 말고 **한 장으로 가르는 도구**(센서
+         * 좌표계 L자 마커 같은 것)부터 만든다. 그 마커는 판정을 마치고 제거됐다.
+         *
+         * ⚠ **지금 이 상수는 A34에서 잠자고 있다** — `hasCameraTransform=true`라 present
+         * 회전각이 0이라서 행렬이 항등이다(도는 것은 ④ 박스 쪽이다). 값이 옳은지는 그
+         * 플래그가 false인 기기·경로에서만 드러나고, 그 경로는 **실기기 미검증**이다.
          */
         private const val PREVIEW_ROTATION_SIGN = -1f
         private const val PROGRAM_LABEL_CARDBOARD_OES = "cardboard_lite_oes"

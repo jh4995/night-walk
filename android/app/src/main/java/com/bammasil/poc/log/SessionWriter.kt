@@ -2033,13 +2033,20 @@ object SessionWriter {
         )
         json.put(
             "box_rotation_note",
-            "🔴 **박스에 실제로 건 회전각.** has_camera_transform=true면 **0이 정상이다** — " +
-                "CameraX가 표시 방향을 처리하고 Preview와 ImageAnalysis가 같은 방향 기준 " +
-                "위에 있어 영상에도 박스에도 추가 회전이 필요 없다(render.preview_transform의 " +
-                "회전각도 같은 이유로 0이다). **실기기 판정이며**, 박스에 시계 90°를 걸었더니 " +
-                "영상은 바로 섰는데 박스만 시계 90° 어긋났다 — 건 만큼 어긋났으니 0이 옳다. " +
-                "⚠ **has_camera_transform=false 경로는 이 기기에서 밟히지 않았다** — 그쪽 " +
-                "각도와 box_rotation_clockwise의 방향은 **실기기 미검증**이다. " +
+            "🔴 **박스에 실제로 건 회전각.** has_camera_transform=true면 **rotationDegrees가 " +
+                "정상이다**(A34 세로에서 90) — 박스는 texMatrix를 **타지 않으므로** CameraX가 " +
+                "영상에 해 준 회전을 ④가 직접 걸어야 한다. 불변식은 **박스 + present ≡ " +
+                "rotationDegrees (mod 360)**이고(④는 present 앞의 FBO_A에 그려진다) 기계 " +
+                "대조는 render.rotation_budget이 한다. " +
+                "🔴 **옛 서술 '0이 정상이다'는 반증됐다(2026-08-30)** — 그 상태에서 센서 가로 " +
+                "좌표가 세로 화면에 그대로 얹혀 정규화 좌표가 **전치**됐고 박스가 화면 왼쪽에 " +
+                "세로로 늘어섰다(런 20260830_194714). 옛 근거였던 '90을 걸었더니 박스만 " +
+                "어긋났다'는 flip_y=false인 채로 회전만 건 실험이라 세로가 거울이었던 것이고, " +
+                "판정 장면도 박스 1개였다 — **전치는 대각선 위의 점을 그대로 두므로 단일 박스 " +
+                "장면은 이 결함을 원리적으로 못 잡는다.** 수정 확인은 런 20260830_213737" +
+                "(60.5초·1540프레임, 동시 4~6개가 350프레임, 화면 정상 확인). " +
+                "⚠ **has_camera_transform=false 경로는 이 기기에서 밟히지 않았다** — 그쪽은 " +
+                "박스 각도가 0이고 도는 것은 present뿐이며 **실기기 미검증**이다. " +
                 "${OverlayCoordMap.BOX_ROTATION_NOT_APPLIED}이면 매핑이 한 번도 " +
                 "돌지 않았다는 뜻이다(overlay_smoothing.run_facts.map_failed_frames와 함께 " +
                 "볼 것 — 90° 배수가 아닌 각도는 거부되고 거기서 세어진다). " +
