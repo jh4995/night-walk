@@ -551,18 +551,16 @@ class PassthroughRenderer(
     private var requestedPreviewMirror = false
 
     /**
-     * 🔴 **④ 박스에 걸 회전각.** [requestedPreviewRotationDegrees]와 **정확히 반대 조건으로
-     * 켜진다**: `hasCameraTransform=true`면 (세로에서) present가 0이므로 **이 값이
-     * `rotationDegrees`를 다 진다**(A34 세로에서 90°). false면 present가 다 지므로 이 값이
-     * 0이다. 근거는 ④가 present **앞의** FBO_A에 그려진다는 것 하나다 — 회전 예산 불변식은
-     * `박스 ≡ rotationDegrees + present (mod 360)`이고 `render.rotation_budget`이 대조한다.
+     * 🔴 **④ 박스에 걸 회전각 = T**(`texMatrix`가 영상에 건 회전). `hasCameraTransform=true`면
+     * `rotationDegrees + present`이고, false면 `texMatrix`가 아무것도 안 구우므로 0이다.
+     * 근거는 ④가 present **앞의** FBO_A에 그려진다는 것 하나다 — present는 영상과 박스를
+     * **함께** 돌리는 **공통 모드**라 박스 몫에서 빠지지 않는다. 불변식
+     * `박스 ≡ rotationDegrees + present (mod 360)`을 `render.rotation_budget`이 대조한다.
      *
-     * 🔴 **카드보드에서는 그 불변식이 깨지고, 그것이 정상 보고다.** 카드보드는
-     * `targetRotation = ROTATION_90`이라 present가 90을 거는데 `rotationDegrees`는 0이고 이
-     * 값도 0이다(`0 + 90 ≠ 0`).
-     * ✅ **그래서 카드보드 영상은 바로 선다(모든 arm에서)** — 어긋나는 것은 ④ 박스뿐이고,
-     * 그 정합이 **미해결 열린 항목**이다. 카드보드의 기하·튜닝 코드는 팀원 소유다.
-     * 🚫 이 값을 카드보드에 맞추려고 만지지 마라 — 세로가 실기기로 확정된 동작이다.
+     * 🟢 **세로와 카드보드가 같은 값(90)으로 떨어진다** — 세로 `90 + 0`, 카드보드 `0 + 90`.
+     * T가 센서 장착각이라 표시 방향과 무관한 상수이기 때문이다. 🟢 그래서 이 식으로 바꿔도
+     * **세로 값이 문자 그대로 안 바뀐다**(실기기로 확정된 동작이 산술적으로 안 깨진다).
+     * ⚠ 카드보드 경로는 **스탬프된 런이 아직 0건**이라 근거가 야외 육안뿐이다(2026-08-31).
      *
      * ⚠ **그래서 별도 필드여야 한다.** 두 값은 뜻이 다르고(하나는 present 정점, 하나는 센서
      * 좌표 매핑) **분기 조건이 서로 반대다.** 한 필드로 합치면 한쪽이 조용히 틀리고, 실제로
@@ -1038,9 +1036,10 @@ class PassthroughRenderer(
             transform.rotationDegrees
         }
         // 🔴 **박스 회전각. `hasCameraTransform=true`면 박스가 rotationDegrees를 다 진다.**
-        //    회전 예산 불변식은 `박스 + present ≡ rotationDegrees (mod 360)`이다: ④ 오버레이는
+        //    회전 예산 불변식은 `박스 ≡ rotationDegrees + present (mod 360)`이다: ④ 오버레이는
         //    present **앞의** FBO_A에 그려지므로(패스8) present 회전은 영상과 박스를 **함께**
-        //    돌리고, 따라서 박스가 스스로 메워야 하는 각도는 "rotationDegrees − present"다.
+        //    돌리는 **공통 모드**이고, 따라서 박스 몫에서 빠지지 않는다.
+        //    ⚠ 옛 식 "rotationDegrees − present"는 반증됐다(2026-08-31).
         //    - `hasCameraTransform=true` **+ 세로(normal)**: present=0(texMatrix가 영상만
         //      세웠고 targetRotation=ROTATION_0이라 우리도 0을 건다) →
         //      **박스가 rotationDegrees를 다 져야 한다.** 옛 코드는 0이라 세로 normal에서
@@ -2324,9 +2323,13 @@ class PassthroughRenderer(
         //    재현하려면 눈별 프로그램마다 이렇게 갈린다:
         //    - [cardboardOesProgram] ([VERTEX_SHADER_OES], 유니폼 **있음**)
         //      → 원본은 회전을 걸었다 → **플래그 true가 있어야 원본과 같다.**
-        //    - [cardboard2dProgram] ([VERTEX_SHADER_2D]로 원복, 유니폼 **없음**)
-        //      → 플래그와 무관하게 안 걸린다. 원본과 같다.
-        //    즉 `true`를 남기는 것이 **원복**이고, 지우면 OES 눈에서 동작이 달라진다.
+        //    - [cardboard2dProgram] ([VERTEX_SHADER_PRESENT], 유니폼 **있음**)
+        //      → 🔴 **팀원 원본은 [VERTEX_SHADER_2D]라 유니폼이 없었고, 그래서 처리 arm의
+        //        2D 눈에 회전이 도달할 수단이 아예 없었다**(카드보드가 `passthrough`에서만
+        //        정상이던 이유다). 그 구멍을 메우려고 정점을 바꿨으므로 **이 눈은 플래그를
+        //        실제로 쓴다.**
+        //    🚫 **그러므로 `true`를 지우면 두 눈 다 회전을 잃는다** — 2026-08-31에 고친
+        //       카드보드 결함이 그대로 되돌아온다.
         drawQuad(program, textureTarget, textureId, applyPreviewTransform = true)
     }
 

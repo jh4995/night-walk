@@ -53,11 +53,15 @@ import com.bammasil.poc.detect.DetectContract
  * 🔴 **불변식 하나로 적힌다.** ④ 오버레이는 present **앞의** FBO_A에 그려지므로(패스8)
  * present가 돌면 영상과 박스가 **함께** 돈다. 따라서 센서→화면의 총 회전은 이렇게 나뉜다:
  * ```
- * box_rotation_degrees + present_rotation_degrees ≡ rotationDegrees  (mod 360)
+ * box_rotation_degrees ≡ rotationDegrees + present_rotation_degrees  (mod 360)
  * ```
- * `hasCameraTransform=true`이고 **세로(normal)**면 present가 0이라 **박스가 전부 진다.**
- * false면 present가 다 지므로 **박스는 0이다.** `session.json`의 `render.rotation_budget`이
- * 이 식을 기계로 대조한다.
+ * present는 영상과 박스를 함께 돌리는 **공통 모드**라 박스 몫에서 **빠지지 않는다** — 박스가
+ * 메우는 것은 `texMatrix`가 영상에 건 회전 T 하나이고 `T = rotationDegrees + present`다.
+ * ⚠ **옛 식 `박스 + present ≡ rotationDegrees`는 반증됐다**(2026-08-31) — present를 박스 몫에서
+ * 빼는 식이라 카드보드에서 박스가 0으로 떨어져 90°가 통째로 빠졌다. 세로는 present가 0이라
+ * 두 식의 값이 같아서 드러나지 않았다. `session.json`의 `render.rotation_budget`이 새 식을
+ * 대조하되, ⚠ **그 검사는 박스를 같은 입력에서 만들어 비교하므로 항진명제에 가깝다** —
+ * `consistent=true`가 "박스가 맞게 그려졌다"는 뜻이 **아니다.**
  *
  * 🟢 **카드보드(SBS)도 같은 식으로 성립한다.** 그 경로는 `targetRotation = ROTATION_90`이라
  * present가 90을 걸고(팀원 원본 `e387ae9`의 의미) `rotationDegrees`는 0이므로 박스는
@@ -67,9 +71,9 @@ import com.bammasil.poc.detect.DetectContract
  * ✅ **카드보드에서 영상은 바로 선다 — 모든 arm에서.** present가 90을 걸기 때문이고,
  * 처리 arm의 2D 눈이 그 90°를 실어 나를 유니폼을 갖도록 정점 셰이더를 메웠다(실측 확정,
  * 2026-08-30 — 그전에는 `passthrough`만 정상이었다).
- * 🔴 **그래서 카드보드에서 남은 어긋남은 ④ 박스 하나뿐이다**(영상은 90° 돌았는데 박스는
- * 0°). 그 정합은 **미해결 열린 항목**이며, 카드보드의 기하·튜닝 코드는 팀원 소유라 우리가
- * 건드리지 않는다.
+ * 🏆 **카드보드의 ④ 박스도 맞는다**(2026-08-31 야외 육안) — 박스가 `0 + 90 = 90`을 지도록
+ * 식을 고친 결과다. ⚠ 카드보드 경로는 **스탬프된 런이 아직 0건**이라 근거가 육안뿐이다.
+ * 카드보드의 기하·튜닝 코드는 팀원 소유라 우리가 건드리지 않는다.
  *
  * 🔴 **실기기 판정이다.** 옛 코드는 두 분기가 서로 바뀌어 있어 `true` 경로에서 `0 + 0 = 0`이
  * 나왔다. 그러면 센서 가로 좌표(1280×720)가 세로 화면(1080×2340)에 그대로 얹혀 **정규화
@@ -211,18 +215,23 @@ object OverlayCoordMap {
     const val ASSUMPTIONS =
         "🔴 **(0) 이제 가정이 아니다 — 회전 예산은 기계가 대조한다.** ④ 오버레이는 present " +
             "앞의 FBO_A에 그려지므로(패스8) present가 돌면 영상과 박스가 함께 돈다. 따라서 " +
-            "**box_rotation_degrees + present_rotation_degrees ≡ rotationDegrees (mod 360)** " +
-            "이며 render.rotation_budget이 이 식을 매 런 대조한다. hasCameraTransform=true이고 " +
-            "**세로(normal)**면 present가 0이라 **박스가 전부 진다**(A34 세로에서 90°). " +
-            "false면 present가 다 지고 박스는 0이다. " +
+            "**box_rotation_degrees ≡ rotationDegrees + present_rotation_degrees (mod 360)** " +
+            "이며 render.rotation_budget이 이 식을 매 런 대조한다. present는 영상과 박스를 " +
+            "함께 돌리는 공통 모드라 박스 몫에서 빠지지 않는다 — 박스가 메우는 것은 texMatrix가 " +
+            "영상에 건 회전 T 하나이고 T = rotationDegrees + present다. " +
+            "⚠ 옛 식 'box + present ≡ rotationDegrees'는 반증됐다(2026-08-31): present를 박스 " +
+            "몫에서 빼는 식이라 카드보드에서 박스가 0으로 떨어져 90°가 통째로 빠졌고, 세로는 " +
+            "present가 0이라 두 식의 값이 같아 드러나지 않았다. " +
+            "⚠ hasCameraTransform=false 경로는 이 기기에서 한 번도 밟히지 않아 미검증이다. " +
             "🟢 **카드보드(SBS)도 같은 식으로 성립한다** — target_rotation=ROTATION_90이라 " +
             "present가 90을 거는데(팀원 원본 e387ae9의 의미) rotation_degrees는 0이므로 " +
             "박스는 0+90=90이고, 세로의 90+0=90과 **같은 값**이다(T가 센서 장착각이라 " +
             "표시 방향과 무관한 상수다). " +
             "✅ **카드보드에서 영상은 모든 arm에서 바로 선다**(처리 arm의 2D 눈이 그 90°를 " +
             "실어 나를 유니폼을 갖도록 정점 셰이더를 메웠다 — 실측 확정 2026-08-30, 그전에는 " +
-            "passthrough만 정상이었다). 🔴 **그래서 남은 어긋남은 ④ 박스 하나뿐이고**(영상 " +
-            "90° vs 박스 0°) 그 정합이 **미해결 열린 항목**이다. 카드보드의 기하·튜닝 코드는 " +
+            "passthrough만 정상이었다). 🏆 **카드보드의 ④ 박스도 맞는다**(2026-08-31 야외 육안, " +
+            "박스가 0+90=90을 지도록 식을 고친 결과) — ⚠ 다만 카드보드 경로는 **스탬프된 런이 " +
+            "아직 0건**이라 근거가 육안뿐이다. 카드보드의 기하·튜닝 코드는 " +
             "팀원 소유라 건드리지 않는다. " +
             "🔴 **실기기 판정이다(2026-08-30)**: 옛 코드는 두 분기가 서로 바뀌어 있어 true " +
             "경로에서 0+0=0이 나왔고, 그러면 센서 가로 좌표가 세로 화면에 그대로 얹혀 정규화 " +
