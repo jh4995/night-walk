@@ -862,6 +862,9 @@ class MainActivity : ComponentActivity() {
                         renderer.previewRotationAppliedAtRecordedFrame,
                     previewTransformArrivals = renderer.previewTransformArrivals,
                     previewTransformNote = renderer.previewTransformNote,
+                    // 🔴 회전 예산 불변식(render.rotation_budget)이 읽는 **원값**이다 —
+                    //    사람이 읽는 previewTransformNote에서 숫자를 긁어내지 않는다.
+                    cameraTransformRotationDegrees = renderer.cameraTransformRotationDegrees,
                     gl = renderer.capabilities,
                     processWidth = renderer.processWidth,
                     processHeight = renderer.processHeight,

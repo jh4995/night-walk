@@ -95,7 +95,15 @@ object OverlayCoordMap {
      * 만들어 왔다. 즉 **기존 코드와 일관된 쪽**을 골랐다.
      * ⚠ 이것은 "화면에서 위아래가 맞다"는 주장이 **아니다** — 위 KDoc 참고.
      */
-    const val FLIP_Y = false
+    // 🔴 **2026-08-30: false → true.** 위 "false로 둔 이유"는 이 줄과 어긋난 채로 남아
+    //    있다 — 화면 판정(사진)을 받은 뒤에 KDoc·FORMULA·ASSUMPTIONS를 한꺼번에 고친다.
+    //    근거: 실기기 런 20260830_194714에서 로그 NDC를 `u=(ndc_x+1)/2`, `v=(1−ndc_y)/2`로
+    //    환산하면 스크린샷의 초록 박스와 픽셀 단위로 일치했다(= FBO NDC↔화면 관계는 GL
+    //    표준이고 여분의 뒤집힘이 없다). 그 관계에서 역산한 유일해가 **회전 90° CW +
+    //    FLIP_Y=true**다. ⚠ 이 값이 참이라는 최종 확인은 여전히 화면 몫이다.
+    //    🔴 **이 값을 true로 두려면 [mapBox]의 y 끝점 교환이 함께 있어야 한다** — 반사는
+    //    두 끝점의 순서까지 옮긴다(아래 [mapBox] 주석).
+    const val FLIP_Y = true
 
     /**
      * 🔴 **박스 회전의 방향을 뒤집는 자리는 여기 하나다.**
@@ -253,9 +261,32 @@ object OverlayCoordMap {
         }
         // 회전 **후** 프레임의 치수로 정규화한다. 90/270이면 폭과 높이가 자리를 바꿨다.
         out[0] = ndcX(out[0], rotation.rotatedW, processW)
-        out[1] = ndcY(out[1], rotation.rotatedH, processH)
         out[2] = ndcX(out[2], rotation.rotatedW, processW)
-        out[3] = ndcY(out[3], rotation.rotatedH, processH)
+        // 🔴 **[FLIP_Y]는 반사다 — 반사가 뒤집는 축에서는 두 끝점의 순서까지 함께 옮긴다.**
+        //    같은 규칙이 [DetectContract.Rotation.forwardBox]의 축 대응표에 이미 있고
+        //    (`x1' = N − x2`), 규약 §5-1이 *"이것을 안 하면 90/270°에서 모든 박스가
+        //    역전으로 나온다"*고 적어 둔 그 규칙이다. [ndcY]는 점 함수라 그 짝을 모른다 —
+        //    **교환은 박스를 아는 이 자리 하나에서만** 한다(축별 단독 호출자가 있어
+        //    [ndcY] 안에서 하면 그쪽 기대값이 흔들린다).
+        //    🔴 교환이 없으면 y가 역전된 박스가 하류로 나가고 **눈에 띄게 망가진다**:
+        //      (1) [com.bammasil.poc.gl.OverlaySmoother]의 IoU가 음수 폭·높이를 0으로
+        //          떨어뜨려 **모든 쌍의 IoU가 0** → 트랙 연결이 전멸하고 박스가 깜빡인다.
+        //      (2) [HighlightOverlay]의 좌·우 띠가 `minOf/maxOf` 클램프로 둘 다 midY에
+        //          붕괴해 높이 0이 된다 → 박스가 `▭`가 아니라 `=`로 그려진다.
+        //    ⚠ 교환은 **무조건**이라 모델이 낸 진짜 역전 박스를 지우지 않는다(역전은 역전인
+        //      채로 남는다 — min/max가 아니다). 게시자가 역전을 이미 걸러 세므로
+        //      (`rejected_inverted`) 실제 입력은 항상 정순이고, 이 성질은 자체검사
+        //      ([com.bammasil.poc.detect.DetectGeometryCheck] 검사 6)이 지킨다.
+        //    ⚠ 지역 float 둘뿐이라 **할당이 없다**(④ H칸 안에서 게시마다 불린다).
+        val ndcY1 = ndcY(out[1], rotation.rotatedH, processH)
+        val ndcY2 = ndcY(out[3], rotation.rotatedH, processH)
+        if (FLIP_Y) {
+            out[1] = ndcY2
+            out[3] = ndcY1
+        } else {
+            out[1] = ndcY1
+            out[3] = ndcY2
+        }
     }
 
     /**

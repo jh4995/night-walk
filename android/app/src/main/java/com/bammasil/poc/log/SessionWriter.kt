@@ -115,6 +115,14 @@ class SessionFacts(
     val previewTransformArrivals: Int,
     /** 마지막 콜백의 **원값**(사람이 읽는 문장). 어느 분기가 돌았는지가 여기서 보인다. */
     val previewTransformNote: String,
+    /**
+     * 마지막 콜백의 `TransformationInfo.rotationDegrees` **원값(숫자)**.
+     * `PassthroughRenderer.CAMERA_TRANSFORM_ROTATION_UNKNOWN`이면 콜백이 한 번도 안 왔다.
+     *
+     * 🔴 회전 예산 불변식(`render.rotation_budget`)이 읽는 값이다 — [previewTransformNote]
+     * 에서 숫자를 긁어내는 소비자를 만들지 않는다.
+     */
+    val cameraTransformRotationDegrees: Int,
     /** `onSurfaceCreated`에서 실측한 GL 능력. 수집 실패 시 null. */
     val gl: GlCapabilities?,
     /** 3패스가 실제로 쓴 처리 해상도. 협상 전이면 0. */
@@ -2082,7 +2090,14 @@ object SessionWriter {
                 "🔴 그 검사는 **자기 일관성까지**이고 flip_y의 참·거짓도, 호출부가 잘못된 " +
                 "처리 해상도를 넘기는 실수도 잡지 못한다(process 치수가 대수적으로 " +
                 "약분된다) — 후자를 관측하는 것은 이 블록의 " +
-                "analysis_resolution/process_resolution/aspect_matches뿐이다"
+                "analysis_resolution/process_resolution/aspect_matches뿐이다. " +
+                "🔴 **검사 6이 그 위에 하나 더 있다**: ④의 실제 경로인 " +
+                "OverlayCoordMap.mapBox를 태워 **회전까지** 밟고, (1) 프레임 전체 박스가 " +
+                "NDC 네 모서리로 가는지(집합) (2) **정순 입력이 정순 출력으로 나오는지** " +
+                "(3) 역전 입력이 역전인 채로 남는지를 본다. (2)가 flip_y의 **끝점 교환**을 " +
+                "잡는 검사이며, 기대값은 flip_y 상수를 읽지 않고 하드코딩했다 — 검사 5가 " +
+                "상수를 그대로 읽어 어느 값이든 통과하는 오라클이 된 자리를 반복하지 않는다. " +
+                "⚠ 그래도 회전 **방향**과 flip_y의 참·거짓은 여전히 **화면 몫**이다"
         )
         return json
     }
@@ -3821,6 +3836,90 @@ object SessionWriter {
                 "(PassthroughRenderer.PREVIEW_ROTATION_SIGN 하나만 뒤집으면 된다)."
         )
 
+    /**
+     * 🔴 **회전 예산 불변식** — 영상을 세우는 각도를 present와 ④ 박스가 **나눠 진다.**
+     *
+     * ```
+     * box_rotation_degrees + present_rotation_degrees ≡ camera_rotation_degrees  (mod 360)
+     * ```
+     *
+     * 왜 합인가: ④ 오버레이는 present **앞의** FBO_A에 그려지므로(`PassthroughRenderer`의
+     * 패스8, 패스9가 present) **present가 돌면 영상과 박스가 함께 돈다.** 그러니 박스가 스스로
+     * 걸어야 하는 각도는 "카메라가 요구한 각도 − present가 이미 돌린 각도"다.
+     *
+     * 🔴 **이 검사가 있었다면 발화했을 상황이 실기기에 있었다** — 런 `20260830_194714`:
+     * `has_camera_transform=true`인데 present와 box가 **둘 다 0**이었고(`0+0=0`) camera는
+     * **90**이었다. 결과가 정규화 좌표의 **전치**(x↔y)라서 볼라드 박스가 화면 왼쪽에 세로로
+     * 늘어섰다. ⚠ **그 런의 `session.json`에는 이 블록이 없다**(검사가 그때 존재하지
+     * 않았다) — "기계 검사가 이 결함을 잡았다"고 인용하지 말 것.
+     *
+     * ⚠ **한계 — 세 각도의 합만 본다.** [OverlayCoordMap.FLIP_Y]의 참·거짓은 이 블록이
+     * **아예 못 본다**(각도에 나타나지 않는다). 그것을 가르는 것은 **화면**뿐이다.
+     * 🔴 회전 **방향**은 사정이 다르다 — `box`로 싣는 값이
+     * [OverlayCoordMap.effectiveBoxRotationDegrees]를 **거친 뒤**의 각도라서
+     * [OverlayCoordMap.BOX_ROTATION_CLOCKWISE]를 false로 뒤집으면 `box`가 `360 − deg`가 되고
+     * 이 검사는 **`consistent=false`를 낸다.** 그 false는 **회전 예산의 결함이 아니라 방향
+     * 스위치를 뒤집은 결과**다(그 상수의 KDoc이 "박스가 90° 어긋나 보이면 여기만 뒤집으라"고
+     * 안내하므로, 그 안내를 따른 사람이 이 블록을 결함으로 읽지 않게 적어 둔다).
+     * 🔴 그러므로 `consistent=true`가 "박스가 맞게 그려졌다"는 뜻이 **아니다.**
+     *
+     * ⚠ **모르면 null이다.** 셋 중 하나라도 센티넬(콜백이 안 왔다 / present 회전을 한 번도
+     * 안 걸었다 / 매핑이 한 번도 안 돌았다)이면 `consistent`를 true로 만들지 않고 null로
+     * 둔다 — 값을 지어내지 않는다.
+     */
+    private fun buildRotationBudget(facts: SessionFacts): JSONObject {
+        val json = JSONObject()
+        val camera = facts.cameraTransformRotationDegrees
+        val present = facts.previewRotationApplied
+        val box = facts.overlaySmoothing?.appliedBoxRotationDegrees
+            ?: OverlayCoordMap.BOX_ROTATION_NOT_APPLIED
+        val cameraKnown = camera != PassthroughRenderer.CAMERA_TRANSFORM_ROTATION_UNKNOWN
+        val presentKnown = present != PassthroughRenderer.PREVIEW_ROTATION_NOT_APPLIED
+        val boxKnown = box != OverlayCoordMap.BOX_ROTATION_NOT_APPLIED
+        json.put("camera_rotation_degrees", if (cameraKnown) camera else JSONObject.NULL)
+        json.put("present_rotation_degrees", if (presentKnown) present else JSONObject.NULL)
+        json.put("box_rotation_degrees", if (boxKnown) box else JSONObject.NULL)
+        if (cameraKnown && presentKnown && boxKnown) {
+            val sum = normalizeDegrees(present + box)
+            json.put("sum_degrees", sum)
+            json.put("consistent", sum == normalizeDegrees(camera))
+        } else {
+            json.put("sum_degrees", JSONObject.NULL)
+            json.put("consistent", JSONObject.NULL)
+        }
+        json.put("note", ROTATION_BUDGET_NOTE)
+        return json
+    }
+
+    /** `[0, 360)`으로 접는다. 음수 각도가 들어와도 나머지가 음수가 되지 않게 두 번 접는다. */
+    private fun normalizeDegrees(degrees: Int): Int = ((degrees % 360) + 360) % 360
+
+    /** `render.rotation_budget.note`. 위 [buildRotationBudget] KDoc과 같은 내용이다. */
+    private const val ROTATION_BUDGET_NOTE =
+        "🔴 **불변식: box_rotation_degrees + present_rotation_degrees ≡ " +
+            "camera_rotation_degrees (mod 360).** ④ 오버레이는 present **앞의** FBO_A에 " +
+            "그려지므로(패스8, 패스9가 present) present가 돌면 영상과 박스가 **함께** 돈다 — " +
+            "그래서 박스가 스스로 걸어야 하는 각도는 '카메라가 요구한 각도 − present가 이미 " +
+            "돌린 각도'다. " +
+            "값의 출처: camera=TransformationInfo.rotationDegrees(원값) / " +
+            "present=render.preview_transform.applied_rotation_degrees / " +
+            "box=overlay.coordinate_map.box_rotation_degrees(OverlaySmoother가 실제로 건 값). " +
+            "🔴 **이 검사가 있었다면 발화했을 상황이 실기기에 있었다** — 런 " +
+            "20260830_194714: has_camera_transform=true인데 present와 box가 둘 다 0이고" +
+            "(0+0=0) camera는 90이었다. 결과가 정규화 좌표의 **전치**(x↔y)였고 박스가 화면 " +
+            "왼쪽에 세로로 늘어섰다. ⚠ **그 런의 session.json에는 이 블록이 없다**(검사가 " +
+            "그때 존재하지 않았다) — '기계 검사가 이 결함을 잡았다'고 인용하지 말 것. " +
+            "⚠ **한계: 세 각도의 합만 본다.** flip_y의 참·거짓은 이 블록이 **아예 못 본다** " +
+            "— 그것은 **화면**만이 가른다. " +
+            "🔴 회전 **방향**은 사정이 다르다: box로 싣는 값이 effectiveBoxRotationDegrees를 " +
+            "거친 뒤의 각도라서 **box_rotation_clockwise를 false로 뒤집으면 box가 360−deg가 " +
+            "되고 이 검사는 consistent=false를 낸다.** 그 false는 회전 예산의 결함이 아니라 " +
+            "**방향 스위치를 뒤집은 결과**다. " +
+            "🔴 그러므로 **consistent=true는 '박스가 맞게 그려졌다'는 뜻이 아니다.** " +
+            "⚠ null이면 셋 중 하나를 모른다는 뜻이다(표시 변환 콜백이 안 왔다 / present " +
+            "회전을 한 번도 안 걸었다 / 박스 매핑이 한 번도 안 돌았다). 그때 " +
+            "consistent를 true로 만들지 않는다 — 값을 지어내지 않는다"
+
     private fun buildRender(facts: SessionFacts): JSONObject {
         val json = JSONObject()
         json.put("display_path", "2-C: CameraX Preview -> 우리 SurfaceTexture(OES) -> GL")
@@ -3828,6 +3927,7 @@ object SessionWriter {
         json.put("gl_surface_size", "${facts.glSurfaceWidth}x${facts.glSurfaceHeight}")
         json.put("egl_context_client_version", facts.eglContextClientVersion)
         json.put("preview_transform", buildPreviewTransform(facts))
+        json.put("rotation_budget", buildRotationBudget(facts))
         json.put("render_mode", "RENDERMODE_WHEN_DIRTY (onFrameAvailable에서 requestRender)")
         json.put(
             "draw_call",

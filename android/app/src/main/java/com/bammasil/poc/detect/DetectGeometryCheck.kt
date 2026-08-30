@@ -20,7 +20,7 @@ import com.bammasil.poc.gl.OverlayCoordMap
  * `Rotation.inverseBox` · `Rotation.forwardBox`(그리고 그것들이 부르는 점 함수 넷).
  * 검사용으로 같은 공식을 다시 적으면 **같은 오타를 두 번 적고 통과한다.**
  *
- * ## 다섯 검사
+ * ## 여섯 검사
  *
  * 🔴 **번호는 아래 인라인 주석의 `검사 N`과 같다** — 세 자리(이 목록 · 인라인 주석 ·
  * `SessionWriter`의 `overlay.coordinate_map.selfcheck`)가 같은 번호를 써야 한다.
@@ -48,7 +48,22 @@ import com.bammasil.poc.gl.OverlayCoordMap
  *    처리 해상도를 넘기는 실수도 잡지 못한다**(process 치수가 약분된다) — 그건
  *    `session.json`의 `overlay.coordinate_map`만이 관측한다.
  *
- * 2·3·5의 기대값 표가 이 파일의 유일한 "사본"이고, **사본이어야 하는 것이 맞다** —
+ * 6. **④ mapBox 경유(회전을 타는 검사)** — 검사 5가 [OverlayCoordMap.ndcX]/`ndcY`를 **직접**
+ *    부르는 것과 달리, ④가 실제로 쓰는 [OverlayCoordMap.mapBox]를 태워 **회전까지** 밟는다.
+ *    셋을 본다: (1) 프레임 전체 박스 `(0,0,srcW,srcH)`는 NDC 네 모서리 `(±1,±1)`로 간다
+ *    (**집합으로** 본다 — 어느 끝이 어디로 가는지는 반사 여부에 딸린다),
+ *    (2) 🔴 **정순 입력은 정순 출력**(`y1<y2`인 박스가 `out[1]<out[3]`으로 나온다. x도 같다),
+ *    (3) 역전 입력은 역전 출력(교환이 모델의 역전을 지우지 않았다).
+ *    🔴 **(2)가 [OverlayCoordMap.FLIP_Y]의 끝점 교환을 잡는 검사다** — 반사는 두 끝점의
+ *    순서까지 옮기는데(규약 §5-1) 그것을 빠뜨리면 모든 박스가 y 역전으로 나가고, 하류에서
+ *    IoU가 전멸하거나(`OverlaySmoother`) 박스가 `=`로 그려진다(`HighlightOverlay`).
+ *    🔴 **기대값은 [OverlayCoordMap.FLIP_Y]를 참조하지 않고 하드코딩한다** — 검사 5가
+ *    `expectY0 = if (FLIP_Y) 1f else -1f`처럼 상수를 그대로 읽어 기대값을 만드는 바람에
+ *    **어느 값이든 통과하는 오라클**이 됐다. 같은 실수를 반복하지 않는다.
+ *    ⚠ 회전 **방향**(시계/반시계)은 여기서 보지 않는다 — 검사 2의 독립 표가 이미 그것을
+ *    보고 있고, 여기서 사본 표를 또 만들면 오라클이 둘로 갈린다.
+ *
+ * 2·3·5·6의 기대값 표가 이 파일의 유일한 "사본"이고, **사본이어야 하는 것이 맞다** —
  * 오라클은 구현과 독립이어야 한다(4는 왕복이라 사본이 없다).
  *
  * ⚠ [TOLERANCE_PX]는 **우리가 선언한 검사 조건이지 계약값이 아니다**(`SAMPLE_COUNT`와 같은
@@ -241,6 +256,73 @@ object DetectGeometryCheck {
                     }
                 }
 
+                // ── 검사 6: ④ mapBox 경유 (회전을 **타는** 유일한 검사) ──────────
+                // 🔴 검사 5는 ndcX/ndcY를 **직접** 부르므로 회전 0°에 해당하는 부분만 본다.
+                //    ④의 실제 경로는 mapBox이고 그 안에는 (a) forwardBox의 축 교환과
+                //    (b) FLIP_Y의 **끝점 교환**이 더 있다 — 둘 다 여기서만 밟힌다.
+                // 🔴 **기대값을 상수에서 만들지 않는다.** 검사 5가 FLIP_Y를 읽어 기대값을
+                //    세우는 바람에 그 상수가 무엇이든 통과하는 오라클이 됐다. 아래 셋은
+                //    **FLIP_Y·BOX_ROTATION_CLOCKWISE와 무관하게 참이어야 하는 성질**만
+                //    주장한다(모서리 집합 · 순서 보존 · 역전 보존).
+                // ⚠ 회전 **방향**은 검사 2의 독립 표가 본다 — 사본 표를 만들지 않는다.
+                for (proc in PROCESS_SIZES) {
+                    val pw = proc[0]
+                    val ph = proc[1]
+                    if (!OverlayCoordMap.canMap(srcW, srcH, pw, ph)) {
+                        // 검사 5가 같은 조건에서 이미 실패 문장을 남긴다 — 두 번 적지 않는다.
+                        continue
+                    }
+                    // 주장 1: 프레임 전체 박스 → NDC 네 모서리. **집합으로** 본다.
+                    cases++
+                    OverlayCoordMap.mapBox(
+                        0f, 0f, srcW.toFloat(), srcH.toFloat(), rot, pw, ph, out
+                    )
+                    if (!isNdcCornerPair(out[0], out[2]) ||
+                        !isNdcCornerPair(out[1], out[3])
+                    ) {
+                        note(
+                            failures,
+                            "mapBox 모서리 어긋남 deg=$degrees src=${srcW}x$srcH " +
+                                "process=${pw}x$ph: (0,0,$srcW,$srcH) → " +
+                                "(${out[0]},${out[1]},${out[2]},${out[3]}), " +
+                                "기대 = 두 축 모두 {-1.0, 1.0}(순서는 반사에 따라 갈린다). " +
+                                "**OverlayCoordMap의 스케일·회전 축 대응을 의심할 것**"
+                        )
+                    }
+                    // 주장 2: 🔴 **정순 입력은 정순 출력이다.** 반사가 뒤집는 축에서 두 끝점의
+                    //    순서까지 옮기지 않으면(mapBox의 교환) 여기서 걸린다.
+                    val fx1 = FORWARD_X1_FRAC * srcW
+                    val fy1 = FORWARD_Y1_FRAC * srcH
+                    val fx2 = FORWARD_X2_FRAC * srcW
+                    val fy2 = FORWARD_Y2_FRAC * srcH
+                    cases++
+                    OverlayCoordMap.mapBox(fx1, fy1, fx2, fy2, rot, pw, ph, out)
+                    if (!(out[0] < out[2]) || !(out[1] < out[3])) {
+                        note(
+                            failures,
+                            "mapBox 정순 깨짐 deg=$degrees src=${srcW}x$srcH " +
+                                "process=${pw}x$ph: 정순 입력 ($fx1,$fy1,$fx2,$fy2) → " +
+                                "(${out[0]},${out[1]},${out[2]},${out[3]}). " +
+                                "**반사가 뒤집는 축에서 두 끝점의 순서를 함께 옮기지 " +
+                                "않았다**(규약 §5-1) — 이 상태로 나가면 IoU가 전멸해 트랙이 " +
+                                "끊기고 박스가 ▭ 대신 = 로 그려진다"
+                        )
+                    }
+                    // 주장 3: 역전 입력은 **역전인 채로** 나온다(교환이 min/max가 아니다).
+                    cases++
+                    OverlayCoordMap.mapBox(fx2, fy2, fx1, fy1, rot, pw, ph, out)
+                    if (!(out[0] > out[2]) || !(out[1] > out[3])) {
+                        note(
+                            failures,
+                            "mapBox 역전 소실 deg=$degrees src=${srcW}x$srcH " +
+                                "process=${pw}x$ph: 역전 입력 ($fx2,$fy2,$fx1,$fy1) → " +
+                                "(${out[0]},${out[1]},${out[2]},${out[3]}). " +
+                                "**모델이 낸 역전(w<0)을 매핑이 조용히 고쳤다** — " +
+                                "그러면 rejected_inverted가 아무것도 못 잡는다"
+                        )
+                    }
+                }
+
                 // ── 검사 1: 왕복 ────────────────────────────────────────────────
                 for (b in boxCases(box, dstW, dstH)) {
                     cases++
@@ -325,6 +407,16 @@ object DetectGeometryCheck {
     private fun abs(v: Float): Float = if (v < 0f) -v else v
 
     /**
+     * 두 값이 NDC의 **양 끝 모서리**(-1과 1)를 하나씩 차지하는가. 🔴 **순서를 묻지 않는다** —
+     * 어느 끝이 어디로 가는지는 반사 여부에 딸리고, 그것을 여기서 주장하면
+     * [OverlayCoordMap.FLIP_Y]를 읽어 기대값을 만드는 검사 5의 실수를 반복하게 된다.
+     */
+    private fun isNdcCornerPair(a: Float, b: Float): Boolean =
+        (nearNdc(a, -1f) && nearNdc(b, 1f)) || (nearNdc(a, 1f) && nearNdc(b, -1f))
+
+    private fun nearNdc(v: Float, target: Float): Boolean = abs(v - target) <= NDC_TOLERANCE
+
+    /**
      * 소스 치수 표. 🔴 **패딩이 홀수로 남는 것을 일부러 섞었다** — `align=center`의 남는
      * 1px이 오른쪽/아래로 가는 규약이라 홀수에서만 드러나는 어긋남이 있다.
      *
@@ -380,6 +472,16 @@ object DetectGeometryCheck {
         intArrayOf(640, 360),
         intArrayOf(720, 1280),
     )
+
+    /**
+     * 검사 6의 **정순 박스**(센서 치수에 대한 비). 🔴 네 값이 서로 다르고 `x1<x2`·`y1<y2`여야
+     * 한다 — 가장 작은 소스가 640×640이라 이 비율이면 정수로 접혀도 겹치지 않는다.
+     * 두 축의 비를 **다르게** 둔 것은 회전으로 축이 바뀔 때 x와 y가 섞이는지 보기 위해서다.
+     */
+    private const val FORWARD_X1_FRAC = 0.10f
+    private const val FORWARD_Y1_FRAC = 0.20f
+    private const val FORWARD_X2_FRAC = 0.60f
+    private const val FORWARD_Y2_FRAC = 0.70f
 
     /** 실패 문장을 남기는 상한. 다 남기면 `session.json`이 실패 문장으로 뒤덮인다. */
     private const val MAX_FAILURES = 6

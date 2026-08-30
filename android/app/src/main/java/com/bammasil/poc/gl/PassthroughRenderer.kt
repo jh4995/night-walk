@@ -599,6 +599,20 @@ class PassthroughRenderer(
         private set
 
     /**
+     * 🔴 **마지막 콜백의 `TransformationInfo.rotationDegrees` 원값**(숫자). 한 번도 안 왔으면
+     * [CAMERA_TRANSFORM_ROTATION_UNKNOWN]이다.
+     *
+     * 왜 [previewTransformNote]와 따로 두는가: 그 문장은 사람이 읽는 것이고, **회전 예산
+     * 불변식**(`박스 + present ≡ 이 값`, `session.json`의 `render.rotation_budget`)은 기계가
+     * 대조해야 한다. 문자열에서 숫자를 다시 긁어내는 소비자를 만들지 않는다.
+     * ⚠ `camera_analysis_actual.rotation_degrees`와 **다른 축이다** — 그쪽은 ③ 모델 입력을
+     * 세우는 회전이고 이쪽은 표시 변환이다. 두 값이 같은 것은 이 기기의 사실이지 규약이 아니다.
+     */
+    @Volatile
+    var cameraTransformRotationDegrees = CAMERA_TRANSFORM_ROTATION_UNKNOWN
+        private set
+
+    /**
      * present 정점에 **실제로 건** 회전각. [PREVIEW_ROTATION_NOT_APPLIED]면 한 번도 걸지
      * 않았다(단위행렬 그대로 그렸다).
      *
@@ -993,8 +1007,26 @@ class PassthroughRenderer(
         //    ⚠ **`hasCameraTransform=false` 경로는 이 기기에서 한 번도 밟히지 않았다** —
         //      그쪽 각도(그리고 [OverlayCoordMap.BOX_ROTATION_CLOCKWISE]의 방향)는
         //      **실기기 미검증**이다. 기계장치를 남겨 두는 이유가 그 경로다.
+        // 🔴 **2026-08-30: 위 서술과 반대로 고쳤다 — 두 분기가 서로 바뀌어 있었다.**
+        //    회전 예산 불변식은 `박스 + present ≡ rotationDegrees (mod 360)`이다: ④ 오버레이는
+        //    present **앞의** FBO_A에 그려지므로(패스8) present 회전은 영상과 박스를 **함께**
+        //    돌리고, 따라서 박스가 스스로 메워야 하는 각도는 "rotationDegrees − present"다.
+        //    - `hasCameraTransform=true`: present=0(texMatrix가 영상만 세웠다) →
+        //      **박스가 rotationDegrees를 다 져야 한다.** 옛 코드는 0이라 세로 normal에서
+        //      `0+0=0`인데 필요한 값은 90이었다 — 결과가 정규화 좌표의 전치(x↔y)였고,
+        //      볼라드 박스가 화면 왼쪽에 세로로 늘어섰다(런 20260830_194714).
+        //    - `hasCameraTransform=false`: present가 이미 rotationDegrees를 돌리므로
+        //      **박스는 0**이다. 옛 코드는 여기서 한 번 더 걸어 `2×rot`이 됐다.
+        //    ⚠ 불변식의 기계 검사는 `session.json`의 `render.rotation_budget`이 한다.
+        //      🔴 그 검사는 **세 각도의 합만** 본다 — FLIP_Y의 참·거짓은 아예 못 보고
+        //      (각도에 나타나지 않는다) 그것은 화면 몫이다. 회전 **방향**은
+        //      다르다: BOX_ROTATION_CLOCKWISE를 뒤집으면 box가 360−deg가 되어 그 검사가
+        //      consistent=false를 낸다(결함이 아니라 스위치를 뒤집은 결과다).
+        //    ⚠ **바로 위 주석 블록과 KDoc·FORMULA·ASSUMPTIONS의 "박스 회전각 0이 정상"
+        //      서술은 이 줄과 어긋난 채로 남아 있다** — 화면 판정(사진)을 받은 뒤에 한꺼번에
+        //      고치기로 했다. 근거 없이 서술을 뒤집는 것이 이 결함을 세 번 늘린 원인이다.
         requestedOverlayRotationDegrees =
-            if (transform.hasCameraTransform) 0 else transform.rotationDegrees
+            if (transform.hasCameraTransform) transform.rotationDegrees else 0
         requestedPreviewMirror = transform.mirroring
         // 🔴 **원값 4개를 그대로 남긴다.** 위 원인을 갈라낸 것이 이 기록이다 —
         //    `rotation_degrees`와 `target_rotation`을 나란히 찍어 두지 않았다면 "어느 값을
@@ -1002,6 +1034,8 @@ class PassthroughRenderer(
         // ⚠ 이 콜백은 main executor 하나에서만 온다(CameraFrameSource.provideSurface)라
         //    증가 연산에 락이 필요 없다. 읽는 쪽이 GL 스레드라 @Volatile은 필요하다.
         previewTransformArrivals += 1
+        // 🔴 원값을 **숫자로도** 남긴다 — 회전 예산 불변식(render.rotation_budget)이 읽는다.
+        cameraTransformRotationDegrees = transform.rotationDegrees
         previewTransformNote =
             "도착 #$previewTransformArrivals: rotation_degrees=${transform.rotationDegrees} " +
                 "target_rotation=${transform.targetRotation} " +
@@ -2662,6 +2696,13 @@ class PassthroughRenderer(
 
         /** present 정점에 회전을 **한 번도 걸지 않았다**(단위행렬로 그렸다). */
         const val PREVIEW_ROTATION_NOT_APPLIED = -1
+
+        /**
+         * CameraX의 표시 변환 콜백이 **한 번도 오지 않았다**
+         * ([cameraTransformRotationDegrees]). 🔴 그때는 회전 예산 불변식을 판정하지 않는다 —
+         * 값을 지어내는 대신 `consistent`를 null로 둔다.
+         */
+        const val CAMERA_TRANSFORM_ROTATION_UNKNOWN = -1
 
         /** 마지막 적용이 **측정 중이 아닐 때** 일어났다(런이 시작되기 전에 이미 걸려 있었다). */
         const val PREVIEW_ROTATION_APPLIED_WHILE_IDLE = -1
