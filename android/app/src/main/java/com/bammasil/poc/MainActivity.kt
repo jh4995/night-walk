@@ -11,6 +11,8 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.view.HapticFeedbackConstants
+import android.view.KeyEvent
 import android.view.View
 import android.view.Surface
 import android.view.WindowManager
@@ -87,21 +89,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var hudButton: Button
 
     /**
-     * 사용자 테스트용 on/off. ON = [RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT](①②③④가 다 든
-     * 유일한 통합 arm) / OFF = [RenderArm.PASSTHROUGH].
-     *
-     * 🔴 **[armSpinner]의 리모컨이지 대체물이 아니다** — 두 버튼은 스피너의 `setSelection`만
-     * 부르고 arm 전환은 스피너 콜백이 한다. 버튼이 `setArm`·`prepareDetectIfNeeded`·
-     * `rebindSourceIfAnalysisChanged`를 직접 부르면 스피너 표시와 [selectedArm]이 갈리고,
-     * `session.json`이 **실제로 돈 arm과 다른 arm**을 적는다.
-     *
-     * ⚠ 측정 중에는 잠근다 — arm은 조명과 같은 급의 측정 조건이라 스피너와 같은 창에서
-     * 잠겨 있어야 한다([armAtStart]와 실제가 갈리지 않게).
-     */
-    private lateinit var viewOnButton: Button
-    private lateinit var viewOffButton: Button
-
-    /**
      * 정보 패널이 접혀 있는가. 🔴 **측정 시작 시점의 값이 아니라 현재 값이다** — 런 도중에도
      * 접을 수 있고(촬영이 그 목적이다) 그래서 `session.json`에는 **정지 시점의 값**이 실린다.
      * 런 내내 한 상태였는지는 이 값이 말해 주지 않는다.
@@ -176,6 +163,23 @@ class MainActivity : ComponentActivity() {
      */
     private var appliedArm: RenderArm? = null
 
+    /**
+     * 시연용 ②·④ 토글의 **현재** 상태. 볼륨다운이 ②(적응형 조도개선), 볼륨업이 ④(bbox)다.
+     *
+     * 🔴 **정지 시점의 값이 `session.json`에 나간다 — 런 내내 그랬다는 뜻이 아니다**
+     * ([hudInfoHidden]과 같은 규약이다). 런 도중 몇 번 뒤집혔는지는 아래 계수가 말한다.
+     *
+     * ⚠ 런 **시작과 정지 양쪽**에서 `true`로 되돌린다. 시작에서 되돌리는 것은 런 단위 상태의
+     * 관행이고(`PassthroughRenderer.resetRenderCounters`), 정지에서도 되돌리는 것은 참가자가
+     * ② OFF로 런을 끝내면 다음 런까지 원본 프리뷰만 보여 시연 2회차가 망가지기 때문이다.
+     */
+    private var stage2Enabled = true
+    private var overlayEnabled = true
+
+    /** 이 런에서 토글이 뒤집힌 횟수. **런 단위 사실**이라 시작·정지 양쪽에서 0으로 내린다. */
+    private var stage2ToggleCount = 0
+    private var overlayToggleCount = 0
+
     private var displayModeAtStart: DisplayMode = DisplayMode.DEFAULT
     private var cardboardImageScaleAtStart = 0.90f
     private var cardboardEyeOffsetAtStart = -0.08f
@@ -237,8 +241,6 @@ class MainActivity : ComponentActivity() {
         glView = findViewById(R.id.gl_view)
         infoPanel = findViewById(R.id.info_panel)
         hudButton = findViewById(R.id.hud_button)
-        viewOnButton = findViewById(R.id.btn_view_on)
-        viewOffButton = findViewById(R.id.btn_view_off)
 
         // 🔴 컨트롤 바를 시스템 내비게이션 바 **위로** 밀어 올린다.
         //    이걸 안 하면 3버튼 내비 기기에서 정지 버튼이 홈·뒤로 버튼과 겹치고, 정지를
@@ -319,6 +321,26 @@ class MainActivity : ComponentActivity() {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
 
+        // 🔴 **기본 arm을 통합 arm으로 세운다.** 시연에서 참가자가 앱을 켜자마자 보는 것이
+        //    ②③④가 다 도는 화면이어야 하고, 볼륨키 토글(dispatchKeyEvent)의 대상도 이
+        //    arm의 두 자리(② mix uniform · ④ 오버레이)다.
+        //    🔴 **`setSelection`만으로는 반영되지 않는다** — arm 스피너는 기본이 `GONE`인
+        //      정보 패널 안이라 `onItemSelected`가 오지 않는다([applyArmSelection] KDoc).
+        //      그래서 반영을 콜백에 맡기지 않고 여기서 직접 부른다.
+        //    ⚠ 순서 전제: [detectRuntime] 생성 뒤 · `glView.setRenderer` 뒤 ·
+        //      `armSpinner.adapter` 대입 뒤여야 한다.
+        val defaultArmIndex = RenderArm.CHOICES.indexOf(RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT.id)
+        if (defaultArmIndex < 0) {
+            // 🔴 조용히 0번 arm을 고르지 않는다 — 어느 arm이 도는지 모르는 채로 돌게 된다.
+            showMessage(
+                "arm 목록에서 ${RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT.id}를 찾지 못했다 " +
+                    "— 아무것도 바꾸지 않았다"
+            )
+        } else {
+            armSpinner.setSelection(defaultArmIndex)
+            applyArmSelection(RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT)
+        }
+
         displayModeSpinner.adapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_dropdown_item,
@@ -361,18 +383,6 @@ class MainActivity : ComponentActivity() {
         cardboardFovSeek.setOnSeekBarChangeListener(tuningListener)
         cardboardAlignmentSeek.setOnSeekBarChangeListener(tuningListener)
         applyCardboardTuning()
-
-        // 사용자 테스트용 on/off. 🔴 **스피너를 통해서만 바꾼다**(위 [viewOnButton] KDoc).
-        viewOnButton.setOnClickListener {
-            selectArmFromButton(
-                RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT, R.string.view_on, R.string.assist_on_toast,
-            )
-        }
-        viewOffButton.setOnClickListener {
-            selectArmFromButton(
-                RenderArm.PASSTHROUGH, R.string.view_off, R.string.assist_off_toast,
-            )
-        }
 
         toggleButton.setOnClickListener {
             if (recording) stopRecording() else startRecording()
@@ -430,9 +440,22 @@ class MainActivity : ComponentActivity() {
         if (!arm.usesDetectSession) return
         detectRuntime.prepareAsync(arm) { report ->
             uiHandler.post {
-                // 🔴 실패를 조용히 넘기지 않는다. 여기서 안 보이면 측정자는 런을 시작하려다
-                //    거부당하고 나서야 이유를 알게 된다.
-                showMessage(report.oneLine())
+                // 🔴 **성공 토스트를 없애지 않는다** — 시연 진행자가 이 신호를 기다렸다 폰을
+                //    넘긴다. 대신 [showMessage]의 두 청중 규약을 쓴다: 토스트는 참가자가 읽는
+                //    짧은 문구, 로그는 report.oneLine() **원문 그대로**(측정자가 읽을 정보는
+                //    하나도 잃지 않는다).
+                //    기본 arm이 통합 arm이 되면서 이 콜백이 **앱 실행마다** 도는데, 예전처럼
+                //    oneLine()을 토스트에 그대로 띄우면 참가자에게 arm·ep·노드·sha256이
+                //    LENGTH_LONG으로 뜬다 — showMessage KDoc이 토스트 인자에 금지한 어휘다.
+                // 🔴 **실패는 가르지 않는다** — 준비 실패는 진행자가 즉시 알아야 하고, 그때는
+                //    기술 문구가 나가는 편이 낫다(showMessage KDoc의 "실패·거부 경로는 가르지
+                //    않는다"). 여기서 안 보이면 측정자는 런을 시작하려다 거부당하고 나서야
+                //    이유를 알게 된다.
+                if (report.ok) {
+                    showMessage(getString(R.string.detect_ready), report.oneLine())
+                } else {
+                    showMessage(report.oneLine())
+                }
                 updateStatus()
             }
         }
@@ -505,14 +528,16 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 스피너 선택을 **실제 경로에 반영한다.** 스피너 리스너와 on/off 버튼이 **같은 함수**를
-     * 부른다.
+     * 스피너 선택을 **실제 경로에 반영한다.** 스피너 리스너와 [onCreate]의 기본 arm 반영이
+     * **같은 함수**를 부른다.
      *
-     * 🔴 **왜 버튼이 리스너에만 기댈 수 없나:** `armSpinner`는 정보 패널 안에 있고 그 패널은
+     * 🔴 **왜 `setSelection`에만 기댈 수 없나:** `armSpinner`는 정보 패널 안에 있고 그 패널은
      * 기본이 `View.GONE`이다([hudInfoHidden]의 기본값이 true다). `AdapterView.setSelection`의
      * `onItemSelected`는 **레이아웃 패스에서 전달**되므로 `GONE`인 부모 아래에서는 오지
-     * 않는다 — 그래서 on/off 버튼을 눌러도 arm이 반영되지 않았고, 정보 보기로 패널을 펴는
-     * 순간 밀려 있던 선택이 그제야 발화했다(측정자가 "버튼이 안 먹는다"로 겪은 것이 이것이다).
+     * 않는다 — 그래서 (지금은 없어진) on/off 버튼을 눌러도 arm이 반영되지 않았고, 정보 보기로
+     * 패널을 펴는 순간 밀려 있던 선택이 그제야 발화했다(측정자가 "버튼이 안 먹는다"로 겪은
+     * 것이 이것이다). [onCreate]의 기본 arm 반영이 `setSelection` 다음에 이 함수를 직접
+     * 부르는 이유가 그것이다.
      * ⚠ 그때도 `getSelectedItemPosition()`은 새 값을 돌려주므로 **HUD와 [selectedArm]은 이미
      * 새 arm을 가리켰다** — 화면만 옛 arm이었다. [startRecording]의 `renderer.setArm` 안전망이
      * 런의 arm은 지켜 왔다(그래서 기록된 런은 오염되지 않았다).
@@ -534,9 +559,8 @@ class MainActivity : ComponentActivity() {
         //    프레임이 없어 화면이 **옛 arm의 마지막 그림에 멈춘다.** 한 장을 강제로 다시 그려
         //    바뀐 결과가 바로 보이게 한다([applyCardboardTuning]·[onConfigurationChanged]와
         //    같은 관행이다).
-        //    ⚠ 측정 중에는 이 경로가 닫혀 있다(스피너·버튼 잠금 + [selectArmFromButton]의
-        //      recording 가드) — 그래서 이 강제 드로우가 런의 `draws_without_new_frame`에
-        //      섞이지 않는다.
+        //    ⚠ 측정 중에는 이 경로가 닫혀 있다(측정 중에는 arm 스피너가 잠긴다) — 그래서
+        //      이 강제 드로우가 런의 `draws_without_new_frame`에 섞이지 않는다.
         glView.requestRender()
     }
 
@@ -597,14 +621,13 @@ class MainActivity : ComponentActivity() {
             detectPipeline.disableOverlayPublish()
         }
         recording = true
+        // 🔴 시연 토글은 **런 단위 상태**다 — 직전 런의 상태와 계수가 이 런에 누적되지
+        //    않게 여기서 내린다(`PassthroughRenderer.resetRenderCounters`의 관행).
+        resetDemoToggles()
         toggleButton.setText(R.string.stop)
         // 런 도중 조건이 바뀌면 그 분포는 오염된 것이다 → 조건 입력을 전부 잠근다.
-        // 🔴 on/off 버튼도 **arm을 바꾸는 입력**이므로 스피너와 같은 창에서 잠근다 —
-        //    잠그지 않으면 armAtStart와 실제로 돈 arm이 갈린다.
         lightingSpinner.isEnabled = false
         armSpinner.isEnabled = false
-        viewOnButton.isEnabled = false
-        viewOffButton.isEnabled = false
         displayModeSpinner.isEnabled = false
         cardboardFovSeek.isEnabled = false
         cardboardAlignmentSeek.isEnabled = false
@@ -675,6 +698,14 @@ class MainActivity : ComponentActivity() {
     private fun stopRecording() {
         if (!recording) return
         recording = false
+        // 정지 시점의 토글 상태는 아래 writeLogs가 인자로 들고 가고, 화면은 여기서 바로
+        // 기본(둘 다 ON)으로 되돌린다 — 참가자가 ② OFF로 런을 끝내면 다음 런 시작까지
+        // 원본 프리뷰만 보이고 시연 2회차가 망가진다.
+        val stage2AtStop = stage2Enabled
+        val overlayAtStop = overlayEnabled
+        val stage2Toggles = stage2ToggleCount
+        val overlayToggles = overlayToggleCount
+        resetDemoToggles()
         // 기록을 먼저 멈춘 뒤 파일 쓰기를 GL 스레드에 태운다. 측정 중 파일 I/O를 피하려고
         // 메모리에 모아 둔 것이므로, 쓰는 시점은 반드시 기록이 끝난 다음이어야 한다.
         recorder.stop(SystemClock.elapsedRealtimeNanos())
@@ -695,6 +726,9 @@ class MainActivity : ComponentActivity() {
                 outDir, runName, lighting, arm, displayModeAtStart,
                 cardboardImageScaleAtStart, cardboardEyeOffsetAtStart,
                 negotiated, analysis, sourceKind,
+                // 🔴 **위에서 리셋하기 전에 붙잡아 둔 값**이다 — 필드를 여기서 읽으면
+                //    resetDemoToggles가 이미 기본값으로 되돌린 뒤라 전부 ON·0이 나간다.
+                stage2AtStop, overlayAtStop, stage2Toggles, overlayToggles,
             )
             uiHandler.post {
                 toggleButton.isEnabled = true
@@ -703,10 +737,6 @@ class MainActivity : ComponentActivity() {
                 displayModeSpinner.isEnabled = true
                 cardboardFovSeek.isEnabled = true
                 cardboardAlignmentSeek.isEnabled = true
-                // ⚠ writeLogs가 도는 동안에는 toggleButton과 **같은 창**으로 잠겨 있었다 —
-                //   그 창에서 arm이 바뀌면 armAtStart와 실제가 갈린다.
-                viewOnButton.isEnabled = true
-                viewOffButton.isEnabled = true
                 showMessage(message)
                 updateStatus()
             }
@@ -725,6 +755,11 @@ class MainActivity : ComponentActivity() {
         negotiated: NegotiatedConfig?,
         analysis: AnalysisConfig?,
         sourceKind: String,
+        /** 시연 토글의 **정지 시점** 상태와 이 런의 뒤집힘 횟수. 호출부가 붙잡아 넘긴다. */
+        stage2EnabledAtStop: Boolean,
+        overlayEnabledAtStop: Boolean,
+        stage2Toggles: Int,
+        overlayToggles: Int,
     ): String {
         if (dir == null) {
             return "getExternalFilesDir(null)이 null이다 — 로그를 쓰지 못했다"
@@ -793,6 +828,12 @@ class MainActivity : ComponentActivity() {
                     lightingCondition = lighting,
                     // 정지 시점의 값이다. 런 내내 한 상태였다는 뜻이 아니다.
                     hudInfoHidden = hudInfoHidden,
+                    // 🔴 시연 토글도 **정지 시점의 값**이다(위 hudInfoHidden과 같은 규약).
+                    //    런 내내 그랬는지는 아래 계수가 0인지로만 말할 수 있다.
+                    stage2EnabledAtStop = stage2EnabledAtStop,
+                    overlayEnabledAtStop = overlayEnabledAtStop,
+                    stage2ToggleCount = stage2Toggles,
+                    overlayToggleCount = overlayToggles,
                     arm = arm,
                     displayMode = displayMode,
                     cardboardImageScale = cardboardImageScale,
@@ -965,47 +1006,97 @@ class MainActivity : ComponentActivity() {
 
     private fun selectedDisplayMode(): DisplayMode =
         DisplayMode.fromId(displayModeSpinner.selectedItem?.toString())
+
+    // ── 시연용 볼륨키 토글 ───────────────────────────────────────────────
+
     /**
-     * on/off 버튼 → **[armSpinner]의 선택을 바꾸고, 그 선택을 [applyArmSelection]으로
-     * 반영한다.**
+     * 시연 토글을 **런 단위 기본**(②·④ 둘 다 ON, 계수 0)으로 내린다. 런 시작과 정지가
+     * 둘 다 부른다 — 이유는 [stage2Enabled] KDoc.
      *
-     * 🔴 **예전에는 `setSelection` 하나였다** — "`onItemSelected`가 깨어나 반영까지 된다"는
-     * 전제였는데 **그 전제가 거짓이었다**: 스피너가 접힌 정보 패널(`View.GONE`) 안에 있으면
-     * 레이아웃 패스가 돌지 않아 콜백이 오지 않는다. 그래서 버튼을 눌러도 화면이 바뀌지 않고
-     * 정보 보기를 눌러야 그제야 바뀌었다. 자세한 것은 [applyArmSelection]의 KDoc에 있다.
-     *
-     * 🔴 그래도 **선택은 여전히 스피너가 쥔다** — 스피너 표시와 [selectedArm]
-     * (= [startRecording]이 읽는 값)이 갈리면 `session.json`이 실제로 돈 arm과 **다른 arm**을
-     * 적는다. 바뀐 것은 "반영을 콜백에 맡기지 않는다"뿐이다.
+     * 🔴 렌더러에는 **GL 스레드로 넘겨서만** 반영한다([PassthroughRenderer.setDemoToggles]).
      */
-    private fun selectArmFromButton(arm: RenderArm, labelRes: Int, toastRes: Int) {
-        // 측정 중에는 조건을 바꾸지 않는다. 버튼도 잠겨 있지만 경로 자체를 닫아 둔다
-        // (스피너 잠금과 같은 이유 — 런 도중 arm이 바뀌면 그 분포는 오염된 것이다).
-        if (recording) return
-        val index = RenderArm.CHOICES.indexOf(arm.id)
-        if (index < 0) {
-            // 🔴 조용히 0번 arm을 고르지 않는다 — 어느 arm이 도는지 모르는 채로 돌게 된다.
-            showMessage("arm 목록에서 ${arm.id}를 찾지 못했다 — 아무것도 바꾸지 않았다")
-            return
+    private fun resetDemoToggles() {
+        stage2Enabled = true
+        overlayEnabled = true
+        stage2ToggleCount = 0
+        overlayToggleCount = 0
+        glView.queueEvent { renderer.setDemoToggles(true, true) }
+    }
+
+    /**
+     * 볼륨키로 ②(밝기 보정)와 ④(위험물 표시)를 즉시 켜고 끈다. **시연에서 참가자가 체감으로
+     * 비교하는 것이 목적이고 성능 기록이 아니다.**
+     *
+     * - 볼륨**업** = ④ 위험물 표시 / 볼륨**다운** = ② 밝기 보정
+     * - 🔴 `ACTION_DOWN`·`ACTION_UP`을 **둘 다 소비한다.** `ACTION_UP`을 흘리면 시스템
+     *   볼륨 패널이 화면에 뜬다(누른 사람이 보는 것은 밤길이지 볼륨 슬라이더가 아니다).
+     * - 상태를 바꾸는 것은 `ACTION_DOWN && repeatCount == 0`일 때뿐이다 — 길게 누르면
+     *   자동 반복이 초당 수십 번 들어온다.
+     * - 측정 중이 아니면 아무것도 바꾸지 않는다. 🔴 **잠금 창은 [recording] 하나로 덮인다** —
+     *   [stopRecording]이 가장 먼저 `recording = false`를 세우고 `writeLogs`는 그 뒤에
+     *   `queueEvent`로 돈다. 추가 플래그를 만들지 않는다.
+     * - 🔴 **arm이 [RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT]가 아니면 아무것도 바꾸지 않는다.**
+     *   토글이 사는 렌더 경로(`drawChainedHighlight` + 복제 프로그램)를 `_1q`·`_nofill`
+     *   계측 arm이 **함께 쓰기** 때문이다 — 게이트가 없으면 볼륨키 한 번이 그 계측 런의 렌더
+     *   구성을 바꾼다. 거부 문구는 정지 상태 거부와 **다른 문자열**이다(사유가 다르다).
+     * - 🔴 **`glView.requestRender()`를 부르지 않는다.** 새 프레임 없는 강제 드로우는
+     *   `recorder.noteDrawWithoutNewFrame()`을 태워 측정 중에 `draws_without_new_frame`을
+     *   오염시킨다. 반영이 최대 한 프레임(30fps에서 33ms) 늦지만 토스트와 햅틱이 이미
+     *   즉시 피드백을 준다.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val isVolumeUp = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP
+        val isVolumeDown = event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
+        if (!isVolumeUp && !isVolumeDown) return super.dispatchKeyEvent(event)
+        // 여기부터는 어떤 경로로 빠지든 **소비한다**(위 KDoc의 볼륨 패널 이유).
+        if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0) return true
+        if (!recording) {
+            showMessage(
+                getString(R.string.demo_toggle_idle),
+                "볼륨키 토글은 측정 중에만 먹는다 — 아무것도 바꾸지 않았다",
+            )
+            return true
         }
-        armSpinner.setSelection(index)
-        // 🔴 **콜백을 기다리지 않고 여기서 반영한다**(위 KDoc). 패널이 펴져 있으면 리스너도
-        //    같은 함수를 부르지만 appliedArm 가드가 두 번째를 막는다.
-        applyArmSelection(arm)
-        // ⚠ 프리뷰가 잠깐 끊기는 것은 **정상 동작**이다: ③ 분석 use case의 유무가 달라지면
-        //   카메라를 다시 바인딩한다(rebindSourceIfAnalysisChanged). 알리지 않으면
-        //   측정자가 고장으로 읽는다.
-        // 🔴 토스트는 **참가자**가 읽는다 — arm id도 use case도 쓰지 않는다.
-        //    화면이 끊기는 사실은 참가자에게도 알린다(안 알리면 고장으로 읽는다).
-        //    ⚠ arm id는 로그와 HUD(updateStatus)에 남는다 — HUD가 기본 접힘이 되면서
-        //      토스트가 유일한 즉시 확인 수단이 됐으므로, 로그에서 빼지 않는다.
+        // 🔴 **arm 게이트.** 토글이 가르는 두 자리(패스4·7의 mix(uEnhance) · 패스8의 오버레이)는
+        //    drawChainedHighlight와 그 복제 프로그램에 있는데, 그 경로를
+        //    **RenderArm.usesChainedHighlight인 셋이 공유한다**(통합 arm · `_1q` · `_nofill`).
+        //    게이트가 없으면 `_1q`/`_nofill` **계측 런 도중 볼륨키 한 번이 그 런의 렌더 구성을
+        //    바꾼다** — 이 줄을 지우려는 사람은 그 사실을 먼저 알아야 한다.
+        //    ⚠ 측정 중에는 arm 스피너가 잠겨 있으므로 selectedArm()은 armAtStart와 같다.
+        //    ⚠ 사후 자진 신고(session.json의 demo_toggles.*_toggle_count)는 이 게이트와
+        //      **무관하게 모든 런에 그대로 나간다** — 예방과 사후 배제는 둘 다 있어야 한다.
+        val armNow = selectedArm()
+        if (armNow != RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT) {
+            showMessage(
+                getString(R.string.demo_toggle_wrong_arm),
+                "볼륨키 토글은 ${RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT.id}에서만 먹는다 " +
+                    "(지금 arm=${armNow.id}) — 계측 arm의 런을 오염시키지 않는다",
+            )
+            return true
+        }
+        val messageRes = if (isVolumeUp) {
+            overlayEnabled = !overlayEnabled
+            overlayToggleCount++
+            if (overlayEnabled) R.string.demo_boxes_on else R.string.demo_boxes_off
+        } else {
+            stage2Enabled = !stage2Enabled
+            stage2ToggleCount++
+            if (stage2Enabled) R.string.demo_enhance_on else R.string.demo_enhance_off
+        }
+        // 🔴 렌더러에는 GL 스레드로 넘긴다 — 프레임 중간에 값이 갈리면 그 프레임의
+        //    overlay_boxes와 화면이 어긋난다([PassthroughRenderer.setDemoToggles]).
+        val stage2 = stage2Enabled
+        val overlay = overlayEnabled
+        glView.queueEvent { renderer.setDemoToggles(stage2, overlay) }
         showMessage(
-            getString(toastRes),
-            "${getString(labelRes)} — arm을 ${arm.id}로 바꿨다. ③ 분석 use case의 유무가 " +
-                "달라지면 카메라를 다시 바인딩하므로 프리뷰가 잠깐 끊긴다(정상 동작이다)",
+            getString(messageRes),
+            "볼륨키 토글 — stage2=$stage2(누적 $stage2ToggleCount) " +
+                "overlay=$overlay(누적 $overlayToggleCount)",
         )
-        // 화면이 arm을 바로 반영하게 한다(다음 상태 틱을 기다리지 않는다).
-        uiHandler.post { updateStatus() }
+        // ⚠ CONFIRM은 API 30부터다(minSdk는 26). 상수는 컴파일 시점에 인라인되므로 옛
+        //   기기에서도 죽지 않고 **햅틱만 안 온다** — 측정 기기는 API 36이라 실제로는 온다.
+        window.decorView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        return true
     }
 
     // ── 화면 표시 (진행 확인용) ──────────────────────────────────────────

@@ -404,6 +404,58 @@ class DragoClaheChainStage {
         val CLAHE_APPLY_SHADER = ClaheStage.applyShaderSource(CLAHE_LUT_BINDING)
 
         /**
+         * 🔴 **②③④ 통합 arm 전용 복제본.** 위 두 상수와 산식은 같고 **`mix(uEnhance)` 한 줄이
+         * 더 있다** — 시연에서 볼륨키로 ②를 즉시 끄기 위한 것이다(0이면 원본, 1이면 ② 결과).
+         *
+         * 🔴 **왜 위 둘에 uniform을 넣지 않고 복제하는가:** 위 두 상수로 만든 프로그램을
+         * **아홉 arm이 공유한다** — `drago_clahe_chain`·`_1q` · `detect_cpu_chain`·`_1q` ·
+         * `drago_clahe_chain_bf`·`_1q` · `detect_cpu_chain_highlight`·`_1q`·`_nofill`
+         * ([RenderArm]의 각 arm 정의). 공유본에 `mix`를 끼우면 **이미 승격된 그 arm들의
+         * 셰이더가 바뀌어**(`docs/baselines/`) 숫자를 비교할 근거가 사라진다. 복제는 알면서
+         * 감수한 비용이고, 통합 arm만 이 소스를 쓴다.
+         *
+         * ⚠ 그래서 통합 arm의 패스4·7은 승격 베이스라인의 그 패스와 **같은 문자열이 아니다.**
+         * 그 사실을 `session.json`의 `demo_toggles.apply_shader_variant`가 자진 신고한다.
+         */
+        val DEMO_DRAGO_APPLY_SHADER = DragoStage.applyShaderSource(
+            DRAGO_STATS_BINDING, RenderArm.DEMO_ENHANCE_UNIFORM
+        )
+
+        /** 위와 같은 취지의 패스7 복제본. */
+        val DEMO_CLAHE_APPLY_SHADER = ClaheStage.applyShaderSource(
+            CLAHE_LUT_BINDING, RenderArm.DEMO_ENHANCE_UNIFORM
+        )
+
+        /**
+         * ②③④ 통합 arm의 색공간 변환 자동 계수용 소스 목록. [shaderSourcesByPass]와 **패스
+         * 구성이 같고 패스4·7의 프래그먼트만 복제본**이며, 뒤에 ④ 오버레이 패스가 하나 더
+         * 붙는다(패스8) — 그래서 present가 마지막(패스9)이다.
+         *
+         * 🔴 목록을 여기서 새로 적지 않고 [shaderSourcesByPass]의 결과를 **고쳐 쓴다** —
+         * 두 곳에 패스 이름을 적으면 한쪽만 고쳐지는 날이 온다.
+         *
+         * @param overlayPass ④ 오버레이 패스. [HighlightOverlay.shaderSourcesByPass]가 낸
+         *   항목을 **그대로** 넘긴다 — 그 셰이더 문자열은 그 클래스가 private으로 들고 있고,
+         *   여기서 복사하면 "같은 String 객체라 텍스트와 어긋날 수 없다"는 근거가 무너진다.
+         */
+        fun demoShaderSourcesByPass(
+            base: List<Pair<String, List<String>>>,
+            overlayPass: Pair<String, List<String>>,
+        ): List<Pair<String, List<String>>> = base.map { (name, sources) ->
+            when (name) {
+                "stage2_drago_apply" ->
+                    name to listOf(ES31_QUAD_VERTEX_SHADER, DEMO_DRAGO_APPLY_SHADER)
+                "stage2_clahe_apply" ->
+                    name to listOf(ES31_QUAD_VERTEX_SHADER, DEMO_CLAHE_APPLY_SHADER)
+                else -> name to sources
+            }
+        }.let { chain ->
+            // ④ 오버레이 패스는 present **앞**에 들어간다(패스8). 체인 목록의 마지막이
+            // present이므로 그 앞에 끼운다.
+            chain.dropLast(1) + listOf(overlayPass) + chain.takeLast(1)
+        }
+
+        /**
          * 색공간 변환 **자동 계수**의 대상이 되는 소스 — 패스 이름 → 그 패스가
          * `glShaderSource`에 넘기는 문자열들. `onSurfaceCreated`에서 1회만 훑는다
          * (hot path가 아니다). 여기 있는 것과 실제로 컴파일되는 것이 **같은 String 객체**라

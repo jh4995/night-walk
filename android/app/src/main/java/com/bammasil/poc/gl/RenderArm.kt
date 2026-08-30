@@ -592,9 +592,14 @@ enum class RenderArm(
      * 패스8  FBO_A에 ④ 오버레이 덧그림          stage_i_ms
      * 패스9  present       FBO_A → 화면        gpu_present_ms
      * ```
-     * 앞 7패스는 [DRAGO_CLAHE_CHAIN]과 **글자 그대로 같은 GL 호출**이고(같은 프로그램·같은
-     * SSBO) 패스8은 [DETECT_CPU_HIGHLIGHT]의 오버레이 패스와 같은 프로그램이다 — 그래야
-     * 이 arm과 그 둘의 차분이 뜻을 갖는다.
+     * 앞 7패스는 [DRAGO_CLAHE_CHAIN]과 **같은 순서·같은 SSBO의 GL 호출**이고 패스8은
+     * [DETECT_CPU_HIGHLIGHT]의 오버레이 패스와 같은 프로그램이다 — 그래야 이 arm과 그 둘의
+     * 차분이 뜻을 갖는다.
+     *
+     * 🔴 **다만 패스4·7의 프래그먼트는 그 arm과 같은 프로그램이 아니다**(2026-08-30부터).
+     * 시연에서 볼륨키로 ②를 끄기 위해 [DEMO_ENHANCE_UNIFORM]로 섞는 한 줄이 더 있는 **복제
+     * 프래그먼트**를 쓴다 — 전문은 [DEMO_APPLY_SHADER_VARIANT]. 산식도 SSBO도 같으므로
+     * 차분의 뜻은 유지되지만, "글자 그대로 같은 프로그램"은 이제 참이 아니다.
      *
      * 🔴 **패스8의 타깃이 `fbos[0]`(FBO_A)다.** 체인의 마지막 처리 패스가 FBO_A에 쓰고
      * present가 FBO_A를 읽기 때문이다 — [DETECT_CPU_HIGHLIGHT]의 오버레이는 FBO_B에 그린다
@@ -1100,6 +1105,43 @@ enum class RenderArm(
          * 상태 버퍼를 임의로 도입하면 비용과 리셋 조건이 함께 미정이 된다.
          */
         const val TEMPORAL_STATE = "none (stateless) — INTERFACES.md §B-4 미확정(☐)이라 상태를 두지 않는다"
+
+        // ── 시연용 ② 토글 ────────────────────────────────────────────────
+        // 볼륨키로 ②(적응형 조도개선)를 즉시 끄고 켜기 위한 자리다. **체감 비교가 목적이고
+        // 성능 기록이 아니다.**
+
+        /** 통합 arm의 패스4·7 복제 프래그먼트가 노출하는 mix 계수 uniform 이름. */
+        const val DEMO_ENHANCE_UNIFORM = "uEnhance"
+
+        /** ② ON. `mix(원본, ② 결과, 1)` = ② 결과 그대로. */
+        const val DEMO_ENHANCE_ON = 1f
+
+        /** ② OFF. `mix(원본, ② 결과, 0)` = 원본 그대로(패스 수는 그대로 돈다). */
+        const val DEMO_ENHANCE_OFF = 0f
+
+        /**
+         * 🔴 위 0/1의 출처. [GAMMA_PROVENANCE]와 **같은 형식**이며 `session.json`에 그대로
+         * 나간다 — `INTERFACES.md` §B-5의 `☐`를 채운 것으로 오독되지 않게 하기 위해서다.
+         */
+        const val DEMO_ENHANCE_PROVENANCE =
+            "알고리즘 제안값이 아니다 — 시연에서 ②를 켜고 끄는 **스위치**의 두 끝이다. " +
+                "0은 원본 그대로(mix 계수 0), 1은 ② 결과 그대로(mix 계수 1)이며 그 사이 값은 " +
+                "쓰지 않는다. INTERFACES.md §B-5의 ☐를 채운 값이 아니고, ② 파라미터는 " +
+                "stage2_params 쪽 provenance가 따로 말한다"
+
+        /**
+         * 🔴 **통합 arm의 패스4·7이 승격 베이스라인과 다른 문자열이라는 자진 신고.**
+         * `session.json`의 `demo_toggles.apply_shader_variant`로 나간다.
+         *
+         * ⚠ 지금은 `baseline_diff.py`의 `CONDITION_KEYS`에 이 키가 없어 **기계가 읽지
+         * 않는다.** 앱 쪽 규격을 먼저 확정해 두면 나중에 하네스가 승격할 수 있다.
+         */
+        const val DEMO_APPLY_SHADER_VARIANT =
+            "demo_enhance_mix — 통합 arm(detect_cpu_chain_highlight 계열)의 패스4·7은 " +
+                "drago_clahe_chain이 쓰는 공유 프래그먼트가 아니라 " +
+                "mix($DEMO_ENHANCE_UNIFORM) 한 줄이 더 붙은 **복제본**이다. " +
+                "산식과 색공간 변환 토큰 계수는 같지만 셰이더 문자열은 같지 않다 — " +
+                "docs/baselines/의 승격 숫자와 이 arm의 패스4·7 비용을 같은 것으로 보지 말 것"
 
         // ── Drago 톤매핑 파라미터 ─────────────────────────────────────────
         // 상류(모델링 담당) `scripts/lowlight.py`의 `D1`:

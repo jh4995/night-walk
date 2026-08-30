@@ -213,12 +213,17 @@ class PassthroughRenderer(
             //    돌려주는 쪽을 택했다: 기존 arm이 타는 문장을 한 글자도 건드리지 않는다.)
             if (arm.usesChainedHighlight) {
                 // 적용 프래그먼트가 **둘**이라 한쪽만 없어도 이 arm은 그릴 수 없다
-                // (usesChainedComputeStage2 분기와 같은 논거·같은 라벨).
-                if (chainDragoApplyProgram == null || chainClaheApplyProgram == null) {
+                // (usesChainedComputeStage2 분기와 같은 논거).
+                // 🔴 **이 arm이 실제로 쓰는 것은 복제 프로그램이다**(시연 ② 토글의 mix가
+                //    붙은 것) — 공유본을 보면 복제본의 컴파일 실패가 여기 안 잡히고,
+                //    dispatchDraw가 전 프레임 패스스루로 폴백하는데 프레임타임은 정상으로
+                //    보인다. `FRAME_BUDGET.md` §3 주6이 기록한 실패가 정확히 그것이다.
+                if (demoChainDragoApplyProgram == null || demoChainClaheApplyProgram == null) {
                     return applyProgramFailureStatus(
                         chainStage.ready, chainStage.status,
                         listOf(
-                            PROGRAM_LABEL_CHAIN_DRAGO_APPLY, PROGRAM_LABEL_CHAIN_CLAHE_APPLY
+                            PROGRAM_LABEL_DEMO_CHAIN_DRAGO_APPLY,
+                            PROGRAM_LABEL_DEMO_CHAIN_CLAHE_APPLY
                         )
                     )
                 }
@@ -337,6 +342,25 @@ class PassthroughRenderer(
     @Volatile
     private var displayMode: DisplayMode = DisplayMode.DEFAULT
 
+    /**
+     * 시연용 ② 토글. `false`면 통합 arm의 패스4·7이 `mix(uEnhance)`로 **원본을 그대로**
+     * 낸다(패스 수·GL 호출 시퀀스는 그대로다 — 셰이더 안에서만 갈린다).
+     *
+     * 🔴 **[setDemoToggles]로만 바꾼다**(= `glView.queueEvent`로 GL 스레드에서). `@Volatile`은
+     * 가시성 보장일 뿐이라 프레임 **중간에** 값이 갈리면 그 프레임의 화면과 로그가 어긋난다.
+     */
+    @Volatile
+    private var stage2Enabled = true
+
+    /**
+     * 시연용 ④ 토글. `false`면 패스8이 정점 0개를 그린다(패스는 그대로 열린다 —
+     * `stage_i_ms` 열이 네 조합에서 같은 것을 재야 비교가 된다).
+     *
+     * 🔴 `overlay_boxes`와 `overlay_fill_frac`은 **짝**이다 — [drawChainedHighlight]의 주석.
+     */
+    @Volatile
+    private var overlayEnabled = true
+
     private var cardboardImageScale = DEFAULT_CARDBOARD_IMAGE_SCALE
     private var cardboardEyeOffset = DEFAULT_CARDBOARD_EYE_OFFSET
 
@@ -392,6 +416,17 @@ class PassthroughRenderer(
 
     /** `drago_clahe_chain` arm의 **둘째** 적용 패스(패스7). SSBO binding만 단품과 다르다. */
     private var chainClaheApplyProgram: QuadProgram? = null
+
+    /**
+     * ②③④ 통합 arm **전용** 패스4. 위 [chainDragoApplyProgram]과 산식은 같고 시연용
+     * `mix(uEnhance)` 한 줄이 더 있다 → [DragoClaheChainStage.DEMO_DRAGO_APPLY_SHADER].
+     *
+     * 🔴 **공유본을 고치지 않고 복제한 이유**가 그 상수의 KDoc에 있다(아홉 arm이 공유한다).
+     */
+    private var demoChainDragoApplyProgram: QuadProgram? = null
+
+    /** 위와 같은 취지의 통합 arm 전용 패스7. */
+    private var demoChainClaheApplyProgram: QuadProgram? = null
 
     /**
      * `drago_clahe_fused` arm의 **유일한** 적용 패스(패스6). 톤맵 + LUT 보간 + 감마를
@@ -693,9 +728,23 @@ class PassthroughRenderer(
                 ES31_QUAD_VERTEX_SHADER, DragoClaheChainStage.CLAHE_APPLY_SHADER,
                 PROGRAM_LABEL_CHAIN_CLAHE_APPLY
             )
+            // ②③④ 통합 arm 전용 복제본. 같은 SSBO·같은 산식이고 mix(uEnhance)만 더 있다.
+            // 🔴 **여기서 실패하면 통합 arm이 전 프레임 패스스루로 폴백한다** — stage2Status가
+            //    그 실패를 잡도록 아래 분기도 이 두 프로그램을 본다(FRAME_BUDGET.md §3 주6의
+            //    실패가 정확히 이것이다: 컴파일 실패인데 프레임타임이 정상으로 보였다).
+            demoChainDragoApplyProgram = buildProgram(
+                ES31_QUAD_VERTEX_SHADER, DragoClaheChainStage.DEMO_DRAGO_APPLY_SHADER,
+                PROGRAM_LABEL_DEMO_CHAIN_DRAGO_APPLY
+            )
+            demoChainClaheApplyProgram = buildProgram(
+                ES31_QUAD_VERTEX_SHADER, DragoClaheChainStage.DEMO_CLAHE_APPLY_SHADER,
+                PROGRAM_LABEL_DEMO_CHAIN_CLAHE_APPLY
+            )
         } else {
             chainDragoApplyProgram = null
             chainClaheApplyProgram = null
+            demoChainDragoApplyProgram = null
+            demoChainClaheApplyProgram = null
         }
         // ② 융합 arm. 적용 프래그먼트가 **하나**이고 그 하나가 SSBO 블록을 둘 읽는다.
         fusedStage.onContextCreated(capabilities)
@@ -745,6 +794,19 @@ class PassthroughRenderer(
         )
         val chainSites = ColorTransformCensus.countByPass(chainSources)
         val overlaySites = ColorTransformCensus.countByPass(overlaySources)
+        // ②③④ 통합 arm의 9패스. 🔴 **체인 계수를 대신 내지 않고 실제로 센다** — 이 arm의
+        // 패스4·7은 시연 ② 토글의 mix(uEnhance)가 붙은 **복제본**이고 패스8(④ 오버레이)이
+        // 하나 더 있다. 없으면 session.json이 "셰이더를 세지 못했다"는 거짓 사유를 내거나
+        // 다른 arm의 계수를 이 arm의 것으로 내보낸다(같은 실수를 highlight_boxes_1q에서
+        // 이미 한 번 했다 — 바로 아래 주석).
+        // ⚠ 오버레이 패스는 **HighlightOverlay가 낸 항목을 그대로 넘긴다**(문자열을 복사하지
+        //   않는다 — 그래야 "같은 String 객체"라는 근거가 유지된다).
+        val chainHighlightSites = ColorTransformCensus.countByPass(
+            DragoClaheChainStage.demoShaderSourcesByPass(
+                chainSources,
+                overlaySources.first { it.first == "stage4_highlight" },
+            )
+        )
         val chainBfSites = ColorTransformCensus.countByPass(
             BilateralStage.withDenoisePass(chainSources)
         )
@@ -774,6 +836,11 @@ class PassthroughRenderer(
             RenderArm.HIGHLIGHT_BOXES_1Q.id to overlaySites,
             RenderArm.DETECT_CPU_HIGHLIGHT.id to overlaySites,
             RenderArm.DETECT_CPU_HIGHLIGHT_1Q.id to overlaySites,
+            // 🔴 ②③④ 통합 arm 3종. 셋은 **같은 셰이더 문자열**을 컴파일한다(`_1q`는 계측
+            //    방식만, `_nofill`은 정점 생성만 다르다) → 같은 계수를 가리킨다.
+            RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT.id to chainHighlightSites,
+            RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT_1Q.id to chainHighlightSites,
+            RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT_NOFILL.id to chainHighlightSites,
         )
         oesTextureId = createOesTexture()
         Matrix.setIdentityM(texMatrix, 0)
@@ -994,6 +1061,18 @@ class PassthroughRenderer(
         }
     }
 
+    /**
+     * 시연용 ②·④ 토글을 세운다. **GL 스레드에서 부른다**(`glView.queueEvent` —
+     * [setArm]·[setDisplayMode]와 같은 관행이다).
+     *
+     * 🔴 UI 스레드에서 직접 부르면 프레임 **중간에** 값이 갈려 그 프레임의 `overlay_boxes`와
+     * 실제 화면이 어긋난다. `@Volatile`은 가시성만 보장하지 원자적 프레임 경계를 주지 않는다.
+     */
+    fun setDemoToggles(stage2: Boolean, overlay: Boolean) {
+        stage2Enabled = stage2
+        overlayEnabled = overlay
+    }
+
     fun setCardboardTuning(imageScale: Float, eyeOffset: Float) {
         cardboardImageScale = imageScale.coerceIn(MIN_CARDBOARD_IMAGE_SCALE, 1f)
         cardboardEyeOffset = eyeOffset.coerceIn(
@@ -1080,8 +1159,10 @@ class PassthroughRenderer(
         //    두면 9패스 arm이 4패스 단순 복사 경로로 떨어진다 — ② 체인이 조용히 사라지고
         //    로그만 보면 그럴듯하다.
         if (arm.usesChainedHighlight) {
-            val dragoApply = chainDragoApplyProgram
-            val claheApply = chainClaheApplyProgram
+            // 🔴 **복제 프로그램이다** — 시연 ② 토글의 mix(uEnhance)가 붙은 쪽이고,
+            //    공유본(chainDragoApplyProgram)은 다른 여덟 arm의 것이다.
+            val dragoApply = demoChainDragoApplyProgram
+            val claheApply = demoChainClaheApplyProgram
             if (dragoApply == null || claheApply == null || present == null ||
                 !chainStage.ready || !highlightOverlay.ready || !ensureOffscreen()
             ) {
@@ -1514,7 +1595,12 @@ class PassthroughRenderer(
      * 그 함수는 **이미 승격된 `drago_clahe_chain` 숫자의 재현 경로**이고, 그 KDoc이 그것을
      * 못 박고 있다. 여기에 분기를 넣으면 그 arm의 GL 호출 시퀀스가 바뀌어 `docs/baselines/`의
      * 기존 숫자와 비교할 근거가 사라진다. **중복은 알면서 감수한 비용이다** — 앞 7패스는
-     * 그 함수와 **글자 그대로 같아야** 두 arm의 차분이 ④의 비용이 된다.
+     * 그 함수와 **같은 순서·같은 SSBO**여야 두 arm의 차분이 ④의 비용이 된다.
+     *
+     * 🔴 **패스4·7의 프로그램은 예외다**(2026-08-30부터). 시연 ② 토글 때문에 이 arm만
+     * `mix(uEnhance)`가 붙은 **복제 프래그먼트**를 쓴다([demoChainDragoApplyProgram]) —
+     * 산식과 SSBO는 같지만 셰이더 문자열은 같지 않다
+     * ([RenderArm.DEMO_APPLY_SHADER_VARIANT]가 `session.json`에 그 사실을 낸다).
      *
      * ### 🔴 패스8의 타깃이 `fbos[0]`(FBO_A)인 이유 — 이 함수 최대의 무음 실패 지점
      * 체인의 패스7이 clahe 출력을 **FBO_A**에 쓰고 패스9(present)가 **`fboTextures[0]`**을
@@ -1550,19 +1636,27 @@ class PassthroughRenderer(
         // 서로 다른 패스 구성을 가지므로 함수를 합치지 않는다 — 위 KDoc의 판단 그대로다).
         // stage_h_ms는 CPU 벽시계이며 GPU query 안에 넣으면 어디에도 계상되지 않는다.
         val hStart = SystemClock.elapsedRealtimeNanos()
+        // 🔴 **시연 토글과 무관하게 항상 돈다.** 이유 둘: (a) `stage_h_ms`가 네 토글 조합에서
+        //    같은 것을 재야 비교가 된다, (b) 스무더가 hold·트랙 상태를 갖는다 — 건너뛰면
+        //    재활성 순간 **낡은 트랙이 되살아나 유령 박스**가 뜬다.
         val drawn = overlaySmoother.update(
             frameOverlaySnapshot, fboWidth, fboHeight, requestedOverlayRotationDegrees
         )
         // 정점 재기록도 H 안이다 — 이 CPU 비용을 stage_i_ms(GPU 시계) 쪽에 두면 사라진다.
         // 🔴 fill 여부를 **인자로 넘긴다**(arm이 유일한 출처다 — RenderArm.drawsOverlayFill).
         //    오버레이에 상태로 두면 setArm의 조기 반환 경로에서 초기 arm에 플래그가 안 실린다.
-        highlightOverlay.setDynamicGeometry(overlaySmoother, arm.drawsOverlayFill)
+        // 🔴 시연 토글은 **여기서만** 가른다(draw 인자). 그냥 건너뛰면 아래 fill_frac이
+        //    직전 프레임 값 그대로 남아 "박스 0개인데 면적 0.12"라는 모순 행이 나간다.
+        val overlayOn = overlayEnabled
+        highlightOverlay.setDynamicGeometry(overlaySmoother, arm.drawsOverlayFill, overlayOn)
         // 면적 축도 H 안에서 확정한다 — 정점을 쓰면서 이미 센 값을 고정소수로 옮길 뿐이다.
         // 🔴 fill 대조군에서도 이 값은 **그대로 나간다** — 열의 정의가 기하 통계이고 그리기
         //    여부와 무관하다(HighlightOverlay.setDynamicGeometry의 같은 주석).
         frameOverlayFillFracScaled = scaleFillFrac(highlightOverlay.overlayFillFrac)
         frameStageHNs = SystemClock.elapsedRealtimeNanos() - hStart
-        frameOverlayBoxes = drawn
+        // 🔴 열 계약이 "**실제로 그린** 박스 수"다(FrameLogRecorder) — 토글이 꺼져 있으면 0이
+        //    맞고, 위 fill_frac도 같은 분기에서 0으로 내려가 있다(둘은 짝이다).
+        frameOverlayBoxes = if (overlayOn) drawn else 0
 
         val timing = instrument && gpuTimer.beginFrame()
 
@@ -1653,8 +1747,11 @@ class PassthroughRenderer(
         chainHighlightFallbackLogged = true
         val missing = buildList {
             if (present == null) add("present(blit) 프로그램")
-            if (dragoApply == null) add("체인 drago 적용 프래그먼트")
-            if (claheApply == null) add("체인 clahe 적용 프래그먼트")
+            // 🔴 **복제본**의 이름을 적는다 — 이 arm이 실제로 컴파일에 실패한 것은 그쪽이다.
+            //    공유본 이름을 적으면 현장에서 원인을 가르려는 사람이 다른 arm의 프로그램을
+            //    들여다보게 된다(같은 부류의 실수를 아래 arm.id 주석이 이미 한 번 기록했다).
+            if (dragoApply == null) add("체인 drago 적용 프래그먼트(시연 토글 복제본)")
+            if (claheApply == null) add("체인 clahe 적용 프래그먼트(시연 토글 복제본)")
             if (!chainStage.ready) add("chainStage(컴퓨트·SSBO) — ${chainStage.status}")
             if (!highlightOverlay.ready) add("highlightOverlay — ${highlightOverlay.status}")
             if (fbos[0] == 0) add("오프스크린 FBO — $offscreenStatus")
@@ -2234,6 +2331,16 @@ class PassthroughRenderer(
             // 에서 1/해상도로 유도해 둔 값). 셰이더에 해상도를 하드코딩하지 않는다.
             GLES20.glUniform2f(program.uTexel, bilateralStage.texelX, bilateralStage.texelY)
         }
+        // 시연용 ② 토글. 🔴 **0/1은 알고리즘 제안값이 아니다** — 스위치의 두 끝이고,
+        // 그 사실은 RenderArm.DEMO_ENHANCE_PROVENANCE가 session.json에 그대로 낸다
+        // (INTERFACES.md §B-5의 ☐를 채운 값으로 오독되지 않게 한다).
+        // 이 uniform이 있는 프로그램은 통합 arm의 복제 프래그먼트 둘뿐이다.
+        if (program.uEnhance >= 0) {
+            GLES20.glUniform1f(
+                program.uEnhance,
+                if (stage2Enabled) RenderArm.DEMO_ENHANCE_ON else RenderArm.DEMO_ENHANCE_OFF
+            )
+        }
 
         vertexBuffer.position(0)
         GLES20.glVertexAttribPointer(
@@ -2375,6 +2482,8 @@ class PassthroughRenderer(
         deleteProgram(agcwdApplyProgram)
         deleteProgram(chainDragoApplyProgram)
         deleteProgram(chainClaheApplyProgram)
+        deleteProgram(demoChainDragoApplyProgram)
+        deleteProgram(demoChainClaheApplyProgram)
         deleteProgram(fusedApplyProgram)
         deleteProgram(bilateralProgram)
         oesProgram = null
@@ -2388,6 +2497,8 @@ class PassthroughRenderer(
         agcwdApplyProgram = null
         chainDragoApplyProgram = null
         chainClaheApplyProgram = null
+        demoChainDragoApplyProgram = null
+        demoChainClaheApplyProgram = null
         fusedApplyProgram = null
         bilateralProgram = null
         // 이전 컨텍스트의 실패 원문은 이 컨텍스트의 근거가 아니다. 남겨 두면 재생성 뒤에
@@ -2467,6 +2578,7 @@ class PassthroughRenderer(
                 handle, RenderArm.BF_SIGMA_SPACE_UNIFORM
             ),
             uTexel = GLES20.glGetUniformLocation(handle, RenderArm.BF_TEXEL_UNIFORM),
+            uEnhance = GLES20.glGetUniformLocation(handle, RenderArm.DEMO_ENHANCE_UNIFORM),
         )
     }
 
@@ -2534,6 +2646,11 @@ class PassthroughRenderer(
         val uBfSigmaSpace: Int,
         /** bilateral: 1/처리해상도. 이 프로그램에 없으면 -1. */
         val uTexel: Int,
+        /**
+         * 시연용 ② 토글의 mix 계수. **통합 arm의 복제 프래그먼트에만 있고** 나머지
+         * 프로그램에서는 -1이라 [drawQuad]가 건너뛴다 → 다른 arm의 GL 호출은 그대로다.
+         */
+        val uEnhance: Int,
     )
 
     companion object {
@@ -2630,6 +2747,12 @@ class PassthroughRenderer(
         private const val PROGRAM_LABEL_AGCWD_APPLY = "stage2_agcwd_apply"
         private const val PROGRAM_LABEL_CHAIN_DRAGO_APPLY = "stage2_chain_drago_apply"
         private const val PROGRAM_LABEL_CHAIN_CLAHE_APPLY = "stage2_chain_clahe_apply"
+
+        // ②③④ 통합 arm 전용 복제본의 라벨. 🔴 **위 둘과 다른 이름이어야 한다** — 같은
+        // 라벨을 쓰면 실패 원문 맵(programFailureLogs)에서 어느 프로그램이 실패했는지
+        // 가를 수 없고, buildProgram이 앞 항목을 remove로 지운다.
+        private const val PROGRAM_LABEL_DEMO_CHAIN_DRAGO_APPLY = "stage2_demo_chain_drago_apply"
+        private const val PROGRAM_LABEL_DEMO_CHAIN_CLAHE_APPLY = "stage2_demo_chain_clahe_apply"
         private const val PROGRAM_LABEL_FUSED_APPLY = "stage2_fused_apply"
 
         /** bf 패스. 체인+bf와 융합+bf가 **같은 프로그램**을 쓰므로 라벨도 하나다. */

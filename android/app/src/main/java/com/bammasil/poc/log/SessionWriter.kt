@@ -55,6 +55,19 @@ class SessionFacts(
      * 정지 시점의 스냅샷이다. 촬영용으로 접었다 폈다 한 런은 **비교 근거로 쓰지 않는다.**
      */
     val hudInfoHidden: Boolean,
+    /**
+     * 시연용 ② 토글(볼륨다운)이 **정지 시점에** 켜져 있었는가.
+     *
+     * 🔴 **런 내내 그랬다는 뜻이 아니다** — [hudInfoHidden]과 **같은 규약**이다. 런 도중 몇 번
+     * 뒤집혔는지는 [stage2ToggleCount]가 말한다.
+     */
+    val stage2EnabledAtStop: Boolean,
+    /** 시연용 ④ 토글(볼륨업)이 **정지 시점에** 켜져 있었는가. 위와 같은 규약이다. */
+    val overlayEnabledAtStop: Boolean,
+    /** 이 런에서 ② 토글이 뒤집힌 횟수. 0이면 런 내내 기본(ON)이었다. */
+    val stage2ToggleCount: Int,
+    /** 이 런에서 ④ 토글이 뒤집힌 횟수. 0이면 런 내내 기본(ON)이었다. */
+    val overlayToggleCount: Int,
     /** **측정 시작 시점에 잠근 arm.** 스피너의 현재 값이 아니다. */
     val arm: RenderArm,
     val displayMode: DisplayMode,
@@ -271,6 +284,32 @@ object SessionWriter {
                     "LAB의 L만 바꾸고 a,b는 그대로 둔다",
             ),
         )
+
+    /**
+     * ②③④ 통합 arm의 ② 자리 6패스. [CHAIN_STAGE2_PASSES]와 **같은 목록이고 적용 패스 둘의
+     * 셰이더 서술에 시연 ② 토글 uniform 한 줄이 덧붙는다.**
+     *
+     * 🔴 목록을 복사하지 않고 **고쳐 쓴다** — 체인이 바뀌는 날 한쪽만 고쳐지지 않게 한다
+     * ([CHAIN_STAGE2_PASSES]가 bf arm에 재사용되는 것과 같은 논거).
+     * 🔴 [CHAIN_STAGE2_PASSES] **자체를 고치면 안 된다** — 그 목록은 아홉 arm이 공유하고,
+     * 그 arm들의 패스4·7은 실제로 이 uniform이 **없는** 공유 프래그먼트다.
+     */
+    private val DEMO_CHAIN_STAGE2_PASSES: List<Triple<String, String, String>> =
+        CHAIN_STAGE2_PASSES.map { (name, target, shader) ->
+            when (name) {
+                "stage2_drago_apply", "stage2_clahe_apply" ->
+                    Triple(name, target, shader + DEMO_ENHANCE_PASS_SUFFIX)
+                else -> Triple(name, target, shader)
+            }
+        }
+
+    /** 위 두 패스의 서술에 붙는 꼬리. 시연 토글이 셰이더 안에서 하는 일을 그대로 적는다. */
+    private const val DEMO_ENHANCE_PASS_SUFFIX =
+        ". 🔴 **이 arm 전용 복제 프래그먼트다** — 시연 ② 토글의 " +
+            "mix(원본, 결과, ${RenderArm.DEMO_ENHANCE_UNIFORM}) 한 줄이 더 있다" +
+            "(0이면 원본 그대로, 1이면 결과 그대로. 패스는 어느 쪽이든 그대로 돈다). " +
+            "체인 arm이 쓰는 공유 프래그먼트와 **같은 문자열이 아니다** — " +
+            "demo_toggles.apply_shader_variant"
 
     /**
      * present 패스의 셰이더 서술. **네 갈래(체인+④ / ④ / 컴퓨트 / 3패스 골격)가 같은 문장을
@@ -495,6 +534,8 @@ object SessionWriter {
         //    건드리지 않지만, 지속 런에서 컴포지션·UI 일이 줄어드는 것은 조건 차이다.
         //    ⚠ 정지 시점의 값이며 "런 내내 그랬다"는 뜻이 아니다 (SessionFacts.hudInfoHidden).
         root.put("hud_info_hidden", facts.hudInfoHidden)
+        // 🔴 시연용 볼륨키 토글의 사실. **조건이지 판정이 아니고, 성능 비교의 근거도 아니다.**
+        root.put("demo_toggles", buildDemoToggles(facts))
         root.put("capture_clock_base", facts.clock.base)
         root.put("source_kind", facts.sourceKind)
 
@@ -869,6 +910,47 @@ object SessionWriter {
         return json
     }
 
+    /**
+     * 시연용 볼륨키 토글의 사실. 🔴 **성능 기록이 아니라 조건 기록이다.**
+     *
+     * 담는 것은 넷이다: 뒤집힌 횟수 둘, 정지 시점의 상태 둘. 그리고 이 arm의 패스4·7이
+     * 승격 베이스라인의 공유 셰이더가 **아니라는** 자진 신고 하나.
+     */
+    private fun buildDemoToggles(facts: SessionFacts): JSONObject {
+        val json = JSONObject()
+        json.put("stage2_toggle_count", facts.stage2ToggleCount)
+        json.put("overlay_toggle_count", facts.overlayToggleCount)
+        // 🔴 **정지 시점의 값이며 런 내내 그랬다는 뜻이 아니다** — hud_info_hidden과 같은
+        //    규약이다(SessionFacts.stage2EnabledAtStop). 몇 번 뒤집혔는지는 위 계수가 말한다.
+        json.put("stage2_enabled_at_stop", facts.stage2EnabledAtStop)
+        json.put("overlay_enabled_at_stop", facts.overlayEnabledAtStop)
+        json.put("stage2_key", "볼륨다운 = ②(적응형 조도개선)")
+        json.put("overlay_key", "볼륨업 = ④(위험물 강조 박스)")
+        json.put("mix_values", OFF_ON_MIX_VALUES)
+        json.put("mix_provenance", RenderArm.DEMO_ENHANCE_PROVENANCE)
+        // 🔴 로그가 스스로 말하게 한다 — 지금은 baseline_diff.CONDITION_KEYS에 이 키가 없어
+        //    기계가 읽지 않지만, 앱 쪽 규격을 먼저 확정해 두면 나중에 하네스가 승격할 수 있다.
+        json.put("apply_shader_variant", RenderArm.DEMO_APPLY_SHADER_VARIANT)
+        json.put("note", DEMO_TOGGLES_NOTE)
+        return json
+    }
+
+    /** `demo_toggles.mix_values`. 두 끝만 쓴다는 사실을 값으로도 보인다. */
+    private val OFF_ON_MIX_VALUES =
+        "OFF=${RenderArm.DEMO_ENHANCE_OFF} / ON=${RenderArm.DEMO_ENHANCE_ON}"
+
+    /**
+     * 🔴 **이 런을 성능 비교에서 배제할지는 사람이 정한다**는 사실을 로그가 직접 말한다.
+     * 기계(`baseline_diff.py`)에는 이것을 담을 조건 키가 아직 없다.
+     */
+    private const val DEMO_TOGGLES_NOTE =
+        "🔴 토글이 한 번이라도 있었으면(count > 0) 이 런의 프레임타임·GPU 분포는 **서로 다른 " +
+            "렌더 구성이 섞인 것**이다. baseline_diff.py의 CONDITION_KEYS에는 이 사실을 담을 " +
+            "키가 없어 기계는 '조건 동일'로 통과시킨다 — 성능 비교에서 이 런을 배제하는 것은 " +
+            "**사람의 몫**이다. " +
+            "⚠ 토글은 **측정 중에만** 먹고 런 시작·정지 양쪽에서 기본(둘 다 ON)으로 " +
+            "되돌아간다. 그래서 count=0인 런은 렌더 구성이 통합 arm의 기본 구성 하나뿐이다"
+
     /** ②의 파라미터. 파라미터가 다르면 D 실측끼리 비교가 성립하지 않는다. */
     private fun buildStage2Params(facts: SessionFacts): JSONObject {
         val json = JSONObject()
@@ -1092,13 +1174,9 @@ object SessionWriter {
                 )
                 json.put("detect_input_note", RenderArm.CHAIN_HIGHLIGHT_DETECT_INPUT_NOTE)
                 json.put("bounds_note", RenderArm.CHAIN_HIGHLIGHT_BOUNDS_NOTE)
-                // 🔴 putChain이 넣은 계수는 **체인 arm 기준**이다(색공간 변환 계수는 ② 6패스가
-                //    글자 그대로 같으므로 그대로 성립한다). 그 범위를 문장으로 못 박는다 —
-                //    적지 않으면 "9패스 arm을 8패스로 셌다"로 읽힌다.
-                json.put(
-                    "color_transform_sites_note",
-                    CHAIN_HIGHLIGHT_COLOR_TRANSFORM_SITES_NOTE
-                )
+                // 🔴 putChain이 넣은 계수는 **체인 arm 기준**이다 — 이 arm은 9패스이고
+                //    패스4·7의 프래그먼트가 복제본이므로 **이 arm을 직접 센 값**으로 덮는다.
+                putChainHighlightColorTransform(json, facts, facts.arm)
             }
             // 오버레이가 없는 3패스 골격 + 탐지. 짝은 detect_cpu다.
             RenderArm.DETECT_CPU_1Q -> {
@@ -1139,10 +1217,7 @@ object SessionWriter {
                 )
                 json.put("detect_input_note", RenderArm.CHAIN_HIGHLIGHT_DETECT_INPUT_NOTE)
                 json.put("bounds_note", RenderArm.CHAIN_HIGHLIGHT_BOUNDS_NOTE)
-                json.put(
-                    "color_transform_sites_note",
-                    CHAIN_HIGHLIGHT_COLOR_TRANSFORM_SITES_NOTE
-                )
+                putChainHighlightColorTransform(json, facts, facts.arm)
                 putSingleFrameQueryNotes(json, RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT_1Q)
             }
         }
@@ -1166,20 +1241,41 @@ object SessionWriter {
             "not_a_product_decision을 함께 읽을 것"
 
     /**
-     * 통합 arm(9패스) 계열의 `color_transform_sites_note`. [putChain]이 넣은 계수는
-     * **체인 arm 기준**이라는 사실과 그 범위를 못 박는다.
+     * 통합 arm(9패스) 계열의 `color_transform_sites`를 **이 arm 자신의 계수**로 덮고, 남은
+     * 어긋남(declared 표)을 문장으로 못 박는다.
      *
-     * 🔴 통합 arm과 그 `_1q` 짝이 같은 문장을 실어야 하므로 상수로 뽑았다
+     * 🔴 **예전에는 체인 arm의 계수를 대신 냈다.** 그때는 ② 6패스의 셰이더가 체인과 글자
+     * 그대로 같아서 성립하는 편법이었는데, **시연 ② 토글이 들어오면서 그 전제가 깨졌다** —
+     * 이 arm의 패스4·7은 `mix(uEnhance)` 한 줄이 더 있는 복제 프래그먼트다
+     * ([RenderArm.DEMO_APPLY_SHADER_VARIANT]). 그래서 이제 실제로 세어 등록한 값을 쓴다
+     * (`PassthroughRenderer.colorTransformSites`).
+     *
+     * 🔴 통합 arm과 그 짝 둘이 같은 문장을 실어야 하므로 함수로 뽑았다
      * ([CHAIN_HIGHLIGHT_STAGE2_NOTE]와 같은 논거).
      */
+    private fun putChainHighlightColorTransform(
+        json: JSONObject,
+        facts: SessionFacts,
+        arm: RenderArm,
+    ) {
+        // putChain이 체인 arm 기준으로 넣어 둔 값을 **이 arm의 것으로 덮는다.**
+        json.put("color_transform_sites", buildColorTransformSites(facts, arm))
+        json.put("color_transform_sites_note", CHAIN_HIGHLIGHT_COLOR_TRANSFORM_SITES_NOTE)
+    }
+
+    /** 위 [putChainHighlightColorTransform]이 싣는 문장. 세 arm이 공유한다. */
     private val CHAIN_HIGHLIGHT_COLOR_TRANSFORM_SITES_NOTE =
-        "🔴 **위 color_transform_sites의 arm은 drago_clahe_chain이다**(이 arm의 " +
-            "id가 아니다). ② 6패스의 셰이더가 체인과 **글자 그대로 같으므로** 그 " +
-            "계수가 이 arm에도 그대로 성립하고, 이 arm에만 있는 패스8(④ 오버레이)의 " +
-            "색공간 변환은 **0**이다(오버레이 셰이더는 LabGlsl을 부르지 않는다 — " +
-            "정적 오버레이 arm에서 기계로 세어 확증돼 있다). 즉 합은 같다. " +
-            "declared 표(color_transform_declared)의 passes_total은 **체인의 8**이며 " +
-            "이 arm은 9다 — 그 칸만 이 arm에서 성립하지 않는다"
+        "위 color_transform_sites의 arm은 **이 arm 자신**이며 9패스를 실제로 센 값이다" +
+            "(예전에는 drago_clahe_chain의 계수를 대신 냈다 — 지금은 아니다). " +
+            "🔴 **이 arm의 패스4·7 프래그먼트는 체인과 같은 문자열이 아니다** — 시연 ② 토글의 " +
+            "mix(uEnhance) 한 줄이 더 있는 복제본이다(demo_toggles.apply_shader_variant). " +
+            "다만 그 한 줄은 색공간 변환 토큰을 하나도 더하지 않으므로 **토큰 계수는 체인과 " +
+            "같고**, 이 arm에만 있는 패스8(④ 오버레이)의 색공간 변환은 **0**이다" +
+            "(오버레이 셰이더는 LabGlsl을 부르지 않는다 — 정적 오버레이 arm에서 기계로 세어 " +
+            "확증돼 있다). 즉 합도 체인과 같다. " +
+            "⚠ declared 표(color_transform_declared)는 **여전히 체인(8패스) 기준**이다 — " +
+            "사람이 환산한 층이라 arm별로 다시 적지 않았다. passes_total 칸만 이 arm에서 " +
+            "성립하지 않는다(이 arm은 9다)"
 
     /**
      * ② 체인 + ③ 탐지이고 **④ 오버레이가 없는** arm(8패스) 계열의
@@ -1725,8 +1821,10 @@ object SessionWriter {
                     "${RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT_1Q.id} − " +
                     "${RenderArm.DETECT_CPU_CHAIN_1Q.id}에서 나온다(bounds_note). " +
                     "뜻이 있는 비교는 넷이다: " +
-                    "(1) **drago_clahe_chain과의 차분** — 앞 7패스가 글자 그대로 같은 GL " +
-                    "호출이므로 그 차가 ④ 오버레이 + 그 arm에 없는 present 번짐이다. " +
+                    "(1) **drago_clahe_chain과의 차분** — 앞 7패스가 같은 순서·같은 SSBO의 " +
+                    "GL 호출이므로 그 차가 ④ 오버레이 + 그 arm에 없는 present 번짐이다. " +
+                    "⚠ 단 패스4·7의 프래그먼트는 이 arm만 `mix` 한 줄이 더 있는 복제본이다" +
+                    "(demo_toggles.apply_shader_variant) — 그만큼은 ④의 비용이 아니다. " +
                     "(2) **${RenderArm.DETECT_CPU_CHAIN.id}와의 차분** — ②와 ③이 같고 ④ " +
                     "오버레이만 없는 arm이므로 그 차가 ④ 오버레이(+ present 번짐)의 패스별 " +
                     "계측 판이다. " +
@@ -3873,12 +3971,13 @@ object SessionWriter {
                     // 🔴 **usesHighlightOverlay 분기(4패스)보다 앞에 있어야 한다.** 이 arm도
                     //    그 술어가 true이므로 뒤에 두면 **패스 5개가 서술에서 사라지고**
                     //    columns[i] 매핑이 통째로 어긋난다(아래 자기검사가 그것을 잡는다).
-                    //    ② 6패스는 체인의 목록을 **그대로 재사용**한다(사본을 만들지 않는다).
+                    //    ② 6패스는 체인의 목록을 **고쳐 쓴다** — 이 arm의 패스4·7은 시연 ②
+                    //    토글 uniform이 붙은 복제 프래그먼트다(DEMO_CHAIN_STAGE2_PASSES).
                     listOf(
                         Triple(
                             "oes_to_fbo_a", "FBO_A (처리 해상도)", "OES 패스스루 + uTexMatrix"
                         ),
-                    ) + CHAIN_STAGE2_PASSES + listOf(
+                    ) + DEMO_CHAIN_STAGE2_PASSES + listOf(
                         chainHighlightOverlayPass(facts.arm.drawsOverlayFill),
                         Triple(
                             "present",

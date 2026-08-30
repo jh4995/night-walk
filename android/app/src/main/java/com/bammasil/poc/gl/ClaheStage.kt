@@ -404,7 +404,32 @@ class ClaheStage : Stage2ComputeStage {
          * 대신 [RenderArm.LAB_DEVIATION]에 이탈 항목으로 싣는다(§B-6 골든 대조 때 이 항목이
          * 없으면 원인 추적이 어렵다).
          */
-        internal fun applyShaderSource(lutBinding: Int): String = """
+        internal fun applyShaderSource(
+            lutBinding: Int,
+            enhanceUniform: String? = null,
+        ): String {
+            // 🔴 **`enhanceUniform == null`이면 아래 생성 문자열이 지금까지와 바이트 단위로
+            //    같아야 한다**(위 KDoc과 [APPLY_SHADER] 주석의 불변식). 보간 지점을 전부
+            //    **기존 줄 안쪽**에 두어 빈 문자열이 들어가도 빈 줄이 생기지 않고
+            //    `trimIndent`가 잡는 최소 들여쓰기(12칸)도 바뀌지 않는다.
+            //    ⚠ 비 null이면 원본 샘플을 `src`로 **한 번만** 잡아 쓴다(추가 샘플링 없음 —
+            //      지금도 Lab 변환에 넘기려고 같은 자리에서 한 번 읽고 있다).
+            val enhanceDecl = if (enhanceUniform == null) {
+                ""
+            } else {
+                "uniform float $enhanceUniform;\n            "
+            }
+            val srcCapture = if (enhanceUniform == null) {
+                ""
+            } else {
+                "vec3 src = texture(uTexture, vTexCoord).rgb;\n                "
+            }
+            val srcSample =
+                if (enhanceUniform == null) "texture(uTexture, vTexCoord).rgb" else "src"
+            val labToSrgb = "${LabGlsl.LAB_F_TO_SRGB}(f, newBin / ${LabGlsl.L_TO_BIN})"
+            val outExpr =
+                if (enhanceUniform == null) labToSrgb else "mix(src, $labToSrgb, $enhanceUniform)"
+            return """
             #version 310 es
             precision highp float;
             precision highp int;
@@ -413,12 +438,12 @@ class ClaheStage : Stage2ComputeStage {
             uniform sampler2D uTexture;
             uniform vec2 ${RenderArm.CLAHE_TILES_UNIFORM};
             uniform float ${RenderArm.CLAHE_GAMMA_UNIFORM};
-            layout(std430, binding = $lutBinding) readonly buffer ClaheLut {
+            ${enhanceDecl}layout(std430, binding = $lutBinding) readonly buffer ClaheLut {
                 float entries[];
             } gLut;
             ${LabGlsl.FUNCTIONS}
             void main() {
-                vec3 f = ${LabGlsl.SRGB_TO_LAB_F}(texture(uTexture, vTexCoord).rgb);
+                ${srcCapture}vec3 f = ${LabGlsl.SRGB_TO_LAB_F}($srcSample);
                 float l = 116.0 * f.y - 16.0;
                 int idx = int(clamp(l * ${LabGlsl.L_TO_BIN} + 0.5, 0.0, 255.0));
 
@@ -439,10 +464,11 @@ class ClaheStage : Stage2ComputeStage {
                 float newBin = pow(clamp(lut8 / 255.0, 0.0, 1.0),
                                    ${RenderArm.CLAHE_GAMMA_UNIFORM}) * 255.0;
                 fragColor = vec4(
-                    ${LabGlsl.LAB_F_TO_SRGB}(f, newBin / ${LabGlsl.L_TO_BIN}), 1.0
+                    $outExpr, 1.0
                 );
             }
-        """.trimIndent()
+            """.trimIndent()
+        }
 
         /**
          * 단품 `clahe_gamma` arm의 패스4. **binding은 지금까지 쓰던 값 그대로**다.

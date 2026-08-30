@@ -461,7 +461,33 @@ class DragoStage : Stage2ComputeStage {
          * **하나만 고치면 화면이 크게 틀어진다.** 전문·실측 이탈 폭·왜 지금 재현하지 않는지는
          * [RenderArm.DRAGO_DEVIATION].
          */
-        internal fun applyShaderSource(statsBinding: Int): String = """
+        internal fun applyShaderSource(
+            statsBinding: Int,
+            enhanceUniform: String? = null,
+        ): String {
+            // 🔴 **`enhanceUniform == null`이면 아래 생성 문자열이 지금까지와 바이트 단위로
+            //    같아야 한다**(위 KDoc과 [APPLY_SHADER] 주석의 불변식). 그래서 보간 지점을
+            //    전부 **기존 줄 안쪽**에 두었다 — 빈 문자열이 들어가도 빈 줄이 생기지 않고
+            //    `trimIndent`가 잡는 최소 들여쓰기(12칸)도 바뀌지 않는다.
+            //    ⚠ 비 null이면 원본 샘플을 `src`로 **한 번만** 잡아 쓴다(추가 샘플링 없음).
+            val enhanceDecl = if (enhanceUniform == null) {
+                ""
+            } else {
+                "uniform float $enhanceUniform;\n            "
+            }
+            val srcCapture = if (enhanceUniform == null) {
+                ""
+            } else {
+                "vec3 src = texture(uTexture, vTexCoord).rgb;\n                "
+            }
+            val srcSample =
+                if (enhanceUniform == null) "texture(uTexture, vTexCoord).rgb" else "src"
+            val outExpr = if (enhanceUniform == null) {
+                "clamp(tone, 0.0, 1.0)"
+            } else {
+                "mix(src, clamp(tone, 0.0, 1.0), $enhanceUniform)"
+            }
+            return """
             #version 310 es
             precision highp float;
             in vec2 vTexCoord;
@@ -470,7 +496,7 @@ class DragoStage : Stage2ComputeStage {
             uniform float ${RenderArm.DRAGO_SRC_GAMMA_UNIFORM};
             uniform float ${RenderArm.DRAGO_OUT_GAMMA_UNIFORM};
             uniform float ${RenderArm.DRAGO_SATURATION_UNIFORM};
-            layout(std430, binding = $statsBinding) readonly buffer DragoStats {
+            ${enhanceDecl}layout(std430, binding = $statsBinding) readonly buffer DragoStats {
                 uint sumLogQ;
                 uint maxGrayBits;
                 uint reserved0;
@@ -481,7 +507,7 @@ class DragoStage : Stage2ComputeStage {
                 float reserved2;
             } gStats;
             void main() {
-                vec3 lin = pow(texture(uTexture, vTexCoord).rgb,
+                ${srcCapture}vec3 lin = pow($srcSample,
                                vec3(${RenderArm.DRAGO_SRC_GAMMA_UNIFORM}));
                 float lum = dot(lin, $LUMA_GLSL);
                 float l = lum / gStats.logAvg;
@@ -491,9 +517,10 @@ class DragoStage : Stage2ComputeStage {
                                  vec3(${RenderArm.DRAGO_SATURATION_UNIFORM}));
                 vec3 tone = pow(max(ratio * mapped, 0.0),
                                 vec3(1.0 / ${RenderArm.DRAGO_OUT_GAMMA_UNIFORM}));
-                fragColor = vec4(clamp(tone, 0.0, 1.0), 1.0);
+                fragColor = vec4($outExpr, 1.0);
             }
-        """.trimIndent()
+            """.trimIndent()
+        }
 
         /**
          * 단품 `drago` arm의 패스4. **binding은 지금까지 쓰던 값 그대로**다.

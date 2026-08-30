@@ -361,8 +361,15 @@ class HighlightOverlay {
      *   [putQuad] 호출을 건너뛴다** — 알파 0으로 그리는 것이 아니다(알파 0은 프래그먼트
      *   비용이 같다 — [RenderArm.HIGHLIGHT_NOFILL_CONTROL_NOTE]). 🔴 상태로 두지 않는 이유는
      *   [draw]의 같은 인자 설명에 있다.
+     * @param draw 아예 그리는가. **시연용 ④ 토글 전용**이고 기본은 `true`라 기존 호출자는
+     *   글자 하나 바뀌지 않는다. `false`면 박스 0개 경로와 **완전히 같은 상태**로 떨어진다
+     *   (`vertexCount = 0` **그리고** `overlayFillFrac = 0`) — 🔴 둘은 짝이라 한쪽만 내리면
+     *   "박스 0개인데 면적 0.12"라는 모순 행이 나간다.
+     *   ⚠ [fill]과 다른 축이다: [fill]은 fill quad만 빼고 스트로크는 그리는 **대조군 축**이고
+     *   (`session.json`의 `overlay.fill_enabled` → `baseline_diff.CONDITION_KEYS`),
+     *   이 인자는 오버레이 전체를 없애는 **시연 축**이다. 조건 키를 바꾸지 않는다.
      */
-    fun setDynamicGeometry(list: OverlaySmoother, fill: Boolean) {
+    fun setDynamicGeometry(list: OverlaySmoother, fill: Boolean, draw: Boolean = true) {
         val buffer = vertexBuffer
         val w = processWidth
         val h = processHeight
@@ -374,7 +381,13 @@ class HighlightOverlay {
         // 🔴 정적 캐시를 무효화한다 — 같은 버퍼를 공유하므로 안 내리면 arm을 되돌렸을 때
         //    "정적 박스가 이미 들어 있다"고 거짓말한다.
         geometryBoxCount = NO_GEOMETRY
-        val n = if (list.count > MAX_BOX_COUNT) MAX_BOX_COUNT else list.count
+        // 🔴 시연 토글이 꺼져 있으면 **박스 0개 경로로 보낸다** — 아래 분기 하나가
+        //    vertexCount와 overlayFillFrac을 **둘 다** 내린다(위 [draw] 설명).
+        val n = when {
+            !draw -> 0
+            list.count > MAX_BOX_COUNT -> MAX_BOX_COUNT
+            else -> list.count
+        }
         if (n <= 0) {
             vertexCount = 0
             // 🔴 박스 0개는 **정상값**이고 그때 면적도 0이다(없음의 표식이 아니다).
