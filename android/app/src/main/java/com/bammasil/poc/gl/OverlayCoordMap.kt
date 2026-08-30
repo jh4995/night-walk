@@ -55,8 +55,21 @@ import com.bammasil.poc.detect.DetectContract
  * ```
  * box_rotation_degrees + present_rotation_degrees ≡ rotationDegrees  (mod 360)
  * ```
- * `hasCameraTransform=true`면 present가 0이라 **박스가 전부 진다.** false면 present가 다
- * 지므로 **박스는 0이다.** `session.json`의 `render.rotation_budget`이 이 식을 기계로 대조한다.
+ * `hasCameraTransform=true`이고 **세로(normal)**면 present가 0이라 **박스가 전부 진다.**
+ * false면 present가 다 지므로 **박스는 0이다.** `session.json`의 `render.rotation_budget`이
+ * 이 식을 기계로 대조한다.
+ *
+ * 🟢 **카드보드(SBS)도 같은 식으로 성립한다.** 그 경로는 `targetRotation = ROTATION_90`이라
+ * present가 90을 걸고(팀원 원본 `e387ae9`의 의미) `rotationDegrees`는 0이므로 박스는
+ * `0 + 90 = 90`이다 — 세로의 `90 + 0 = 90`과 **같은 값**이다. T(= texMatrix가 영상에 건 회전)가
+ * 센서 장착각이라 표시 방향과 무관한 상수이기 때문이다.
+ *
+ * ✅ **카드보드에서 영상은 바로 선다 — 모든 arm에서.** present가 90을 걸기 때문이고,
+ * 처리 arm의 2D 눈이 그 90°를 실어 나를 유니폼을 갖도록 정점 셰이더를 메웠다(실측 확정,
+ * 2026-08-30 — 그전에는 `passthrough`만 정상이었다).
+ * 🔴 **그래서 카드보드에서 남은 어긋남은 ④ 박스 하나뿐이다**(영상은 90° 돌았는데 박스는
+ * 0°). 그 정합은 **미해결 열린 항목**이며, 카드보드의 기하·튜닝 코드는 팀원 소유라 우리가
+ * 건드리지 않는다.
  *
  * 🔴 **실기기 판정이다.** 옛 코드는 두 분기가 서로 바뀌어 있어 `true` 경로에서 `0 + 0 = 0`이
  * 나왔다. 그러면 센서 가로 좌표(1280×720)가 세로 화면(1080×2340)에 그대로 얹혀 **정규화
@@ -199,9 +212,18 @@ object OverlayCoordMap {
         "🔴 **(0) 이제 가정이 아니다 — 회전 예산은 기계가 대조한다.** ④ 오버레이는 present " +
             "앞의 FBO_A에 그려지므로(패스8) present가 돌면 영상과 박스가 함께 돈다. 따라서 " +
             "**box_rotation_degrees + present_rotation_degrees ≡ rotationDegrees (mod 360)** " +
-            "이며 render.rotation_budget이 이 식을 매 런 대조한다. hasCameraTransform=true면 " +
-            "present가 0이라 **박스가 전부 진다**(A34 세로에서 90°). false면 present가 다 지고 " +
-            "박스는 0이다. " +
+            "이며 render.rotation_budget이 이 식을 매 런 대조한다. hasCameraTransform=true이고 " +
+            "**세로(normal)**면 present가 0이라 **박스가 전부 진다**(A34 세로에서 90°). " +
+            "false면 present가 다 지고 박스는 0이다. " +
+            "🟢 **카드보드(SBS)도 같은 식으로 성립한다** — target_rotation=ROTATION_90이라 " +
+            "present가 90을 거는데(팀원 원본 e387ae9의 의미) rotation_degrees는 0이므로 " +
+            "박스는 0+90=90이고, 세로의 90+0=90과 **같은 값**이다(T가 센서 장착각이라 " +
+            "표시 방향과 무관한 상수다). " +
+            "✅ **카드보드에서 영상은 모든 arm에서 바로 선다**(처리 arm의 2D 눈이 그 90°를 " +
+            "실어 나를 유니폼을 갖도록 정점 셰이더를 메웠다 — 실측 확정 2026-08-30, 그전에는 " +
+            "passthrough만 정상이었다). 🔴 **그래서 남은 어긋남은 ④ 박스 하나뿐이고**(영상 " +
+            "90° vs 박스 0°) 그 정합이 **미해결 열린 항목**이다. 카드보드의 기하·튜닝 코드는 " +
+            "팀원 소유라 건드리지 않는다. " +
             "🔴 **실기기 판정이다(2026-08-30)**: 옛 코드는 두 분기가 서로 바뀌어 있어 true " +
             "경로에서 0+0=0이 나왔고, 그러면 센서 가로 좌표가 세로 화면에 그대로 얹혀 정규화 " +
             "좌표가 **전치**된다(x↔y 맞바꿈 = 회전 + 거울). 근거: 결함 상태 런 20260830_194714 " +

@@ -95,10 +95,12 @@ class SessionFacts(
      * 🔴 **표시 경로가 present 정점에 실제로 건 회전각.** 값의 뜻(센티넬 포함)은
      * [PassthroughRenderer]의 같은 이름 필드에 있다.
      *
-     * 🔴 **`hasCameraTransform=true`면 이 값은 0이 정상이다** — CameraX가 표시 회전을
-     * `SurfaceTexture`의 `texMatrix`에 이미 넣어 줘서 영상은 패스1 샘플링만으로 바로 서고,
-     * 여기서 또 돌리면 두 번 도는 것이다(A34에서 실제로 그렇게 돼서 영상이 90° 누웠다).
-     * 이 기계는 `hasCameraTransform=false` 경로를 위해 남아 있다.
+     * 🔴 **`hasCameraTransform=true`이고 세로(normal)면 이 값은 0이 정상이다** —
+     * `targetRotation = ROTATION_0`이라 0이 나오고, CameraX가 표시 회전을 `texMatrix`에 이미
+     * 넣어 줘서 영상은 패스1 샘플링만으로 바로 선다. 여기서 또 돌리면 두 번 도는 것이다
+     * (A34에서 실제로 그렇게 돼서 영상이 90° 누웠다).
+     * ⚠ **카드보드(SBS)는 `ROTATION_90`이라 90이 나오고 그것이 정상 보고다** — 카드보드
+     * 관련 코드는 팀원 원본(`e387ae9`)으로 되돌렸고 우리가 건드리지 않는 영역이다.
      *
      * ⚠ **④ 박스의 회전은 이 값이 아니다** — 박스는 `OverlayCoordMap`이 따로 돌리고 그 각도는
      * `overlay.coordinate_map.box_rotation_degrees`에 실린다. 두 값이 다른 것이 정상이다.
@@ -2035,7 +2037,7 @@ object SessionWriter {
             "box_rotation_note",
             "🔴 **박스에 실제로 건 회전각.** has_camera_transform=true면 **rotationDegrees가 " +
                 "정상이다**(A34 세로에서 90) — 박스는 texMatrix를 **타지 않으므로** CameraX가 " +
-                "영상에 해 준 회전을 ④가 직접 걸어야 한다. 불변식은 **박스 + present ≡ " +
+                "영상에 해 준 회전을 ④가 직접 걸어야 한다. 불변식은 **박스 ≡ present + " +
                 "rotationDegrees (mod 360)**이고(④는 present 앞의 FBO_A에 그려진다) 기계 " +
                 "대조는 render.rotation_budget이 한다. " +
                 "🔴 **옛 서술 '0이 정상이다'는 반증됐다(2026-08-30)** — 그 상태에서 센서 가로 " +
@@ -3793,8 +3795,10 @@ object SessionWriter {
      * 자리(`OverlayCoordMap`)에서 걸리고 `overlay.coordinate_map.box_rotation_degrees`에
      * 따로 실린다 — **두 값이 다른 것이 정상이다.**
      *
-     * ⚠ `hasCameraTransform=true`면 **0이 정상**이다: CameraX가 표시 회전을 `texMatrix`에
-     * 이미 넣어 줘서 영상은 패스1 샘플링만으로 바로 선다. 여기서 또 돌리면 두 번 돈다.
+     * ⚠ `hasCameraTransform=true`이고 **세로(normal)**면 **0이 정상**이다: `targetRotation`이
+     * `ROTATION_0`이고 CameraX가 표시 회전을 `texMatrix`에 이미 넣어 줘서 영상은 패스1
+     * 샘플링만으로 바로 선다. 여기서 또 돌리면 두 번 돈다.
+     * ⚠ **카드보드(SBS)는 90이 나오며 그것이 정상 보고다**(팀원 원본 `e387ae9`의 의미).
      *
      * ⚠ 이 블록이 갈라낸 것이 그 사실이다 — 예전 빌드는 이 회전을 **패스1 정점**에 걸었고,
      * 그 다음 빌드는 `rotationDegrees`를 present에 그대로 걸어 **바로 서 있던 영상을 90°
@@ -3825,11 +3829,17 @@ object SessionWriter {
                 "아니다.** 박스는 OverlayCoordMap이 따로 돌리고 그 각도는 " +
                 "overlay.coordinate_map.box_rotation_degrees에 실린다 — **두 값이 다른 것이 " +
                 "정상이다.** " +
-                "🔴 **has_camera_transform=true면 이 값은 0이 정상이다**: CameraX가 표시 " +
-                "회전을 SurfaceTexture의 texMatrix에 이미 넣어 줘서 영상은 패스1 샘플링만으로 " +
-                "바로 서고, 여기서 또 돌리면 두 번 돈다(A34에서 실제로 그렇게 돼서 바로 서 " +
-                "있던 영상이 90° 누웠다). 이 기계는 has_camera_transform=false 경로를 위해 " +
-                "남아 있다. " +
+                "🔴 **has_camera_transform=true이고 세로(normal)면 이 값은 0이 정상이다**: " +
+                "target_rotation이 ROTATION_0이고 CameraX가 표시 회전을 texMatrix에 이미 " +
+                "넣어 줘서 영상은 패스1 샘플링만으로 바로 선다. 여기서 또 돌리면 두 번 " +
+                "돈다(A34에서 실제로 그렇게 돼서 바로 서 있던 영상이 90° 누웠다). " +
+                "⚠ **카드보드(SBS)는 target_rotation=ROTATION_90이라 90이 나오고 그것이 정상 " +
+                "보고다**(팀원 원본 e387ae9의 의미). ✅ 그 90°가 실제로 화면을 세우므로 " +
+                "**카드보드 영상은 모든 arm에서 바로 선다**(실측 확정 2026-08-30 — 그전에는 " +
+                "처리 arm의 2D 눈에 uPositionMatrix가 없어 passthrough만 정상이었다). " +
+                "🔴 다만 그 경로에서 회전 예산 불변식은 깨지고" +
+                "(render.rotation_budget이 consistent=false를 낸다) **남은 어긋남은 ④ 박스 " +
+                "하나뿐이다**(영상 90° vs 박스 0°) — 그 정합이 **미해결 열린 항목**이다. " +
                 "⚠ camera_analysis_actual.rotation_degrees와 섞지 말 것: 그쪽은 " +
                 "③ 모델 입력을 세우는 회전이고 이쪽은 화면에 그리는 회전이다. " +
                 "applied_rotation_degrees=" +
@@ -3870,6 +3880,17 @@ object SessionWriter {
      * 안내하므로, 그 안내를 따른 사람이 이 블록을 결함으로 읽지 않게 적어 둔다).
      * 🔴 그러므로 `consistent=true`가 "박스가 맞게 그려졌다"는 뜻이 **아니다.**
      *
+     * 🔴 **카드보드에서는 이 불변식이 성립하지 않는다 — 그리고 그것이 정상 보고다.**
+     * 그 경로는 `targetRotation = ROTATION_90`이라 present가 90을 거는데(팀원 원본
+     * `e387ae9`의 의미) `rotationDegrees`는 0이고 박스는 0이므로 `0 + 90 = 90 ≠ 0`이 된다.
+     * 🚫 **식을 고쳐서 통과시키지 마라** — 사실이 그런 것이고 이 블록이 그것을 말해 주는
+     * 것이 맞다.
+     *
+     * ✅ **카드보드 영상 자체는 바로 선다 — 모든 arm에서**(실측 확정 2026-08-30). 그러니 이
+     * `consistent=false`를 "카드보드가 통째로 안 돈다"로 읽지 말 것. **남은 어긋남은 ④ 박스
+     * 하나뿐**이고(영상 90° vs 박스 0°) 그 정합이 **미해결 열린 항목**이다. 카드보드의
+     * 기하·튜닝 코드는 팀원 소유이며 우리가 건드리지 않는다.
+     *
      * ⚠ **모르면 null이다.** 셋 중 하나라도 센티넬(콜백이 안 왔다 / present 회전을 한 번도
      * 안 걸었다 / 매핑이 한 번도 안 돌았다)이면 `consistent`를 true로 만들지 않고 null로
      * 둔다 — 값을 지어내지 않는다.
@@ -3887,11 +3908,15 @@ object SessionWriter {
         json.put("present_rotation_degrees", if (presentKnown) present else JSONObject.NULL)
         json.put("box_rotation_degrees", if (boxKnown) box else JSONObject.NULL)
         if (cameraKnown && presentKnown && boxKnown) {
-            val sum = normalizeDegrees(present + box)
-            json.put("sum_degrees", sum)
-            json.put("consistent", sum == normalizeDegrees(camera))
+            // 🔴 **식이 `box ≡ camera + present`다**(옛 식 `box + present ≡ camera`는 반증됐다).
+            //    present는 영상과 박스를 함께 돌리는 **공통 모드**라 박스가 메워야 할 몫에서
+            //    빠지지 않는다. 박스가 메우는 것은 texMatrix가 영상에 건 회전 T 하나이고
+            //    T = camera + present다(세로 90+0, 카드보드 0+90 — 둘 다 90).
+            val expected = normalizeDegrees(camera + present)
+            json.put("expected_box_degrees", expected)
+            json.put("consistent", normalizeDegrees(box) == expected)
         } else {
-            json.put("sum_degrees", JSONObject.NULL)
+            json.put("expected_box_degrees", JSONObject.NULL)
             json.put("consistent", JSONObject.NULL)
         }
         json.put("note", ROTATION_BUDGET_NOTE)
@@ -3903,11 +3928,15 @@ object SessionWriter {
 
     /** `render.rotation_budget.note`. 위 [buildRotationBudget] KDoc과 같은 내용이다. */
     private const val ROTATION_BUDGET_NOTE =
-        "🔴 **불변식: box_rotation_degrees + present_rotation_degrees ≡ " +
-            "camera_rotation_degrees (mod 360).** ④ 오버레이는 present **앞의** FBO_A에 " +
-            "그려지므로(패스8, 패스9가 present) present가 돌면 영상과 박스가 **함께** 돈다 — " +
-            "그래서 박스가 스스로 걸어야 하는 각도는 '카메라가 요구한 각도 − present가 이미 " +
-            "돌린 각도'다. " +
+        "🔴 **불변식: box_rotation_degrees ≡ camera_rotation_degrees + " +
+            "present_rotation_degrees (mod 360).** ④ 오버레이는 present **앞의** FBO_A에 " +
+            "그려지므로(패스8, 패스9가 present) present는 영상과 박스를 **함께** 돌리는 " +
+            "**공통 모드**다 — 그래서 present는 박스가 메워야 할 몫에서 **빠지지 않는다.** " +
+            "박스가 메우는 것은 texMatrix가 영상에 건 회전 T 하나이고 T = camera + present다 " +
+            "(세로 90+0 · 카드보드 0+90 — **둘 다 90**이며 센서 장착각이라 표시 방향과 무관하다). " +
+            "⚠ **옛 식 'box + present ≡ camera'는 반증됐다** — present를 박스 몫에서 빼는 " +
+            "식이라 카드보드에서 박스가 0으로 떨어져 90이 통째로 빠졌고, 박스가 화면 왼쪽에 " +
+            "**가로 막대로 층층이** 쌓였다(전치 신호). " +
             "값의 출처: camera=TransformationInfo.rotationDegrees(원값) / " +
             "present=render.preview_transform.applied_rotation_degrees / " +
             "box=overlay.coordinate_map.box_rotation_degrees(OverlaySmoother가 실제로 건 값). " +
@@ -3923,6 +3952,11 @@ object SessionWriter {
             "되고 이 검사는 consistent=false를 낸다.** 그 false는 회전 예산의 결함이 아니라 " +
             "**방향 스위치를 뒤집은 결과**다. " +
             "🔴 그러므로 **consistent=true는 '박스가 맞게 그려졌다'는 뜻이 아니다.** " +
+            "🟢 **카드보드(SBS)에서도 성립한다** — 그 경로는 target_rotation=ROTATION_90이라 " +
+            "present가 90(팀원 원본 e387ae9의 의미)이고 rotation_degrees는 0이며 박스는 " +
+            "0+90=90이다. 세로는 90+0=90으로 **값이 같다** — 그래서 이 식으로 바꿔도 " +
+            "실기기로 확정된 세로 동작은 문자 그대로 안 바뀐다. " +
+            "카드보드의 기하·튜닝 코드는 팀원 소유이며 건드리지 않는다. " +
             "⚠ null이면 셋 중 하나를 모른다는 뜻이다(표시 변환 콜백이 안 왔다 / present " +
             "회전을 한 번도 안 걸었다 / 박스 매핑이 한 번도 안 돌았다). 그때 " +
             "consistent를 true로 만들지 않는다 — 값을 지어내지 않는다"

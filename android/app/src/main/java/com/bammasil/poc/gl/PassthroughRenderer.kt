@@ -377,8 +377,17 @@ class PassthroughRenderer(
     private var cardboardOesProgram: QuadProgram? = null
 
     /**
-     * cardboard SBS의 **2D 눈 그리기**용. 🔴 이것도 present 전용이므로
-     * [VERTEX_SHADER_PRESENT]로 만든다 — 오프스크린 패스에서는 절대 쓰이지 않는다.
+     * cardboard SBS의 **2D 눈 그리기**용 = 카드보드에서 **처리 arm**(`passthrough`가 아닌
+     * 모든 arm)이 쓰는 present 프로그램.
+     *
+     * 🔴 정점은 [VERTEX_SHADER_PRESENT]이며 `uPositionMatrix`가 **있다.** 팀원 원본
+     * (`e387ae9`)은 [VERTEX_SHADER_2D]였는데, 그러면 계산된 present 회전각이 화면에 도달할
+     * 수단이 없다 — **실측으로 확인됐다**: 카드보드에서 `passthrough`만 정상이었고 나머지
+     * arm은 전부 회전이 안 걸렸다(A34, 2026-08-30). 팀원 코드를 바꾼 것이 아니라 **팀원
+     * 코드에 없던 경로를 메운 것**이다(원본은 카드보드를 `passthrough`로만 본 것으로 보인다).
+     *
+     * ⚠ 같은 눈의 OES 프로그램 [cardboardOesProgram]은 처음부터 유니폼이 있었다
+     * ([VERTEX_SHADER_OES]) — `passthrough`가 정상이었던 이유가 그것이다.
      */
     private var cardboard2dProgram: QuadProgram? = null
 
@@ -543,10 +552,17 @@ class PassthroughRenderer(
 
     /**
      * 🔴 **④ 박스에 걸 회전각.** [requestedPreviewRotationDegrees]와 **정확히 반대 조건으로
-     * 켜진다**: `hasCameraTransform=true`면 present가 0이므로 **이 값이 `rotationDegrees`를
-     * 다 진다**(A34 세로에서 90°). false면 present가 다 지므로 이 값이 0이다. 근거는 ④가
-     * present **앞의** FBO_A에 그려진다는 것 하나다 — 회전 예산 불변식은
-     * `박스 + present ≡ rotationDegrees (mod 360)`이고 `render.rotation_budget`이 대조한다.
+     * 켜진다**: `hasCameraTransform=true`면 (세로에서) present가 0이므로 **이 값이
+     * `rotationDegrees`를 다 진다**(A34 세로에서 90°). false면 present가 다 지므로 이 값이
+     * 0이다. 근거는 ④가 present **앞의** FBO_A에 그려진다는 것 하나다 — 회전 예산 불변식은
+     * `박스 ≡ rotationDegrees + present (mod 360)`이고 `render.rotation_budget`이 대조한다.
+     *
+     * 🔴 **카드보드에서는 그 불변식이 깨지고, 그것이 정상 보고다.** 카드보드는
+     * `targetRotation = ROTATION_90`이라 present가 90을 거는데 `rotationDegrees`는 0이고 이
+     * 값도 0이다(`0 + 90 ≠ 0`).
+     * ✅ **그래서 카드보드 영상은 바로 선다(모든 arm에서)** — 어긋나는 것은 ④ 박스뿐이고,
+     * 그 정합이 **미해결 열린 항목**이다. 카드보드의 기하·튜닝 코드는 팀원 소유다.
+     * 🚫 이 값을 카드보드에 맞추려고 만지지 마라 — 세로가 실기기로 확정된 동작이다.
      *
      * ⚠ **그래서 별도 필드여야 한다.** 두 값은 뜻이 다르고(하나는 present 정점, 하나는 센서
      * 좌표 매핑) **분기 조건이 서로 반대다.** 한 필드로 합치면 한쪽이 조용히 틀리고, 실제로
@@ -567,23 +583,24 @@ class PassthroughRenderer(
      * 회전만 실린다 — ④ 박스의 회전은 [OverlaySmoother.appliedBoxRotationDegrees]가 따로
      * 증언하고, **두 값이 다른 것이 정상이다.**
      *
-     * 🔴 **`has_camera_transform=true`면 우리가 걸 회전은 0이다** — CameraX가 표시 회전을
-     * `SurfaceTexture`의 `texMatrix`에 이미 넣어 줬고 패스1이 그 행렬로 샘플링하므로
-     * **영상은 그것만으로 바로 선다.**
+     * 🔴 **`has_camera_transform=true`이고 세로(normal)면 우리가 걸 회전은 0이다** —
+     * `targetRotation = ROTATION_0`이라 위 `when`이 0을 내고, CameraX가 표시 회전을
+     * `SurfaceTexture`의 `texMatrix`에 이미 넣어 줬으므로 **영상은 그것만으로 바로 선다.**
+     * ⚠ **카드보드는 `ROTATION_90`이라 90이 나간다** — 그 경로는 팀원 원본(`e387ae9`)의
+     * 의미이고 우리가 건드리지 않는 영역이다.
      *
-     * 🔴 **첫 번째 결함**: 회전각을 `targetRotation`(표시 방향 상수)에서 읽고 있어 각도가
-     * 0으로 죽어 있었다.
-     * A34 세로 실측에서 `applied_rotation_degrees=0`인데 이 문장의 `rotation_degrees=90`
-     * 이었던 것이 원인을 가리켰다.
+     * 🔴 **첫 번째 오독**: `rotationDegrees`가 90인데 `applied_rotation_degrees=0`인 것을 보고
+     * *"회전각을 `targetRotation`에서 읽어 각도가 죽었다"*고 진단했다. **세로에서 0은 옳은
+     * 값이었다** — 그 0은 죽은 것이 아니라 `texMatrix`가 이미 세웠으니 더 돌 것이 없다는
+     * 뜻이었다.
      *
-     * 🔴 **두 번째 결함**: 그것을 고쳐 `rotationDegrees`를 present에 그대로 걸었더니 이번엔
-     * **바로 서 있던 영상이 90° 누웠다**(실측: `applied=90` + 육안). `texMatrix`가 이미
-     * 돌리고 있었다는 사실을 몰랐기 때문이다 — *"표시 경로는 방향 보정을 하지 않는다"*는
-     * 서술을 **코드에서 추론해 받았고 그것이 틀렸다.** 어긋난 것은 처음부터 **박스뿐**이었다
-     * (알려진 이슈 67).
+     * 🔴 **두 번째 오독**: 그래서 `rotationDegrees`를 present에 그대로 걸었더니 **바로 서
+     * 있던 영상이 90° 누웠다**(실측: `applied=90` + 육안). `texMatrix`가 이미 돌리고 있었다는
+     * 사실을 몰랐기 때문이다 — *"표시 경로는 방향 보정을 하지 않는다"*는 서술을 **코드에서
+     * 추론해 받았고 그것이 틀렸다.** 어긋난 것은 **박스뿐**이었다(알려진 이슈 67).
      *
-     * → **원값 4개를 다 적어 두지 않았다면 두 번 다 되물을 수 없었다.** 분기가 단순해진
-     * 지금도 전부 남긴다.
+     * → 두 오독 모두 이 자리에서 되돌렸다. 지금 이 분기는 `e387ae9` 원문이다.
+     * **원값 4개를 다 적어 두지 않았다면 두 번 다 되물을 수 없었다** — 전부 남긴다.
      *
      * ⚠ **관측 기록이지 보정이 아니다** — 보정은 CameraX의 `texMatrix`(영상)와
      * [OverlayCoordMap](박스)이 한다. 이 문장은 그것이 무엇을 근거로 돌았는지만 말한다.
@@ -605,7 +622,7 @@ class PassthroughRenderer(
      * [CAMERA_TRANSFORM_ROTATION_UNKNOWN]이다.
      *
      * 왜 [previewTransformNote]와 따로 두는가: 그 문장은 사람이 읽는 것이고, **회전 예산
-     * 불변식**(`박스 + present ≡ 이 값`, `session.json`의 `render.rotation_budget`)은 기계가
+     * 불변식**(`박스 ≡ 이 값 + present`, `session.json`의 `render.rotation_budget`)은 기계가
      * 대조해야 한다. 문자열에서 숫자를 다시 긁어내는 소비자를 만들지 않는다.
      * ⚠ `camera_analysis_actual.rotation_degrees`와 **다른 축이다** — 그쪽은 ③ 모델 입력을
      * 세우는 회전이고 이쪽은 표시 변환이다. 두 값이 같은 것은 이 기기의 사실이지 규약이 아니다.
@@ -698,8 +715,20 @@ class PassthroughRenderer(
             FRAGMENT_SHADER_CARDBOARD_OES,
             PROGRAM_LABEL_CARDBOARD_OES,
         )
-        // 🔴 cardboard 2D도 **present 전용**이라 회전 셰이더로 만든다. 라벨은 그대로 둔다 —
-        //    역할이 같으므로 로그 키를 바꾸면 예전 런과 대조가 끊긴다.
+        // 🔴 **팀원 코드를 바꾸는 것이 아니라, 팀원 코드에 없던 경로를 메우는 것이다.**
+        //    이 프로그램은 카드보드에서 **처리 arm의 2D 눈**이 쓴다(`passthrough`가 아닌
+        //    모든 arm). 팀원 원본(`e387ae9`)에서 여기 정점이 [VERTEX_SHADER_2D]라
+        //    `uPositionMatrix`가 **없었고**, 그래서 계산된 present 회전각이 화면에 도달할
+        //    수단이 없었다 — ②③④를 켠 arm은 그 경로를 **처음 밟는다.**
+        //    (원본이 그랬던 것은 카드보드를 `passthrough`로만 봤기 때문으로 보인다.)
+        // 🔴 **실측이 이 진단을 확정했다**(A34 카드보드, 2026-08-30): `passthrough`만
+        //    사용자가 원하는 장면이 나왔고 나머지 arm은 전부 회전이 안 걸렸다.
+        //    - `passthrough` → OES를 곧바로 present → [cardboardOesProgram]
+        //      ([VERTEX_SHADER_OES], 유니폼 **있음**) → 계산된 90°가 걸린다 ✅
+        //    - 그 외 → FBO를 present → 이 프로그램 → 유니폼 0개 → 90°가 도달 못 함 ❌
+        //    로그는 `표시(present 정점) 회전각=90`을 이미 계산해 두고 있었다.
+        // ⚠ 카드보드 **소유 코드**([drawCardboardEye]의 기하 · 프래그먼트 셰이더 · 튜닝
+        //   상수)는 여전히 팀원 것이고 건드리지 않는다. 여기는 정점 셰이더 한 줄이다.
         cardboard2dProgram = buildProgram(
             VERTEX_SHADER_PRESENT,
             FRAGMENT_SHADER_CARDBOARD_2D,
@@ -982,25 +1011,38 @@ class PassthroughRenderer(
     }
 
     override fun updatePreviewTransform(transform: PreviewTransform) {
-        // 🔴 **`hasCameraTransform=true`면 표시 회전은 0이다.** 그 플래그는 "CameraX가 표시
-        //    회전을 **이미 `SurfaceTexture`의 `texMatrix`에 넣어 줬다**"는 뜻이고, 패스1이
-        //    그 행렬로 샘플링하므로 **영상은 그것만으로 바로 선다.** 여기서 또 돌리면 두 번
-        //    도는 것이다 — A34에서 실제로 그렇게 돼서 바로 서 있던 영상이 시계 90°로
-        //    떨어져 나갔다(실측: applied=90, 육안으로 영상이 90° 누움).
-        //    ⚠ 예전 코드는 이 자리에서 `targetRotation`(표시 방향 상수)을 degrees로 바꿔
-        //      썼고, 세로에서 그 값이 우연히 ROTATION_0=0이라 **맞는 것처럼 보였다.**
-        //      cardboard(LANDSCAPE 강제)에서는 ROTATION_90=1이 되어 1도가 나갔다.
-        //      이제는 우연이 아니라 규약으로 0이다.
-        // 🔴 present 회전 기계장치(플래그·전용 셰이더)는 **그대로 둔다** —
-        //    `hasCameraTransform=false` 경로에서는 여전히 우리가 돌려야 한다. 이 기기에서
-        //    값이 0이 될 뿐이고, 패스1이 영상만 돌리던 구조적 불일치를 없앤 것도 유효하다.
-        requestedPreviewRotationDegrees =
-            if (transform.hasCameraTransform) 0 else transform.rotationDegrees
+        // 🔴 **팀원 원본(`e387ae9`)으로 되돌린 자리다. 이 분기를 "고치지" 마라.**
+        //    `hasCameraTransform=true`일 때 `targetRotation`(= `Surface.ROTATION_*`, 표시
+        //    방향 **상수**)을 degrees로 바꿔 쓰는 것은 단위가 안 맞아 보이지만, **카드보드
+        //    경로를 실제로 헤드셋에서 맞춰 본 것은 이 코드**다. 우리가 이 자리를 "규약대로"
+        //    0으로 바꿨더니 카드보드 영상이 팀원 기준에서 벗어났고, 사용자 지시로 원복했다.
+        //    ⚠ **카드보드는 이제 우리가 건드리지 않는 영역이다**(소유가 팀원 쪽이다).
+        // 🔴 세로(normal)에서는 `targetRotation = ROTATION_0`이라 이 식이 **0을 낸다** —
+        //    우리가 넣었던 `if (hasCameraTransform) 0`과 **값이 같다.** 그래서 이 원복은
+        //    세로 동작을 바꾸지 않는다(그게 원복을 안전하게 만든 근거다).
+        //    카드보드는 LANDSCAPE 강제라 `ROTATION_90`이 되어 present가 90을 건다.
+        // ✅ **카드보드에서 이 90°가 실제로 화면을 세운다 — 모든 arm에서.** 실측 확정
+        //    (2026-08-30): 처리 arm의 2D 눈([cardboard2dProgram])이 이 각도를 실어 나를
+        //    유니폼을 못 갖고 있어서 한동안 `passthrough`만 정상이었고, 그 정점 셰이더를
+        //    메우자 전 arm이 섰다.
+        // 🟢 박스도 같은 콜백에서 T를 받는다(아래 [requestedOverlayRotationDegrees]) —
+        //    카드보드에서 `0 + 90 = 90`, 세로에서 `90 + 0 = 90`으로 **값이 같다.**
+        requestedPreviewRotationDegrees = if (transform.hasCameraTransform) {
+            when (transform.targetRotation) {
+                Surface.ROTATION_90 -> 90
+                Surface.ROTATION_180 -> 180
+                Surface.ROTATION_270 -> 270
+                else -> 0
+            }
+        } else {
+            transform.rotationDegrees
+        }
         // 🔴 **박스 회전각. `hasCameraTransform=true`면 박스가 rotationDegrees를 다 진다.**
         //    회전 예산 불변식은 `박스 + present ≡ rotationDegrees (mod 360)`이다: ④ 오버레이는
         //    present **앞의** FBO_A에 그려지므로(패스8) present 회전은 영상과 박스를 **함께**
         //    돌리고, 따라서 박스가 스스로 메워야 하는 각도는 "rotationDegrees − present"다.
-        //    - `hasCameraTransform=true`: present=0(texMatrix가 영상만 세웠다) →
+        //    - `hasCameraTransform=true` **+ 세로(normal)**: present=0(texMatrix가 영상만
+        //      세웠고 targetRotation=ROTATION_0이라 우리도 0을 건다) →
         //      **박스가 rotationDegrees를 다 져야 한다.** 옛 코드는 0이라 세로 normal에서
         //      `0+0=0`인데 필요한 값은 90이었다 — 결과가 정규화 좌표의 전치(x↔y)였고,
         //      볼라드 박스가 화면 왼쪽에 세로로 늘어섰다(런 20260830_194714).
@@ -1013,13 +1055,34 @@ class PassthroughRenderer(
         //      consistent=false를 낸다(결함이 아니라 스위치를 뒤집은 결과다).
         //    ⚠ **`hasCameraTransform=false` 경로는 이 기기에서 한 번도 밟히지 않았다** —
         //      그쪽에서 박스 각도는 0이고 도는 것은 present뿐이다. **실기기 미검증**이다.
+        //    🟢 **카드보드도 이제 성립한다** — 옛 불변식 `박스 + present ≡ rotationDegrees`가
+        //      애초에 틀린 식이었다. present는 공통 모드라 박스가 메워야 할 몫에서 빠지지
+        //      않는다. 바른 식은 **`박스 ≡ rotationDegrees + present`**(= T)이고
+        //      세로 `90 ≡ 90+0` · 카드보드 `90 ≡ 0+90` 둘 다 맞는다.
         //    🔴 **옛 서술("박스도 0이 정상 / 90을 걸었더니 박스만 어긋났다")은 반증됐다.**
         //      그 실험은 [OverlayCoordMap.FLIP_Y]가 false인 채로 회전만 건 것이라 세로가
         //      거울인 결과가 나왔고, 두 스위치가 독립이 아니라는 사실을 놓쳐 "회전이 틀렸다"로
         //      읽혔다. 판정 장면도 볼라드 1개였다 — 전치는 대각선 위의 점을 그대로 두므로
         //      **단일 박스 장면은 이 결함을 원리적으로 못 잡는다.**
+        // 🔴 **박스는 `texMatrix`가 영상에 건 회전(T)과 같은 각도로 돌아야 한다.**
+        //    present는 영상과 박스를 **함께** 돌리므로(공통 모드) 둘 사이의 차이를 못 바꾼다.
+        //    따라서 박스가 메워야 하는 것은 present가 아니라 **T 하나**다.
+        //    T는 실측 두 개가 직접 준다: 세로 `90+0`, 카드보드 `0+90` — **둘 다 90**이고,
+        //    이는 센서가 기판에 붙은 각도라 표시 방향과 무관한 상수다. 도달 가능한 네 방향
+        //    (`target_rotation` 0/90/180/270 ↔ `rotation_degrees` 90/0/270/180)에서 합이
+        //    전부 90으로 떨어진다.
+        //    ⚠ 옛 식은 `rotationDegrees` 하나만 줬다 — 세로에서는 그게 우연히 T와 같아 맞았고
+        //      **카드보드에서 0으로 떨어져 90이 통째로 빠졌다**(박스가 화면 왼쪽에 가로 막대로
+        //      층층이 쌓이는 전치 신호로 나타났다). 🟢 이 식은 **세로에서 값이 문자 그대로
+        //      같으므로**(90+0=90) 실기기로 확정된 세로 동작을 건드리지 않는다.
         requestedOverlayRotationDegrees =
-            if (transform.hasCameraTransform) transform.rotationDegrees else 0
+            if (transform.hasCameraTransform) {
+                (transform.rotationDegrees + requestedPreviewRotationDegrees) % 360
+            } else {
+                // texMatrix가 아무것도 굽지 않는 경로다(T=0) — 도는 것은 present뿐이다.
+                // ⚠ 이 기기에서 한 번도 밟히지 않았다. **실기기 미검증.**
+                0
+            }
         requestedPreviewMirror = transform.mirroring
         // 🔴 **원값 4개를 그대로 남긴다.** 위 원인을 갈라낸 것이 이 기록이다 —
         //    `rotation_degrees`와 `target_rotation`을 나란히 찍어 두지 않았다면 "어느 값을
@@ -1036,14 +1099,23 @@ class PassthroughRenderer(
                 "mirroring=${transform.mirroring} " +
                 "→ 표시(present 정점) 회전각=$requestedPreviewRotationDegrees " +
                 "· ④ 박스 회전각=$requestedOverlayRotationDegrees " +
-                "(🔴 **두 각도의 합이 rotation_degrees여야 한다** — ④ 오버레이는 present " +
-                "앞의 FBO_A에 그려지므로 present가 돌면 영상과 박스가 함께 돈다. " +
-                "has_camera_transform=true면 present=0이라 **박스가 전부 진다**(여기서 90), " +
-                "false면 present가 다 지므로 박스가 0이다. 기계 대조는 " +
-                "render.rotation_budget이 한다. ⚠ 옛 서술 '둘 다 0이 정상'은 반증됐다 — " +
-                "그 상태에서 정규화 좌표가 전치돼 박스가 화면 왼쪽에 세로로 늘어섰다" +
-                "(런 20260830_194714). false 경로는 **실기기 미검증**이다. " +
-                "target_rotation은 표시 방향 상수라 degrees가 아니며 참고로만 싣는다)"
+                "(🔴 **박스 회전각 ≡ rotation_degrees + present여야 한다** — ④ 오버레이는 " +
+                "present 앞의 FBO_A에 그려지므로 present는 영상과 박스를 **함께** 돌리는 " +
+                "공통 모드다. 따라서 박스가 메워야 하는 것은 present가 아니라 texMatrix가 " +
+                "영상에 건 회전 T 하나이고, T = rotation_degrees + present다. " +
+                "has_camera_transform=true면 세로 90=90+0 · 카드보드 90=0+90으로 **양쪽 다 " +
+                "90**이다(센서 장착각이라 표시 방향과 무관한 상수). false면 texMatrix가 " +
+                "아무것도 굽지 않으므로 박스는 0이고 present가 다 진다. " +
+                "기계 대조는 render.rotation_budget이 한다. " +
+                "⚠ 반증된 옛 서술 둘: '둘 다 0이 정상'(그 상태에서 좌표가 전치돼 박스가 " +
+                "화면 왼쪽에 세로로 늘어섰다 — 런 20260830_194714) · '박스 + present ≡ " +
+                "rotation_degrees'(present를 박스 몫에서 빼는 식이라 카드보드에서 박스가 " +
+                "0으로 떨어져 90이 통째로 빠졌다 — 가로 막대가 왼쪽에 층층이 쌓였다). " +
+                "false 경로는 **실기기 미검증**이다. " +
+                "⚠ target_rotation은 Surface.ROTATION_* **상수**(0/1/2/3)이지만, " +
+                "has_camera_transform=true 경로의 present 회전각은 **그 상수에서 나온다**" +
+                "(팀원 원본 e387ae9의 의미로 되돌렸다). 세로는 ROTATION_0이라 0, " +
+                "카드보드는 ROTATION_90이라 90이다)"
         Log.i(TAG, "표시 변환 $previewTransformNote")
     }
 
@@ -2246,7 +2318,15 @@ class PassthroughRenderer(
             contentWidth.roundToInt().coerceAtLeast(1),
             contentHeight.roundToInt().coerceAtLeast(1),
         )
-        // cardboard도 normal과 **같은 게이트**를 탄다 — 표시 경로는 하나다.
+        // 🔴 **이 `true`를 지우지 마라 — 지우는 것이 오히려 팀원 원본을 깨는 것이다.**
+        //    `e387ae9`의 [drawQuad]에는 플래그가 없었고 `if (program.uPositionMatrix >= 0)`로
+        //    **유니폼이 있으면 무조건** 회전을 걸었다. 지금은 플래그 기반이므로 그 동작을
+        //    재현하려면 눈별 프로그램마다 이렇게 갈린다:
+        //    - [cardboardOesProgram] ([VERTEX_SHADER_OES], 유니폼 **있음**)
+        //      → 원본은 회전을 걸었다 → **플래그 true가 있어야 원본과 같다.**
+        //    - [cardboard2dProgram] ([VERTEX_SHADER_2D]로 원복, 유니폼 **없음**)
+        //      → 플래그와 무관하게 안 걸린다. 원본과 같다.
+        //    즉 `true`를 남기는 것이 **원복**이고, 지우면 OES 눈에서 동작이 달라진다.
         drawQuad(program, textureTarget, textureId, applyPreviewTransform = true)
     }
 
@@ -2755,19 +2835,36 @@ class PassthroughRenderer(
          * 3. 정점을 반시계로 θ 돌리면 그려지는 내용도 반시계로 θ 돈다. 내용을 **시계**로 R도
          *    돌리려면 θ = −R이어야 한다. → 부호는 −1.
          *
-         * 🔴 **이 값은 화면으로만 확정된다.** 위 유도가 한 곳에서 틀리면 90과 270이 서로
-         * 바뀌고(180은 부호와 무관해 멀쩡하다), 그 오류를 잡아 줄 기계가 이 앱에 없다 —
-         * GPU query도 `DetectGeometryCheck`도 자기 일관성까지만 본다. **실기기 세로 화면에서
-         * 영상이 반대로 누워 보이면 이 상수 하나만 +1f로 바꾼다.**
+         * 🔴 **값은 `+1f`이고, 이제 그것이 실측으로 확정됐다(카드보드 `passthrough`,
+         * 2026-08-30).** 그 경로는 `rotateM(PREVIEW_ROTATION_SIGN × 90) = rotateM(+90)`을
+         * **실제로 걸었고 사용자가 원하는 장면이 나왔다.** 이 프로젝트에서 이 상수가 실기기로
+         * 확인된 것은 **이번이 처음**이다 — 세로(normal)는 present 회전각이 0이라 이 상수가
+         * 영영 발화하지 않고, 그동안 카드보드 경로도 우리가 0으로 만들어 둔 상태였다.
+         * (값 자체는 팀원 원본 `e387ae9`의 `rotateM(rotation.toFloat(), …)`와 같다 — 상수는
+         * 단일 손잡이로만 남겨 둔다.)
          *
-         * 🔴 **여기 있던 "홀수 번의 뒤집힘이 실재한다"는 결론은 철회한다(2026-08-30).**
-         * 그 근거는 커밋 `34ad86f`에서 `rotateM(-90)`을 걸었더니 **화면에 시계 90°로
-         * 나타났다**(A34 세로, 육안)는 관측이었고, 옛 문장은 `-90`을 *"위 유도상 반시계"*로
-         * 읽었다. **그 읽기가 위 유도 2단계와 모순된다** — 2단계는 `θ>0`이 화면에서 반시계라고
-         * 말하므로 `θ = −90`은 **이미 시계**다. 즉 그 관측은 *뒤집힘이 없을 때* 예상되는
-         * 결과이고, 뒤집힘의 증거가 아니었다.
+         * 🔴 **그러므로 위 유도는 이 결론과 어긋나며, 실측이 이긴다.** 🚫 **유도를 지우지
+         * 않는다** — 지우면 다음 사람이 같은 유도를 다시 해서 `-1f`로 "고친다." 남겨 두는 것이
+         * 그 재발을 막는 유일한 수단이다.
+         * ⚠ **3단계 중 어느 단계가 깨졌는지는 아직 모른다.** 드라이버 `texMatrix`의 v 뒤집힘이
+         * 유력한 후보지만 **관측된 것이 아니다.** 아래 관측 하나가 범위를 좁혀 주기는 한다.
          *
-         * 🔴 **실측이 그 철회를 뒷받침한다.** 센서 좌표계에 정의한 L자 마커를 프로덕션
+         * ## `34ad86f` 관측 — 사실과 해석을 갈라 둔다
+         *
+         * **관측(사실):** 세로에서 `rotateM(-90)`을 걸었더니 화면에 **시계 90°**로 나타났다
+         * (A34, 육안).
+         *
+         * **해석 1 — 반증됨:** 옛 문장은 이것을 *"반시계를 걸었는데 시계로 나왔으니 NDC와
+         * 화면 사이에 **홀수 번의 뒤집힘**이 실재한다"*로 읽었고, 그 위에서 `-1f`를 골랐다.
+         * 🔴 **그 결론은 반증됐다** — `+1f`가 실측으로 맞았다. 게다가 그 읽기는 유도 2단계와도
+         * 모순된다(2단계가 `θ>0`을 반시계라고 하므로 `θ=−90`은 **이미 시계**다. 즉 관측은
+         * 뒤집힘이 *없을 때* 예상되는 결과였다).
+         *
+         * **해석 2 — 남는 것:** 관측이 2단계와 일치한다는 것은 **깨진 곳이 GL 회전 수학이
+         * 아니라 1단계·3단계 쪽**(= "표시 경로가 실제로 요구하는 각도가 무엇인가")임을
+         * 시사한다. ⚠ 이것도 **좁힘일 뿐 확정이 아니다.**
+         *
+         * 🔴 별도 실측도 뒤집힘 부재를 뒷받침한다: 센서 좌표계 L자 마커를 프로덕션
          * [OverlayCoordMap.mapBox]에 태워 화면을 찍었더니(런 `20260830_212611`) 예측 자리에
          * **3~12px** 오차로 앉았다. 마커는 `texMatrix`를 **타지 않는** 경로로 그려지므로,
          * NDC와 화면 사이에 여분의 뒤집힘이 있었다면 그 자리에 올 수 없다.
@@ -2779,11 +2876,13 @@ class PassthroughRenderer(
          * 다시 어긋나 보이면 조합을 하나씩 빌드하지 말고 **한 장으로 가르는 도구**(센서
          * 좌표계 L자 마커 같은 것)부터 만든다. 그 마커는 판정을 마치고 제거됐다.
          *
-         * ⚠ **지금 이 상수는 A34에서 잠자고 있다** — `hasCameraTransform=true`라 present
-         * 회전각이 0이라서 행렬이 항등이다(도는 것은 ④ 박스 쪽이다). 값이 옳은지는 그
-         * 플래그가 false인 기기·경로에서만 드러나고, 그 경로는 **실기기 미검증**이다.
+         * ⚠ **세로(normal)에서는 이 상수가 잠자고 있다** — `targetRotation = ROTATION_0`이라
+         * present 회전각이 0이고 행렬이 항등이다(도는 것은 ④ 박스 쪽이다). 발화하는 것은
+         * **카드보드(`ROTATION_90`) — 여기서 `+1f`가 확정됐다** — 와
+         * `hasCameraTransform=false` 경로이며, 뒤쪽은 이 기기에서 한 번도 밟히지 않아
+         * **실기기 미검증**이다.
          */
-        private const val PREVIEW_ROTATION_SIGN = -1f
+        private const val PREVIEW_ROTATION_SIGN = 1f
         private const val PROGRAM_LABEL_CARDBOARD_OES = "cardboard_lite_oes"
         private const val PROGRAM_LABEL_CARDBOARD_2D = "cardboard_lite_2d"
         private const val PROGRAM_LABEL_GAMMA = "gamma_only_apply"

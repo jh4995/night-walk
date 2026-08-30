@@ -383,7 +383,7 @@ class OverlaySmoother(
      *   🔴 `hasCameraTransform=true`면 **`rotationDegrees`다**(A34 세로에서 90) — 박스는
      *   `texMatrix`를 타지 않으므로 CameraX가 영상에 해 준 회전을 ④가 직접 건다.
      *   ⚠ 표시 회전(present 정점)과 **정확히 반대 조건으로 켜지는** 값이라 별도로 받는다:
-     *   `박스 + present ≡ rotationDegrees (mod 360)`이고, `hasCameraTransform=false`면
+     *   `박스 ≡ rotationDegrees + present (mod 360)`이고 — present는 영상과 박스를 함께 돌리는 공통 모드라 박스 몫에서 빠지지 않는다 —, `hasCameraTransform=false`면
      *   present가 다 지므로 여기가 0이다. **그 경로는 실기기 미검증**이다.
      * @return 그릴 박스 수(= [count]). **0은 정상값이다.**
      */
