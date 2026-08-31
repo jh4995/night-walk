@@ -22,7 +22,6 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.roundToInt
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
@@ -150,6 +149,23 @@ class PassthroughRenderer(
 
     /** 새 프레임이 왔을 때 `GLSurfaceView.requestRender()`를 부르기 위한 훅. */
     var onFrameSignal: (() -> Unit)? = null
+
+    /**
+     * [surfaceWidth]·[surfaceHeight]가 확정되면 호출된다. 인자는 `(width, height)`.
+     *
+     * 🔴 **GL 스레드에서 불린다** — UI 를 만지려면 받는 쪽이 메인 루퍼로 넘겨야 한다
+     * ([onGlReady]와 같은 관행이다).
+     */
+    var onSurfaceResized: ((Int, Int) -> Unit)? = null
+
+    /**
+     * [processWidth]·[processHeight]가 협상돼 확정되면 호출된다. 인자는 `(width, height)`.
+     *
+     * 협상 전에는 두 값이 0 이고, 그때 카드보드 눈 사각형은 16:9 폴백으로 계산된다
+     * ([CardboardGeometry.eyeViewport]) — **실제 사각형이 아니다.** 그 사각형 위에 무언가를
+     * 얹는 쪽은 이 훅으로 다시 물어야 앱을 켠 직후의 어긋남이 남지 않는다.
+     */
+    var onProcessSizeChanged: ((Int, Int) -> Unit)? = null
 
     @Volatile
     var surfaceWidth = 0
@@ -361,8 +377,15 @@ class PassthroughRenderer(
     @Volatile
     private var overlayEnabled = true
 
-    private var cardboardImageScale = DEFAULT_CARDBOARD_IMAGE_SCALE
-    private var cardboardEyeOffset = DEFAULT_CARDBOARD_EYE_OFFSET
+    private var cardboardImageScale = CardboardGeometry.DEFAULT_CARDBOARD_IMAGE_SCALE
+    private var cardboardEyeOffset = CardboardGeometry.DEFAULT_CARDBOARD_EYE_OFFSET
+
+    /**
+     * [drawCardboardEye]가 눈 뷰포트를 받아 가는 자리. **GL 스레드 전용**이고 생성자 시점에
+     * 한 번만 할당한다 — 프레임마다 두 번 불리는 자리라 여기서 배열을 새로 만들면 그만큼
+     * GC 가 프레임 경로에 섞인다.
+     */
+    private val eyeRectScratch = IntArray(4)
 
     @Volatile
     private var surfaceTexture: SurfaceTexture? = null
@@ -916,6 +939,8 @@ class PassthroughRenderer(
         surfaceWidth = width
         surfaceHeight = height
         GLES20.glViewport(0, 0, width, height)
+        // ⚠ GL 스레드다 — 받는 쪽이 메인 루퍼로 넘긴다([onSurfaceResized]).
+        onSurfaceResized?.invoke(width, height)
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -995,6 +1020,8 @@ class PassthroughRenderer(
         // 처리 해상도의 유일한 출처. 하드코딩하지 않는다.
         processWidth = width
         processHeight = height
+        // 협상이 끝나야 카드보드 눈 사각형이 16:9 폴백을 벗어난다([onProcessSizeChanged]).
+        onProcessSizeChanged?.invoke(width, height)
         val surface = Surface(texture)
         cameraSurface = surface
         return surface
@@ -1175,11 +1202,11 @@ class PassthroughRenderer(
     }
 
     fun setCardboardTuning(imageScale: Float, eyeOffset: Float) {
-        cardboardImageScale = imageScale.coerceIn(MIN_CARDBOARD_IMAGE_SCALE, 1f)
-        cardboardEyeOffset = eyeOffset.coerceIn(
-            -MAX_CARDBOARD_EYE_OFFSET,
-            MAX_CARDBOARD_EYE_OFFSET,
-        )
+        // 🔴 클램프는 [CardboardGeometry] 한 곳에 있다 — 시연 HUD 는 슬라이더 **원값**을 그대로
+        //    같은 함수에 넘기므로, 여기에 식을 다시 적으면 두 클램프가 갈리는 날 표식이
+        //    영상 밖으로 나간다.
+        cardboardImageScale = CardboardGeometry.clampImageScale(imageScale)
+        cardboardEyeOffset = CardboardGeometry.clampEyeOffset(eyeOffset)
     }
 
     fun clockVerdict(): CaptureClockVerdict = CaptureClockProbe.resolve(probeSamples.toList())
@@ -2287,35 +2314,28 @@ class PassthroughRenderer(
         textureTarget: Int,
         textureId: Int,
     ) {
-        val sourceAspect = if (processWidth > 0 && processHeight > 0) {
-            processWidth.toFloat() / processHeight.toFloat()
-        } else {
-            16f / 9f
-        }
-        val maxWidth = eyeWidth * cardboardImageScale
-        val maxHeight = surfaceHeight * cardboardImageScale
-        var contentWidth = maxWidth
-        var contentHeight = contentWidth / sourceAspect
-        if (contentHeight > maxHeight) {
-            contentHeight = maxHeight
-            contentWidth = contentHeight * sourceAspect
-        }
-        // ⚠ [sourceAspect]는 **회전 전** 처리 해상도의 종횡비다. present가 회전을 걸게 된 뒤로
-        //    90/270°에서는 이 비가 뒤집혀야 맞지만, 종횡비 정책이 미정이라(STATUS 이슈 68)
-        //    이번 변경에서는 건드리지 않는다. 실제로 cardboard는 MainActivity가 LANDSCAPE를
-        //    강제해 rotationDegrees가 0/180이 되므로 회전이 사실상 없어질 것으로 보는데,
-        //    **그것은 실기기에서 확인할 항목**이다 — 코드에 분기를 만들지 않는다.
-
-        val offsetPx = eyeWidth * cardboardEyeOffset * horizontalDirection
-        val viewportX = (
-            eyeLeft + (eyeWidth - contentWidth) * 0.5f + offsetPx
-        ).roundToInt()
-        val viewportY = ((surfaceHeight - contentHeight) * 0.5f).roundToInt()
+        // 🔴 뷰포트 식은 [CardboardGeometry.eyeViewport] **한 곳**에 있다. `MainActivity`의
+        //    시연 HUD(B/L 표식)가 이 사각형 위에 얹히므로, 식이 두 벌이 되면 영상과 표식이
+        //    서로 다른 사각형을 믿게 된다. 옮길 때 피연산자 순서·`Float`·`roundToInt()`·
+        //    `coerceAtLeast(1)`을 글자 그대로 보존했다 — 한 항이라도 Double 로 승격되면
+        //    반올림 경계에서 1px 이 갈린다.
+        //    ⚠ `sourceAspect`가 **회전 전** 종횡비라는 단서(STATUS 이슈 68)도 그 함수 안에 있다.
+        CardboardGeometry.eyeViewport(
+            eyeLeft,
+            eyeWidth,
+            horizontalDirection,
+            surfaceHeight,
+            processWidth,
+            processHeight,
+            cardboardImageScale,
+            cardboardEyeOffset,
+            eyeRectScratch,
+        )
         GLES20.glViewport(
-            viewportX,
-            viewportY,
-            contentWidth.roundToInt().coerceAtLeast(1),
-            contentHeight.roundToInt().coerceAtLeast(1),
+            eyeRectScratch[0],
+            eyeRectScratch[1],
+            eyeRectScratch[2],
+            eyeRectScratch[3],
         )
         // 🔴 **이 `true`를 지우지 마라 — 지우는 것이 오히려 팀원 원본을 깨는 것이다.**
         //    `e387ae9`의 [drawQuad]에는 플래그가 없었고 `if (program.uPositionMatrix >= 0)`로
@@ -2403,7 +2423,9 @@ class PassthroughRenderer(
             GLES20.glUniformMatrix4fv(program.uTexMatrix, 1, false, texMatrix, 0)
         }
         if (program.uLensDistortion >= 0) {
-            GLES20.glUniform1f(program.uLensDistortion, CARDBOARD_LENS_DISTORTION)
+            GLES20.glUniform1f(
+                program.uLensDistortion, CardboardGeometry.CARDBOARD_LENS_DISTORTION
+            )
         }
         if (program.uGamma >= 0) {
             // 상수로 박지 않고 uniform으로 넣는다(INTERFACES.md §B-5 요청). 실제로 쓴 값은
@@ -2795,11 +2817,10 @@ class PassthroughRenderer(
         /** FBO_A(패스1 출력) + FBO_B(패스2 출력). ②가 stateless라 2장이면 충분하다. */
         private const val FBO_COUNT = 2
 
-        private const val DEFAULT_CARDBOARD_IMAGE_SCALE = 0.90f
-        private const val DEFAULT_CARDBOARD_EYE_OFFSET = -0.08f
-        private const val MIN_CARDBOARD_IMAGE_SCALE = 0.60f
-        private const val MAX_CARDBOARD_EYE_OFFSET = 0.30f
-        private const val CARDBOARD_LENS_DISTORTION = 0.12f
+        // 🔴 카드보드 상수 5개와 눈 사각형 식은 [CardboardGeometry]로 옮겼다 — 값은 그대로다.
+        //    `MainActivity`의 시연 HUD(B/L 표식)가 **같은 사각형** 위에 얹혀야 하는데, 여기
+        //    private companion 에 두면 그쪽에서 볼 수가 없어 식이 복사된다. 복사된 식은
+        //    한쪽만 고쳐지는 날 영상과 표식을 갈라놓고, 그 어긋남은 실기기에서만 보인다.
 
         // 프로그램 라벨. logcat 한 줄과 `session.json`의 실패 원문을 같은 이름으로 잇는다.
         // 표기는 `RenderArm`의 패스 이름 규약을 따르지만, **전부가 `shaderSourcesByPass`의

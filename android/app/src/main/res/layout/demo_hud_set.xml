@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ④ 시연 토글 표식 한 세트. 스마트폰 모드는 1세트, 카드보드 SBS 는 눈마다 1세트씩 총 2세트가
+  같은 이 파일을 `<include>` 한다(`activity_main.xml`).
+
+  🔴 **위치와 글자 크기는 코드가 정한다**(`MainActivity.updateDemoHud`) — 카드보드는 눈 사각형이
+  FOV·정렬 슬라이더로 움직이고, 그 사각형 식은 `CardboardGeometry` 한 곳에만 있다.
+  🔴 **글자 하나가 꺼질 때 `GONE` 이 아니라 `INVISIBLE` 이다** — 자리가 유지돼야 참가자가 "왼쪽이
+  위험물, 오른쪽이 밝기"를 위치로 학습할 수 있다. `GONE` 이면 남은 글자가 옆으로 튄다.
+  ⚠ 세트 컨테이너에는 `contentDescription` 을 걸지 않는다 — 걸면 TalkBack 이 컨테이너와 글자를
+  두 번 읽는다. 꺼진 글자는 `INVISIBLE` 이라 TalkBack 이 건너뛰므로 켜진 것만 읽힌다.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:layout_gravity="top|end"
+    android:orientation="horizontal"
+    android:clickable="false"
+    android:focusable="false"
+    android:visibility="gone">
+
+    <TextView
+        android:id="@+id/demo_hud_glyph_boxes"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/demo_hud_boxes_glyph"
+        android:contentDescription="@string/demo_hud_boxes_desc"
+        android:textColor="@color/demo_hud_boxes"
+        android:textStyle="bold"
+        android:textSize="32sp"
+        android:visibility="invisible"
+        android:shadowColor="#FF000000"
+        android:shadowDx="0"
+        android:shadowDy="0"
+        android:shadowRadius="6" />
+
+    <TextView
+        android:id="@+id/demo_hud_glyph_enhance"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:text="@string/demo_hud_enhance_glyph"
+        android:contentDescription="@string/demo_hud_enhance_desc"
+        android:textColor="@color/demo_hud_enhance"
+        android:textStyle="bold"
+        android:textSize="32sp"
+        android:visibility="invisible"
+        android:shadowColor="#FF000000"
+        android:shadowDx="0"
+        android:shadowDy="0"
+        android:shadowRadius="6" />
+</LinearLayout>

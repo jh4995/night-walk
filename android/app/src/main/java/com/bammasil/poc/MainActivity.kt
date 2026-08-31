@@ -11,6 +11,8 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.View
@@ -19,6 +21,7 @@ import android.view.WindowManager
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
@@ -33,6 +36,7 @@ import com.bammasil.poc.detect.DetectOverlayPublisher
 import com.bammasil.poc.detect.DetectParityDumper
 import com.bammasil.poc.detect.DetectPipeline
 import com.bammasil.poc.detect.DetectRuntime
+import com.bammasil.poc.gl.CardboardGeometry
 import com.bammasil.poc.gl.PassthroughRenderer
 import com.bammasil.poc.gl.DisplayMode
 import com.bammasil.poc.gl.RenderArm
@@ -51,6 +55,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * 빈 파이프라인 PoC: 카메라 → (처리 없음) → 화면.
@@ -87,6 +93,56 @@ class MainActivity : ComponentActivity() {
      */
     private lateinit var infoPanel: View
     private lateinit var hudButton: Button
+
+    /**
+     * ④ 시연 토글 표식(B/L) 한 세트. **컨테이너 + 글자 둘**이 늘 함께 움직여서 묶어 둔다.
+     *
+     * 🔴 세 세트가 `layout/demo_hud_set.xml` **같은 파일**을 `<include>` 하므로 안쪽 글자의
+     * id 가 화면에 세 벌 있다. 그래서 반드시 **세트 컨테이너를 기준으로** 찾는다 —
+     * `activity.findViewById` 로 찾으면 세 세트가 전부 첫 번째 것을 가리킨다.
+     */
+    private class DemoHudSet(
+        val container: View,
+        val glyphBoxes: TextView,
+        val glyphEnhance: TextView,
+    )
+
+    /** 스마트폰(NORMAL) 모드용 1세트. */
+    private lateinit var demoHudSetNormal: DemoHudSet
+
+    /** 카드보드 SBS 용 2세트. 🔴 **한쪽 눈만 켜지 않는다**(그건 표식이 아니라 결함으로 보인다). */
+    private lateinit var demoHudSetLeft: DemoHudSet
+    private lateinit var demoHudSetRight: DemoHudSet
+
+    /**
+     * [updateDemoHud] 전용 스크래치. HUD 갱신은 안전망(`statusTicker`) 때문에 2Hz 로도
+     * 불릴 수 있어, 부를 때마다 배열을 만들면 그 쓰레기가 측정 런 내내 쌓인다.
+     * ⚠ **메인 스레드 전용이다** — 렌더러의 `eyeRectScratch`(GL 스레드 전용)와 다른 물건이다.
+     */
+    private val hudEyeRectScratch = IntArray(4)
+    private val hudAnchorScratch = IntArray(2)
+
+    /**
+     * [updateDemoHud]가 직전에 **적용한 입력**. 같은 입력이면 뷰를 아예 건드리지 않는다
+     * (멱등). 🔴 이 캐시가 없으면 안전망이 측정 런 내내 초당 두 번 레이아웃을 요청해
+     * UI 스레드 일이 늘고, 그건 지속 런의 **조건 차이**가 된다.
+     *
+     * ⚠ 사각형이 아니라 **사각형을 정하는 입력 전부**를 담는다 — 사각형만 담으면 글자 크기·
+     * 여백을 가르는 값(눈 높이)이 빠져 조용히 옛 크기가 남는다.
+     */
+    private var hudAppliedOnce = false
+    private var hudLastShow = false
+    private var hudLastCardboard = false
+    private var hudLastBoxes = false
+    private var hudLastEnhance = false
+    private var hudLastSurfaceWidth = 0
+    private var hudLastSurfaceHeight = 0
+    private var hudLastViewWidth = 0
+    private var hudLastViewHeight = 0
+    private var hudLastProcessWidth = 0
+    private var hudLastProcessHeight = 0
+    private var hudLastImageScale = 0f
+    private var hudLastEyeOffset = 0f
 
     /**
      * 정보 패널이 접혀 있는가. 🔴 **측정 시작 시점의 값이 아니라 현재 값이다** — 런 도중에도
@@ -241,6 +297,9 @@ class MainActivity : ComponentActivity() {
         glView = findViewById(R.id.gl_view)
         infoPanel = findViewById(R.id.info_panel)
         hudButton = findViewById(R.id.hud_button)
+        demoHudSetNormal = bindDemoHudSet(R.id.demo_hud_set_normal)
+        demoHudSetLeft = bindDemoHudSet(R.id.demo_hud_set_left)
+        demoHudSetRight = bindDemoHudSet(R.id.demo_hud_set_right)
 
         // 🔴 컨트롤 바를 시스템 내비게이션 바 **위로** 밀어 올린다.
         //    이걸 안 하면 3버튼 내비 기기에서 정지 버튼이 홈·뒤로 버튼과 겹치고, 정지를
@@ -283,6 +342,15 @@ class MainActivity : ComponentActivity() {
         )
         renderer.onFrameSignal = { glView.requestRender() }
         renderer.onGlReady = { uiHandler.post { onGlReady() } }
+        // 🔴 **GL 스레드에서 온다** — 반드시 메인 루퍼로 넘긴다(위 onGlReady 와 같은 관행).
+        //    서피스 크기가 확정되기 전에는 [updateDemoHud]가 표식을 숨기고 있으므로, 이 훅이
+        //    없으면 앱을 켠 뒤 표식이 영영 안 나온다.
+        renderer.onSurfaceResized = { _, _ -> uiHandler.post { updateDemoHud() } }
+        // 🔴 협상 전에는 눈 사각형이 16:9 폴백으로 계산된다([CardboardGeometry.eyeViewport]).
+        //    이 훅이 없으면 켠 직후 카드보드 표식이 **엉뚱한 자리**에 붙은 채 남는다.
+        //    ⚠ `acquireSurface` 는 이미 메인 스레드지만 관행대로 post 한다 — 카메라 바인딩
+        //      한복판에서 레이아웃을 요청하지 않는다.
+        renderer.onProcessSizeChanged = { _, _ -> uiHandler.post { updateDemoHud() } }
 
         glView.setEGLContextClientVersion(EGL_CONTEXT_CLIENT_VERSION)
         glView.preserveEGLContextOnPause = true
@@ -367,6 +435,8 @@ class MainActivity : ComponentActivity() {
                 } else {
                     ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                 }
+                // ④ 시연 표식은 모드마다 세트 수가 다르다(1세트 ↔ 눈마다 1세트).
+                updateDemoHud()
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
@@ -562,6 +632,8 @@ class MainActivity : ComponentActivity() {
         //    ⚠ 측정 중에는 이 경로가 닫혀 있다(측정 중에는 arm 스피너가 잠긴다) — 그래서
         //      이 강제 드로우가 런의 `draws_without_new_frame`에 섞이지 않는다.
         glView.requestRender()
+        // ④ 시연 표식은 통합 arm 에서만 뜬다 — arm 이 바뀌면 세트를 통째로 접거나 편다.
+        updateDemoHud()
     }
 
     /**
@@ -635,6 +707,11 @@ class MainActivity : ComponentActivity() {
         displayModeAtStart = selectedDisplayMode()
         cardboardImageScaleAtStart = 1f - cardboardFovSeek.progress / 100f
         cardboardEyeOffsetAtStart = (cardboardAlignmentSeek.progress - 60) / 200f
+        // 🔴 위 [resetDemoToggles]의 갱신은 `armAtStart`·`displayModeAtStart` 가 **잠기기 전**에
+        //    일어났다(그 시점에는 옛 런의 값이었다). 잠근 직후 한 번 더 불러 시작하는 순간의
+        //    표식이 맞게 한다 — 안 하면 안전망(statusTicker)이 고칠 때까지 최대 500ms 동안
+        //    옛 arm 기준의 표식이 남는다.
+        updateDemoHud()
         // 🔴 **조명 기본값이 `unknown`이 아니게 된 것의 짝이다**
         //    ([LightingCondition.CHOICES] 참고). 예전에는 스피너를 안 만지면 하네스가
         //    "비교 대상이 못 된다"고 소리 내어 거부했는데, 이제 안 만진 런이 **정상적인
@@ -1002,6 +1079,10 @@ class MainActivity : ComponentActivity() {
         )
         glView.queueEvent { renderer.setCardboardTuning(imageScale, eyeOffset) }
         glView.requestRender()
+        // 슬라이더가 눈 사각형을 움직이므로 그 위에 얹힌 ④ 시연 표식도 따라가야 한다.
+        // ⚠ 여기 넘긴 것과 **같은 원값**을 [updateDemoHud]도 읽는다 — 클램프는 양쪽 다
+        //   [CardboardGeometry] 안에서 일어나므로 두 사각형이 갈릴 수 없다.
+        updateDemoHud()
     }
 
     private fun selectedArm(): RenderArm =
@@ -1024,6 +1105,11 @@ class MainActivity : ComponentActivity() {
         stage2ToggleCount = 0
         overlayToggleCount = 0
         glView.queueEvent { renderer.setDemoToggles(true, true) }
+        // 🔴 [startRecording]·[stopRecording] **둘 다** `recording` 을 세운 **뒤** 이 함수를
+        //    부르므로 이 한 자리가 두 사건을 덮는다.
+        //    ⚠ 다만 시작 경로에서는 `armAtStart`·`displayModeAtStart` 가 **아직 옛 런의 값**이다
+        //      — 그래서 [startRecording]이 그 둘을 잠근 직후에 한 번 더 부른다.
+        updateDemoHud()
     }
 
     /**
@@ -1091,6 +1177,10 @@ class MainActivity : ComponentActivity() {
         val stage2 = stage2Enabled
         val overlay = overlayEnabled
         glView.queueEvent { renderer.setDemoToggles(stage2, overlay) }
+        // ④ 시연 표식은 토스트가 사라진 뒤에도 남는 유일한 상태 표시다.
+        // ⚠ 뷰 오버레이라 `glView.requestRender()` 를 부르지 않는다 — 위 KDoc 대로
+        //   강제 드로우는 `draws_without_new_frame` 을 오염시킨다.
+        updateDemoHud()
         showMessage(
             getString(messageRes),
             "볼륨키 토글 — stage2=$stage2(누적 $stage2ToggleCount) " +
@@ -1105,6 +1195,10 @@ class MainActivity : ComponentActivity() {
     // ── 화면 표시 (진행 확인용) ──────────────────────────────────────────
 
     private fun updateStatus() {
+        // ④ 시연 표식의 **안전망**이다(훅 대체가 아니다). 갱신 지점을 하나 놓쳐도 0.5초 안에
+        // 맞아 든다. 🔴 [updateDemoHud]가 멱등이라 실제 뷰 쓰기는 값이 바뀔 때만 일어난다 —
+        // 그렇지 않으면 측정 런 내내 2Hz 로 레이아웃을 요청하게 되고 그건 조건 차이가 된다.
+        updateDemoHud()
         val negotiated = frameSource.negotiated
         val actual = if (negotiated == null) {
             "미확정"
@@ -1160,6 +1254,249 @@ class MainActivity : ComponentActivity() {
         hudButton.setText(if (hudInfoHidden) R.string.hud_show else R.string.hud_hide)
     }
 
+    // ── ④ 시연 토글 표식 (B/L) ──────────────────────────────────────────
+
+    /**
+     * 세트 하나를 묶는다. 🔴 **컨테이너를 기준으로** 글자를 찾는다 — 세 세트가 같은 레이아웃을
+     * `<include>` 해서 안쪽 id 가 화면에 세 벌 있고, `activity.findViewById` 로 찾으면 세
+     * 세트가 전부 첫 번째 글자를 가리킨다.
+     */
+    private fun bindDemoHudSet(setId: Int): DemoHudSet {
+        val container = findViewById<View>(setId)
+        return DemoHudSet(
+            container,
+            container.findViewById(R.id.demo_hud_glyph_boxes),
+            container.findViewById(R.id.demo_hud_glyph_enhance),
+        )
+    }
+
+    /**
+     * ④ 시연 토글(볼륨키) 상태를 화면 **우측 상단**에 B/L 로 낸다.
+     *
+     * - `B`(노랑) = 위험물 표시가 켜짐 / `L`(초록) = 밝기 보정이 켜짐. 둘 다 **측정 중일 때만**
+     *   뜬다 — 정지 상태에서는 토글이 먹지 않으므로([dispatchKeyEvent]) 켜진 것처럼 보이면
+     *   그건 거짓말이다.
+     * - arm 이 [RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT] 가 아니면 **세트를 통째로 `GONE`** 한다.
+     *   토글 자체가 그 arm 에서만 먹기 때문이다(`_1q`·`_nofill` 계측 arm 은 게이트로 막혀 있다).
+     * - 표시 모드가 카드보드면 **양쪽 눈에 각각** 낸다. 한쪽만 넣으면 표식이 아니라 결함이다.
+     *
+     * 🔴 **이 함수는 멱등이다.** 같은 입력이면 뷰를 한 번도 건드리지 않고 돌아간다 —
+     * 안전망이 [updateStatus](0.5초)에 걸려 있어서, 캐시가 없으면 측정 런 내내 2Hz 로
+     * 레이아웃을 요청하게 되고 그건 지속 런의 **조건 차이**가 된다.
+     *
+     * 🔴 **GL 을 쓰지 않는다.** 통합 arm 의 present 패스에 드로우콜이 하나라도 붙으면
+     * `detect_cpu_chain_highlight_1q` 와의 렌더 동일성이 거짓이 되고 ④ 오버레이 비용 하한의
+     * 근거가 무너진다. 표식은 끝까지 안드로이드 View 다.
+     */
+    private fun updateDemoHud() {
+        // 측정 중에는 **잠긴 값**을 읽는다(스피너가 아니라). [updateStatus]와 같은 규약이다.
+        val armNow = if (recording) armAtStart else selectedArm()
+        val show = armNow == RenderArm.DETECT_CPU_CHAIN_HIGHLIGHT
+        val modeNow = if (recording) displayModeAtStart else selectedDisplayMode()
+        val cardboard = modeNow == DisplayMode.CARDBOARD_SBS
+        val surfaceWidth = renderer.surfaceWidth
+        val surfaceHeight = renderer.surfaceHeight
+        // 🔴 `frameSource.negotiated` 로 우회하지 않는다 — 값의 출처가 둘이 되면 렌더러가 그린
+        //    사각형과 표식이 붙은 사각형이 갈릴 수 있다. 렌더러가 실제로 쓰는 값만 읽는다.
+        val processWidth = renderer.processWidth
+        val processHeight = renderer.processHeight
+        // ⚠ 슬라이더 **원값**을 그대로 쓴다([applyCardboardTuning]이 렌더러에 넘기는 것과 같은
+        //   식이다). 클램프는 [CardboardGeometry] 안에서만 일어나므로 두 사각형이 갈릴 수 없다.
+        val imageScale = 1f - cardboardFovSeek.progress / 100f
+        val eyeOffset = (cardboardAlignmentSeek.progress - 60) / 200f
+        val boxesOn = recording && overlayEnabled
+        val enhanceOn = recording && stage2Enabled
+        val viewWidth = glView.width
+        val viewHeight = glView.height
+
+        if (hudAppliedOnce &&
+            show == hudLastShow &&
+            cardboard == hudLastCardboard &&
+            boxesOn == hudLastBoxes &&
+            enhanceOn == hudLastEnhance &&
+            surfaceWidth == hudLastSurfaceWidth &&
+            surfaceHeight == hudLastSurfaceHeight &&
+            viewWidth == hudLastViewWidth &&
+            viewHeight == hudLastViewHeight &&
+            processWidth == hudLastProcessWidth &&
+            processHeight == hudLastProcessHeight &&
+            imageScale == hudLastImageScale &&
+            eyeOffset == hudLastEyeOffset
+        ) {
+            return
+        }
+        hudAppliedOnce = true
+        hudLastShow = show
+        hudLastCardboard = cardboard
+        hudLastBoxes = boxesOn
+        hudLastEnhance = enhanceOn
+        hudLastSurfaceWidth = surfaceWidth
+        hudLastSurfaceHeight = surfaceHeight
+        hudLastViewWidth = viewWidth
+        hudLastViewHeight = viewHeight
+        hudLastProcessWidth = processWidth
+        hudLastProcessHeight = processHeight
+        hudLastImageScale = imageScale
+        hudLastEyeOffset = eyeOffset
+
+        if (!show || surfaceWidth <= 0 || surfaceHeight <= 0) {
+            hideDemoHud()
+            return
+        }
+        // 🔴 GL 서피스 픽셀과 뷰 픽셀이 1:1 이라는 것을 **가정하지 않고 확인한다.** 지금은
+        //    `setFixedSize`·`SurfaceHolder` 사용이 저장소에 없고 GLSurfaceView 가
+        //    `match_parent` 라 같지만, 어긋난 날 스케일을 조용히 곱해 맞춘 척하면 표식이
+        //    미묘하게 틀린 자리에 서고 아무도 모른다. **조용한 성공을 만들지 않는다.**
+        if (viewWidth != surfaceWidth || viewHeight != surfaceHeight) {
+            Log.w(
+                TAG,
+                "④ 시연 표식을 숨긴다 — GL 서피스와 뷰의 픽셀이 다르다 " +
+                    "(surface=${surfaceWidth}x$surfaceHeight, view=${viewWidth}x$viewHeight). " +
+                    "1:1 전제가 깨졌으니 스케일을 정하기 전에는 표식을 그리지 않는다",
+            )
+            hideDemoHud()
+            return
+        }
+
+        applyDemoHudGlyphs(demoHudSetNormal, boxesOn, enhanceOn)
+        applyDemoHudGlyphs(demoHudSetLeft, boxesOn, enhanceOn)
+        applyDemoHudGlyphs(demoHudSetRight, boxesOn, enhanceOn)
+
+        if (!cardboard) {
+            demoHudSetLeft.container.visibility = View.GONE
+            demoHudSetRight.container.visibility = View.GONE
+            // 🔴 NORMAL 의 present 는 `FRAGMENT_SHADER_BLIT` 이라 렌즈 왜곡이 없다 →
+            //    화면 전체가 곧 보이는 영상이고 모서리 비율은 1 이다.
+            hudEyeRectScratch[0] = 0
+            hudEyeRectScratch[1] = 0
+            hudEyeRectScratch[2] = surfaceWidth
+            hudEyeRectScratch[3] = surfaceHeight
+            placeDemoHudSet(
+                demoHudSetNormal,
+                hudEyeRectScratch,
+                CardboardGeometry.NORMAL_CORNER_FRACTION,
+                NORMAL_HUD_TEXT_SP,
+                surfaceWidth,
+                surfaceHeight,
+            )
+            return
+        }
+
+        demoHudSetNormal.container.visibility = View.GONE
+        // 🔴 눈 사각형은 렌더러가 뷰포트를 세울 때와 **같은 함수**에서 온다. 여기에 식을 다시
+        //    적으면 영상과 표식이 서로 다른 사각형을 믿게 된다.
+        val leftWidth = CardboardGeometry.leftEyeWidth(surfaceWidth)
+        val cornerFraction = CardboardGeometry.visibleCornerFraction()
+        CardboardGeometry.eyeViewport(
+            0,
+            leftWidth,
+            -1,
+            surfaceHeight,
+            processWidth,
+            processHeight,
+            imageScale,
+            eyeOffset,
+            hudEyeRectScratch,
+        )
+        placeDemoHudSet(
+            demoHudSetLeft,
+            hudEyeRectScratch,
+            cornerFraction,
+            cardboardHudTextSp(hudEyeRectScratch[3]),
+            surfaceWidth,
+            surfaceHeight,
+        )
+        CardboardGeometry.eyeViewport(
+            leftWidth,
+            surfaceWidth - leftWidth,
+            1,
+            surfaceHeight,
+            processWidth,
+            processHeight,
+            imageScale,
+            eyeOffset,
+            hudEyeRectScratch,
+        )
+        placeDemoHudSet(
+            demoHudSetRight,
+            hudEyeRectScratch,
+            cornerFraction,
+            cardboardHudTextSp(hudEyeRectScratch[3]),
+            surfaceWidth,
+            surfaceHeight,
+        )
+    }
+
+    private fun hideDemoHud() {
+        demoHudSetNormal.container.visibility = View.GONE
+        demoHudSetLeft.container.visibility = View.GONE
+        demoHudSetRight.container.visibility = View.GONE
+    }
+
+    /**
+     * 🔴 꺼진 글자는 `GONE` 이 아니라 `INVISIBLE` 이다 — **자리가 유지돼야** 참가자가 왼쪽/오른쪽
+     * 위치로 무엇이 켜졌는지 안다(위치를 학습하는 앱이다). `GONE` 이면 한쪽만 켰을 때 남은
+     * 글자가 옆으로 튄다.
+     * ⚠ `INVISIBLE` 은 TalkBack 도 건너뛰므로 켜진 글자의 설명만 읽힌다.
+     */
+    private fun applyDemoHudGlyphs(set: DemoHudSet, boxesOn: Boolean, enhanceOn: Boolean) {
+        set.glyphBoxes.visibility = if (boxesOn) View.VISIBLE else View.INVISIBLE
+        set.glyphEnhance.visibility = if (enhanceOn) View.VISIBLE else View.INVISIBLE
+    }
+
+    /**
+     * 세트 하나를 [rect](GL 좌표의 눈 사각형)의 **보이는 영상 우상단**에 붙인다.
+     *
+     * 좌표 변환은 두 걸음뿐이다: [CardboardGeometry.hudAnchor] 가 왜곡을 반영한 앵커를 GL
+     * 좌표로 주고, 여기서 **Y 만 뒤집어** 안드로이드 뷰 좌표로 바꾼다. 픽셀 스케일이 1:1
+     * 이라는 것은 부르는 쪽이 이미 확인했다([updateDemoHud]).
+     */
+    private fun placeDemoHudSet(
+        set: DemoHudSet,
+        rect: IntArray,
+        cornerFraction: Float,
+        textSizeSp: Float,
+        containerWidth: Int,
+        containerHeight: Int,
+    ) {
+        CardboardGeometry.hudAnchor(rect, cornerFraction, hudAnchorScratch)
+        val anchorRight = hudAnchorScratch[0]
+        // GL 은 좌하단 원점, 뷰는 좌상단 원점이다.
+        val anchorTop = containerHeight - hudAnchorScratch[1]
+        val metrics = resources.displayMetrics
+        val minInsetPx = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP, HUD_MIN_INSET_DP, metrics
+        )
+        val insetPx = max(minInsetPx, rect[3] * HUD_INSET_HEIGHT_FRACTION).roundToInt()
+        set.glyphBoxes.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSizeSp)
+        set.glyphEnhance.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSizeSp)
+        val params = set.container.layoutParams as FrameLayout.LayoutParams
+        // 🔴 `START|TOP` + marginStart 를 쓰지 않는다 — 그러려면 세트의 `measuredWidth` 가
+        //    필요한데 첫 레이아웃 패스에서는 0 이라 한 프레임 동안 어긋난 자리에 뜬다.
+        //    END 앵커는 그 값을 아예 쓰지 않아 그 문제가 없다.
+        params.gravity = Gravity.TOP or Gravity.END
+        params.marginEnd = (containerWidth - anchorRight) + insetPx
+        params.topMargin = anchorTop + insetPx
+        set.container.layoutParams = params
+        set.container.visibility = View.VISIBLE
+    }
+
+    /**
+     * 카드보드 표식의 글자 크기(sp). **눈 사각형 높이에 비례**시킨다 — FOV 슬라이더로 눈이
+     * 작아지면 고정 크기 글자가 영상을 덮어 버린다. 위아래는 클램프한다: 너무 작으면 저시력
+     * 참가자가 못 읽고, 너무 크면 글자 자체가 가림막이 된다.
+     */
+    private fun cardboardHudTextSp(eyeHeightPx: Int): Float {
+        val pxPerSp = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_SP, 1f, resources.displayMetrics
+        )
+        // 실기기에서 0 이 될 일은 없지만, 0 이면 나눗셈이 무한대가 된다 — 값을 지어내는 대신
+        // 하한으로 떨어뜨린다.
+        if (pxPerSp <= 0f) return CARDBOARD_HUD_MIN_TEXT_SP
+        val raw = eyeHeightPx * CARDBOARD_HUD_TEXT_HEIGHT_FRACTION / pxPerSp
+        return raw.coerceIn(CARDBOARD_HUD_MIN_TEXT_SP, CARDBOARD_HUD_MAX_TEXT_SP)
+    }
+
     /**
      * 화면(Toast)과 로그에 알린다. 🔴 **두 청중이 다르다.**
      *
@@ -1179,6 +1516,18 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val TAG = "BammasilPoc"
         const val STATUS_INTERVAL_MS = 500L
+
+        /** 스마트폰 모드의 ④ 시연 표식 글자 크기. 화면이 크고 고정이라 비례시킬 이유가 없다. */
+        const val NORMAL_HUD_TEXT_SP = 32f
+
+        /** 카드보드는 눈 사각형이 슬라이더로 변하므로 **눈 높이에 비례**시키고 클램프한다. */
+        const val CARDBOARD_HUD_TEXT_HEIGHT_FRACTION = 0.09f
+        const val CARDBOARD_HUD_MIN_TEXT_SP = 20f
+        const val CARDBOARD_HUD_MAX_TEXT_SP = 40f
+
+        /** 표식 여백 = `max(6dp, 눈 높이 × 0.03)`. 작은 눈에서도 모서리에 딱 붙지 않게. */
+        const val HUD_MIN_INSET_DP = 6f
+        const val HUD_INSET_HEIGHT_FRACTION = 0.03f
 
         /** 런별 출력 레이아웃: `.../files/runs/<YYYYMMDD_HHMMSS>/{frames.csv,session.json}` */
         const val RUNS_DIR = "runs"

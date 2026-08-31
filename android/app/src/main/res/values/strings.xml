@@ -24,6 +24,17 @@
     <string name="demo_boxes_off">위험물 표시를 종료합니다</string>
     <string name="demo_enhance_on">밝기 보정을 시작합니다</string>
     <string name="demo_enhance_off">밝기 보정을 종료합니다</string>
+    <!-- 화면 우측 상단의 ④ 시연 토글 표식. 위 토스트는 **뜨고 사라지지만** 이건 남는다 —
+         참가자가 지금 무엇이 켜져 있는지 언제든 눈으로 확인하는 자리다.
+         🔴 **글자 하나짜리다.** 카드보드 눈 안에 들어가야 하고 저시력자가 곁눈으로도 읽어야 해서
+         길이를 늘리지 않는다. 뜻은 아래 contentDescription 이 나른다(TalkBack). -->
+    <string name="demo_hud_boxes_glyph">B</string>
+    <string name="demo_hud_enhance_glyph">L</string>
+    <!-- TalkBack 이 읽는 말. 🔴 **켜진 것만 읽힌다** — 꺼진 글자는 INVISIBLE 이라 건너뛴다.
+         그래서 "…켜짐"이라고 단정해도 거짓이 되지 않는다. -->
+    <string name="demo_hud_boxes_desc">위험물 표시 켜짐</string>
+    <string name="demo_hud_enhance_desc">밝기 보정 켜짐</string>
+
     <!-- 측정 중이 아닐 때 볼륨키를 누른 경우. 키는 소비하되 아무것도 바꾸지 않는다. -->
     <string name="demo_toggle_idle">야간 보조 ON을\n먼저 눌러 주세요</string>
     <!-- 🔴 시연용 arm 이 아닐 때. **위 문구와 사유가 다르다** — 진행자가 "정지 상태라 무시"와

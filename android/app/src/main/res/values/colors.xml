@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      ④ 시연 토글 표식(B/L)의 색. 🔴 **저시력 참가자가 보는 글자다** — 채도를 낮추지 않는다.
+      검정 배경 위 대비를 최대로 두고, 글자 자체에는 검은 그림자를 깔아 밝은 영상 위에서도
+      윤곽이 남게 한다(`layout/demo_hud_set.xml`).
+      두 색을 **서로 다른 색상환 위치**로 고른다 — 색약 참가자도 위치(왼쪽/오른쪽)로 구분할 수
+      있게 자리를 고정하는 것이 1차 단서이고, 색은 보조 단서다.
+    -->
+    <color name="demo_hud_boxes">#FFFFFF00</color>
+    <color name="demo_hud_enhance">#FF00FF00</color>
+</resources>

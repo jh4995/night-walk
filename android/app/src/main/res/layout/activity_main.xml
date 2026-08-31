@@ -11,6 +11,42 @@
         android:layout_height="match_parent" />
 
     <!--
+      ④ 시연 토글 상태 표식(B/L). 🔴 **GL 이 아니라 View 오버레이다** —
+      통합 arm 의 present 패스에 드로우콜을 더하면 `detect_cpu_chain_highlight_1q` 와의
+      렌더 동일성(`RenderArm.kt` 의 `_1q` 정의 — "통합 arm과 렌더가 같고 → I 하한의 분자")이
+      거짓이 되고 ④ 오버레이 비용 하한의 근거가 무너진다. 여기에 GL 을 끌어들이지 마라.
+
+      🔴 **자리는 `gl_view` 뒤 · `info_panel` 앞이다.** 설정 패널이 표식을 이겨야 한다 —
+      패널을 펴는 것은 측정자의 행동이고, 그때는 표식보다 스피너가 먼저다.
+      위치·크기는 코드가 정한다(`MainActivity.updateDemoHud`). 카드보드 눈 사각형은
+      `CardboardGeometry` 한 곳에서만 계산되고 이 레이아웃은 그 결과를 받기만 한다.
+      ⚠ `clickable=false` · `focusable=false` — 이 레이어가 정지 버튼의 터치를 먹으면
+      뒤로가기로 런을 끝내게 되고 그게 곧 알려진 이슈 10 이다.
+    -->
+    <FrameLayout
+        android:id="@+id/demo_hud_layer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="false"
+        android:focusable="false">
+
+        <!-- 스마트폰(NORMAL) 모드용 1세트. -->
+        <include
+            android:id="@+id/demo_hud_set_normal"
+            layout="@layout/demo_hud_set" />
+
+        <!-- 카드보드 SBS 용 2세트. 🔴 **한쪽 눈만 넣지 않는다** — 한쪽에만 보이면
+             참가자는 표식이 아니라 결함을 본다. -->
+        <include
+            android:id="@+id/demo_hud_set_left"
+            layout="@layout/demo_hud_set" />
+
+        <include
+            android:id="@+id/demo_hud_set_right"
+            layout="@layout/demo_hud_set" />
+    </FrameLayout>
+
+    <!--
       정보 패널. 🔴 **접을 수 있다** (아래 hud_button) — ④ 강조가 실제로 어떻게 보이는지
       촬영·캡처할 때 이 패널이 화면 절반을 가리기 때문이다.
 
