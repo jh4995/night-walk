@@ -959,7 +959,7 @@ class MainActivity : ComponentActivity() {
                     "ringFull=${gpuTimer.skippedRingFullFrames} " +
                     "beginErr=${gpuTimer.beginQueryError} off=${gpuTimer.disabledReason}"
             )
-            "저장 완료: $rows 행 (arm=${arm.id})\n→ ${runDir.absolutePath}"
+            "야간 보조가 종료되었습니다"
         } catch (t: Throwable) {
             Log.e(TAG, "로그 저장 실패", t)
             "로그 저장 실패: ${t.javaClass.simpleName}: ${t.message}"
