@@ -65,10 +65,17 @@ val ortVersion = "1.28.0"
 //
 // 🔴 **③ arm이 어느 모델로 도는지는 아래 두 줄이 정한다.** FP32↔INT8을 겨루려면 값을 바꿔
 //   각각 release 빌드를 낸다 — 한 빌드에 두 모델을 담는 경로는 없다. 배선 이력:
-//     FP32  models/0824/bammasil_det_c4e_s3_11n_640       + metadata.json
-//     INT8  models/0826/bammasil_det_c4e_s3_11n_640-INT8  + <패키지명>_metadata.json  ← 현재
-val detectModelDir = "models/0826/bammasil_det_c4e_s3_11n_640-INT8"
-val detectMetadataFileName = "bammasil_det_c4e_s3_11n_640-INT8_metadata.json"
+//     FP32  models/0824/bammasil_det_c4e_s3_11n_640                + metadata.json
+//     INT8  models/0826/bammasil_det_c4e_s3_11n_640-INT8           + <패키지명>_metadata.json
+//     INT8  models/0901/bammasil_det_c4f_distill_11n_640_640-INT8  + <패키지명>_metadata.json  ← 현재
+//
+// 🔴 **가중치가 바뀌면 옛 베이스라인과의 비교가 무효다.** c4e_s3 → c4f_distill 은 같은
+//   11n 계열·같은 입출력 계약이지만 **다른 가중치**이고, c4f 의 mAP·recall 은 인수 시점에
+//   측정되지 않았다(패키지 README 5장 · metadata 의 heldout.metrics = null).
+//   그래서 `scripts/baseline_diff.py`의 CONDITION_KEYS 에 모델 sha256 을 넣었다 —
+//   c4e 로 잰 베이스라인과 c4f 런을 비교하면 이제 "조건 다름"이 먼저 뜬다.
+val detectModelDir = "models/0901/bammasil_det_c4f_distill_11n_640_640-INT8"
+val detectMetadataFileName = "bammasil_det_c4f_distill_11n_640_640-INT8_metadata.json"
 val detectMetadataRelPath = "$detectModelDir/$detectMetadataFileName"
 val detectMetadataFile = File(repoDir.parentFile, detectMetadataRelPath)
 

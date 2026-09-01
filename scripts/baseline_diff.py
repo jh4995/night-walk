@@ -79,6 +79,22 @@ CONDITION_KEYS = (
     # 늘리면 프레임 간격 자체가 벌어져, 밝은 방 런과 야간 런을 비교하면 코드가 그대로여도
     # "회귀"로 보인다. 어휘는 lib/frame_log.py의 LIGHTING_CONDITIONS.
     ("session", "lighting_condition"),
+    # ③ 탐지 **모델의 sha256**. 🔴 조명·arm과 같은 급의 조건이다 — 가중치가 다르면 F(추론)도
+    # 통과 박스 수도 다른 숫자인데, `pipeline_stages`도 `render_arm`도 그것을 담지 못한다
+    # (모델을 바꿔도 arm id는 `detect_cpu_chain_highlight` 그대로다). 이 키가 없으면
+    # c4e로 잰 베이스라인과 c4f 런이 **무경고로 "조건 동일"**이 되고, 그건 :32-38이 실증한
+    # blit_2pass ↔ clahe_gamma 실패 양식과 글자 그대로 같은 구조다.
+    # ⚠ **아래 `ep.resolved`를 뺀 기준과 모순되지 않는다**: 그쪽은 세션을 열어 본 **결과**이고,
+    #   모델 sha는 그 런에 **먹인 것**이다(폴백처럼 런마다 갈리지 않는다).
+    # ⚠ **파일명이 아니라 sha256을 본다** — 이름은 재사용될 수 있지만 바이트는 아니고, 이 값은
+    #   앱이 파일 바이트에서 직접 계산한 것이다(metadata를 베낀 값이 아니다 → DetectRuntime).
+    # ⚠ 출처를 `session.detect.model.sha256`으로 잡는다. summary의 `detect.model_sha256`은
+    #   하네스가 그 값을 베낀 **사본**이다(analyze_frames.py의 session_field) — 원본을 본다.
+    # ⚠ 대가를 알고 받는다: 탐지를 안 도는 arm(passthrough 등)은 양쪽 다 None이라 경고가 뜨지
+    #   않고(그때는 조건이 실제로 같다), ③ 도입 이전 베이스라인 ↔ 새 detect 런은 None != sha로
+    #   "조건 다름"이 된다. render_arm·fill_alpha를 넣을 때 받은 대가와 같은 것이며 정직한
+    #   표시다. comparable은 exit code를 바꾸지 않는다.
+    ("session", "detect", "model", "sha256"),
     ("source", "warmup_sec"),
     # ── 🔴 **`detect.ep.resolved`를 여기 넣지 않는다 (결정됨, v6)** ──────────
     # CONDITION_KEYS는 **선언된 조건**을 비교하는 장치인데 `ep.resolved`는 **측정된 결과**다.
