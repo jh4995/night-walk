@@ -29,3 +29,5 @@ local.properties
 # OS
 .DS_Store
 Thumbs.db
+# 시연 영상 원본. GitHub 파일당 한도(100MB)를 넘으므로 커밋하지 않는다 — 링크로만 건다.
+docs/assets/*.mp4
